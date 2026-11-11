@@ -1,8 +1,10 @@
 """curator's one write path: three refusals, each leaving the file's bytes untouched.
 
-Validators come from the atlas's real exported schemas, never a copy. Every refused
-input here is otherwise valid, so the refusal under test is the only thing that can
-stop it (a file refused for two reasons would let a mutant that drops one survive).
+Validators come from the atlas's real exported schemas, never a copy. Each refused
+input is built so the refusal under test is the only thing wrong with it: the anchor
+cases rewrite a file that already holds the same findings with the same approvals, the
+approval cases are schema-valid, and the schema cases change no approval. (A file
+refused for two reasons would let a mutant that drops one survive.)
 """
 
 from __future__ import annotations
@@ -13,8 +15,9 @@ from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
+from ruamel.yaml import YAML
 
-from chd_curator.atlas import schema_validator
+from chd_curator.atlas import plain, schema_validator
 from chd_curator.write import (
     APPROVAL_FIELDS,
     WriteRefused,
@@ -90,6 +93,10 @@ APPROVAL_CASES = {
         "CHDA:LIT:0000001.*approved_by",
     ),
     "a new finding added": (BEFORE + _finding(3), "CHDA:LIT:0000003.*adding a finding"),
+    "a finding id repeated with the original's approval": (
+        BEFORE + _finding(1, APPROVED),
+        "CHDA:LIT:0000001.*more than one finding has this id",
+    ),
     "a finding removed": (HEADER + _finding(1, APPROVED), "CHDA:LIT:0000002.*removing a finding"),
 }
 
@@ -144,34 +151,39 @@ def test_refuse_approval_change_compares_every_field_with_absent_as_none() -> No
 
 
 ANCHOR_CASES = {
-    "anchor": (_finding(1).replace("design: cohort_screen", "design: &d cohort_screen"), "anchor"),
+    "anchor": (BEFORE.replace("design: cohort_screen", "design: &d cohort_screen", 1), "anchor"),
     "alias": (
-        _finding(1).replace("methods:\n      - exome", "methods: &m\n      - exome")
-        + _finding(2).replace("methods:\n      - exome", "methods: *m"),
+        BEFORE.replace("methods:\n      - exome", "methods: &m\n      - exome", 1).replace(
+            "methods:\n      - exome", "methods: *m", 1
+        ),
         "anchor",
     ),
     "merge key": (
-        _finding(1).replace("    syndromic: both\n", "    <<: {syndromic: both}\n"),
+        BEFORE.replace("    syndromic: both\n", "    <<: {syndromic: both}\n", 1),
         "merge",
     ),
 }
 
 
-@pytest.mark.parametrize("body, message", ANCHOR_CASES.values(), ids=ANCHOR_CASES)
+@pytest.mark.parametrize("after, message", ANCHOR_CASES.values(), ids=ANCHOR_CASES)
 def test_the_one_write_path_refuses_anchors_aliases_and_merge_keys(
-    tmp_path: Path, literature_schema: Draft202012Validator, body: str, message: str
+    lit: Path, literature_schema: Draft202012Validator, after: str, message: str
 ) -> None:
-    path = tmp_path / "TBX5.yaml"
-    path.write_text(HEADER)  # no findings yet, so a refusal can only be the construct itself
-    before = _digest(path)
+    # The file already holds these findings with these approvals, and the loaded
+    # content validates and changes no approval: the construct is the only fault.
+    assert after != BEFORE
+
+    assert list(literature_schema.iter_errors(plain(YAML(typ="safe").load(after)))) == []
+    refuse_approval_change(BEFORE.encode(), after.encode())
+    before = _digest(lit)
     with pytest.raises(WriteRefused, match=message):
-        write_literature(path, (HEADER + body).encode(), literature_schema)
-    assert _digest(path) == before
+        write_literature(lit, after.encode(), literature_schema)
+    assert _digest(lit) == before
 
 
-def test_an_alias_is_refused_even_when_it_is_the_only_construct_the_anchor_check_sees() -> None:
-    # `refuse_anchors` is exported on its own: a stream with an alias event and (here) the
-    # anchor it needs both name the construct, and a plain mapping is accepted.
+def test_refuse_anchors_names_the_construct_and_lets_plain_data_through() -> None:
+    # An alias needs an anchor earlier in the stream, so one anchor branch refuses both;
+    # there is no separate alias branch to pin.
     with pytest.raises(WriteRefused, match=r"anchor \(&a\)"):
         refuse_anchors(b"a: &a 1\nb: *a\n")
     with pytest.raises(WriteRefused, match="merge key"):
@@ -234,3 +246,30 @@ def test_publications_are_checked_and_written_through_the_same_path(
     longer = good + good.replace("PMID:1", "PMID:2").split("\n", 1)[1]
     write_publications(path, longer.encode(), publication_schema)
     assert path.read_bytes() == longer.encode()
+
+
+def test_every_schema_error_is_reported_in_path_order_with_the_file_named(
+    lit: Path, literature_schema: Draft202012Validator
+) -> None:
+    # Three errors; jsonschema yields the root one last, so only the sort puts it first.
+    after = (
+        BEFORE.replace("gene: HGNC:11604\n", "")
+        .replace("    syndromic: both\n", "    syndromic: sometimes\n", 1)
+        .replace(
+            "extracted_by: agent:extract/test\n",
+            'extracted_by: agent:extract/test\n    verified_by: ""\n',
+            1,
+        )
+    )
+    before = _digest(lit)
+    with pytest.raises(WriteRefused) as raised:
+        write_literature(lit, after.encode(), literature_schema)
+    head, *lines = str(raised.value).split("\n")
+    assert head == f"{lit} does not satisfy its schema:"
+    assert [line.split(":")[0] for line in lines] == [
+        "<root>",
+        "findings/0/syndromic",
+        "findings/0/verified_by",
+    ]
+    assert lines[0] == "<root>: 'gene' is a required property"
+    assert _digest(lit) == before

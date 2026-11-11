@@ -14,13 +14,14 @@ so a refused write leaves the file's bytes as they were. Three things are refuse
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Any, Final
 
 from jsonschema import Draft202012Validator
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
-from ruamel.yaml.events import AliasEvent, MappingStartEvent, ScalarEvent, SequenceStartEvent
+from ruamel.yaml.events import MappingStartEvent, ScalarEvent, SequenceStartEvent
 
 from chd_curator.atlas import plain
 from chd_curator.fs import write_bytes_atomically
@@ -35,6 +36,10 @@ class WriteRefused(Exception):
 def refuse_anchors(content: bytes) -> None:
     """Refuse any anchor, alias or ``<<`` merge key, from ruamel's event stream.
 
+    There is no separate alias branch: an alias must name an anchor defined earlier
+    in the same document, and the stream reaches that anchor first, so refusing every
+    anchor refuses every alias (an alias with no anchor is a parse error, also refused).
+
     Read from events rather than the loaded data, because loading resolves all
     three: the file would look like ordinary mappings and validate.
     """
@@ -45,8 +50,6 @@ def refuse_anchors(content: bytes) -> None:
         for event in YAML(typ="safe").parse(content):
             if getattr(event, "anchor", None) is not None:
                 raise WriteRefused(f"a YAML anchor (&{event.anchor}) is not allowed")
-            if isinstance(event, AliasEvent):
-                raise WriteRefused("a YAML alias (*) is not allowed")
             is_node = isinstance(event, ScalarEvent | MappingStartEvent | SequenceStartEvent)
             if is_node and stack and stack[-1][0] is True:
                 is_key = stack[-1][1] % 2 == 0
@@ -72,9 +75,14 @@ def _safe_load(content: bytes, what: str) -> Any:
         raise WriteRefused(f"{what} is not valid YAML: {exc}") from exc
 
 
+def _step(part: str | int) -> tuple[int, int, str]:
+    """Sort key for one path step: list indexes numerically (10 after 2), then names."""
+    return (0, part, "") if isinstance(part, int) else (1, 0, part)
+
+
 def _refuse_schema(path: Path, content: bytes, validator: Draft202012Validator) -> None:
     data = plain(_safe_load(content, str(path)))
-    errors = sorted(validator.iter_errors(data), key=lambda e: [str(p) for p in e.absolute_path])
+    errors = sorted(validator.iter_errors(data), key=lambda e: [_step(p) for p in e.absolute_path])
     if errors:
         lines = [
             f"{'/'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}" for e in errors
@@ -82,16 +90,17 @@ def _refuse_schema(path: Path, content: bytes, validator: Draft202012Validator) 
         raise WriteRefused(f"{path} does not satisfy its schema:\n" + "\n".join(lines))
 
 
-def _approvals(content: bytes | None, what: str) -> dict[str, tuple[Any, ...]]:
+def _approvals(content: bytes | None, what: str) -> list[tuple[str, tuple[Any, ...]]]:
+    """`(finding id, approval tuple)` per finding, in file order, duplicates kept."""
     if content is None:
-        return {}
+        return []
     data = plain(_safe_load(content, what))
-    findings = (data or {}).get("findings") or [] if isinstance(data, dict) else []
-    return {
-        str(f.get("id")): tuple(f.get(name) for name in APPROVAL_FIELDS)
+    findings = ((data or {}).get("findings") or []) if isinstance(data, dict) else []
+    return [
+        (str(f.get("id")), tuple(f.get(name) for name in APPROVAL_FIELDS))
         for f in findings
         if isinstance(f, dict)
-    }
+    ]
 
 
 def refuse_approval_change(before: bytes | None, after: bytes) -> None:
@@ -100,10 +109,16 @@ def refuse_approval_change(before: bytes | None, after: bytes) -> None:
     Per finding id the approval is the tuple of `APPROVAL_FIELDS`, an absent key
     reading as None. The set of finding ids is compared too: a new finding is
     refused (it could arrive pre-approved), and so is a removed one (an approved
-    finding would vanish). `before` None is a file that does not exist yet.
+    finding would vanish), and so is an id that appears twice in the new content
+    (a copy of an approved finding would otherwise collapse into its original).
+    `before` None is a file that does not exist yet.
     """
-    old = _approvals(before, "the current file")
-    new = _approvals(after, "the new content")
+    new_list = _approvals(after, "the new content")
+    counts = Counter(finding_id for finding_id, _ in new_list)
+    for finding_id in sorted(i for i, n in counts.items() if n > 1):
+        raise WriteRefused(f"{finding_id}: more than one finding has this id")
+    old = dict(_approvals(before, "the current file"))
+    new = dict(new_list)
     for finding_id in sorted(set(new) - set(old)):
         raise WriteRefused(f"{finding_id}: adding a finding is not allowed here")
     for finding_id in sorted(set(old) - set(new)):

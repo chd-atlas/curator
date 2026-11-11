@@ -25,9 +25,10 @@ file in the canonical style the line it adds is the only change, and a blank lin
 or comment that followed the entry (even after a nested list or mapping) moves to
 the new last line with it.
 
-Every function returns **bytes** and writes nothing: the caller validates and
-only then writes (``write.write_literature``), so a failure anywhere leaves the
-file as it was.
+None of these writes anything. The ``with_*`` functions return the file's new
+content as **bytes** (``with_search`` also the search id and the count of new hits);
+the caller validates and only then writes (``write.write_literature``), so a failure
+anywhere leaves the file as it was.
 """
 
 from __future__ import annotations
