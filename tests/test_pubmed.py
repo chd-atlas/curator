@@ -229,7 +229,12 @@ def test_esummary_with_no_year_refuses() -> None:
 
 def test_efetch_parses_the_recorded_abstract() -> None:
     body = (FIXTURES / "efetch_8988165.xml").read_bytes()
-    title, abstract = efetch_abstracts(["8988165"], lambda url: body)["8988165"]
+    title, abstract, types = efetch_abstracts(["8988165"], lambda url: body)["8988165"]
+    assert types == (
+        "Journal Article",
+        "Research Support, Non-U.S. Gov't",
+        "Research Support, U.S. Gov't, P.H.S.",
+    )
     assert title.startswith("Mutations in human TBX5 [corrected] cause limb")
     assert abstract.startswith("Holt-Oram syndrome is characterized by upper limb")
     assert abstract.endswith("haploinsufficiency of TBX5 causes Holt-Oram syndrome.")
@@ -252,8 +257,9 @@ def test_efetch_labels_nested_markup_and_a_missing_abstract() -> None:
     assert found["1"] == (
         "T one",
         "BACKGROUND: We saw TBX5 p < 0.05.\nRESULTS: Four carriers.",
+        (),
     )
-    assert found["2"] == ("Two", "")
+    assert found["2"] == ("Two", "", ())
 
 
 def test_efetch_and_esummary_batch_long_id_lists() -> None:

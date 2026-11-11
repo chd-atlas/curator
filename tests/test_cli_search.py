@@ -425,6 +425,7 @@ def test_abstracts_prints_pending_papers_and_marks_a_missing_abstract(
     _seed_triage(root)
     many = papers("5", "6", "7", "8")
     many["7"]["abstract"] = ""
+    many["5"]["types"] = ["Journal Article", "Published Erratum"]
     _install(monkeypatch, FakePubMed(many))
 
     # Typed as the previous symbol: the approved symbol's file is the one read.
@@ -433,12 +434,33 @@ def test_abstracts_prints_pending_papers_and_marks_a_missing_abstract(
     assert result.exit_code == 0, result.stdout
     assert result.stdout.splitlines() == [
         "PMID:5 · 2005 · Title of 5",
+        "Publication types: Journal Article; Published Erratum",
         "Abstract of 5.",
         "",
         "PMID:7 · 2007 · Title of 7",
+        "Publication types: (none in PubMed)",
         "(no abstract in PubMed)",
         "",
     ]
+
+
+def test_abstracts_prints_the_recorded_papers_publication_types(
+    root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The line is read from the recorded efetch response, not from the fake's XML."""
+    _seed_triage(root)
+    recorded = (Path(__file__).parent / "fixtures" / "pubmed" / "efetch_8988165.xml").read_bytes()
+    _install(monkeypatch, lambda url: recorded if "efetch" in url else FakePubMed(papers("5"))(url))
+    path = root / "curation" / "literature" / "TBX5.yaml"
+    path.write_text(path.read_text().replace("PMID:5'", "PMID:8988165'"))
+
+    result = _run(stub_atlas, root, "abstracts", "TBX5")
+
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.splitlines()[1] == (
+        "Publication types: Journal Article; Research Support, Non-U.S. Gov't; "
+        "Research Support, U.S. Gov't, P.H.S."
+    )
 
 
 def test_abstracts_filters_by_decision(

@@ -22,7 +22,9 @@ Triage reads an abstract and applies a short rule list.
    ```
 
    The default is `--decision pending`. Add `--decision included` or `--decision excluded`
-   to reread earlier decisions.
+   to reread earlier decisions. Its `Publication types` line shows an erratum
+   (`Published Erratum`), a review (`Review`, `Systematic Review`) or a preprint
+   (`Preprint`) even when the abstract does not; the reason table decides, not the type alone.
 2. Decide each PMID from its title and abstract, then edit its entry in the YAML by hand.
    No command writes a decision. Change only `decision` and the fields below; never change
    `pmid` or `search`.

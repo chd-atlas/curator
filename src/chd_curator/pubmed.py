@@ -200,13 +200,16 @@ def _text(element: ET.Element | None) -> str:
 
 def efetch_abstracts(
     pmids: Sequence[str], fetch: Fetch, *, api_key: str | None = None
-) -> dict[str, tuple[str, str]]:
-    """`{pmid: (title, abstract)}`. A paper with no abstract gets `""`.
+) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+    """`{pmid: (title, abstract, publication types)}`. A paper with no abstract gets `""`.
+
+    The publication types are PubMed's `PublicationType` texts in document order
+    (`Published Erratum`, `Review`, ...); empty when the record lists none.
 
     A structured abstract keeps its section labels (`BACKGROUND: ...`), one per
     line. A PMID PubMed did not return is absent from the result.
     """
-    found: dict[str, tuple[str, str]] = {}
+    found: dict[str, tuple[str, str, tuple[str, ...]]] = {}
     for batch in _batches(pmids):
         url = _url(
             "efetch",
@@ -225,7 +228,13 @@ def efetch_abstracts(
                 text = " ".join(_text(node).split())
                 label = node.get("Label")
                 parts.append(f"{label}: {text}" if label else text)
-            found[pmid] = (title, "\n".join(parts))
+            types = tuple(
+                " ".join(_text(node).split())
+                for node in article.findall(
+                    "MedlineCitation/Article/PublicationTypeList/PublicationType"
+                )
+            )
+            found[pmid] = (title, "\n".join(parts), types)
     return found
 
 

@@ -57,9 +57,14 @@ class FakePubMed:
                     if paper.get("abstract")
                     else ""
                 )
+                types = "".join(
+                    f"<PublicationType>{t}</PublicationType>"
+                    for t in paper.get("types", [])  # type: ignore[attr-defined]
+                )
+                type_list = f"<PublicationTypeList>{types}</PublicationTypeList>" if types else ""
                 articles += (
                     f"<PubmedArticle><MedlineCitation><PMID>{pmid}</PMID><Article>"
-                    f"<ArticleTitle>{paper['title']}</ArticleTitle>{abstract}"
+                    f"<ArticleTitle>{paper['title']}</ArticleTitle>{abstract}{type_list}"
                     f"</Article></MedlineCitation></PubmedArticle>"
                 )
         return f"<PubmedArticleSet>{articles}</PubmedArticleSet>".encode()

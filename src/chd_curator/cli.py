@@ -143,7 +143,7 @@ def abstracts(
     root: Path = typer.Option(Path("."), help="Atlas checkout root."),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
-    """Print PMID, year, title and abstract for each triage entry with a decision."""
+    """Print PMID, year, title, publication types and abstract per triage entry with a decision."""
     _require_root(root)
     if decision not in _DECISIONS:
         raise _fail(f"--decision {decision!r} is not one of pending, included, excluded", 2)
@@ -172,8 +172,9 @@ def abstracts(
         if found is None:
             typer.echo(f"PMID:{pmid} · {year} · (PubMed returned no record for this PMID)")
         else:
-            title, abstract = found
+            title, abstract, types = found
             typer.echo(f"PMID:{pmid} · {year} · {title}")
+            typer.echo(f"Publication types: {'; '.join(types) or '(none in PubMed)'}")
             typer.echo(abstract or "(no abstract in PubMed)")
         typer.echo("")
 
