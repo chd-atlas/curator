@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 from ruamel.yaml import YAML
@@ -20,6 +21,7 @@ from typer.testing import CliRunner
 from chd_curator import cli
 from chd_curator.cli import app
 from fake_pubmed import FakePubMed, papers
+from test_skills import ATLAS_COMMANDS, skill_examples
 
 runner = CliRunner()
 # .git, .venv, local, dist, .superpowers, CLAUDE.md, .claude and superpowers are
@@ -199,3 +201,48 @@ def test_mark_verified_restores_a_removed_mark_on_the_real_tbx5_byte_for_byte(
     run = _atlas("validate", "--root", str(atlas_copy))
     assert run.returncode == 0, run.stdout + run.stderr
     assert "LIT015" not in run.stdout + run.stderr
+
+
+_VALIDATE_SCRIPT = """
+import json, sys
+from chd_atlas.models.gene_literature import Finding, TriageEntry
+data = json.load(sys.stdin)
+for record in data["findings"]:
+    Finding.model_validate(record)
+for record in data["triage"]:
+    TriageEntry.model_validate(record)
+"""
+
+
+def _through_the_atlas_models(
+    findings: list[Any], triage: list[Any]
+) -> subprocess.CompletedProcess[str]:
+    """The atlas's own interpreter validates the records; curator imports nothing of it."""
+    return subprocess.run(
+        [os.environ["CHD_ATLAS_PYTHON"], "-c", _VALIDATE_SCRIPT],
+        input=json.dumps({"findings": findings, "triage": triage}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_the_skill_examples_validate_through_the_atlas_models() -> None:
+    findings, triage = skill_examples()
+    assert findings and triage
+    good = _through_the_atlas_models(findings, triage)
+    assert good.returncode == 0, good.stdout + good.stderr
+    # Without this, a script that validated nothing would also exit 0.
+    broken = {**findings[0], "design": "case_report", "screened": 5}
+    bad = _through_the_atlas_models([broken], [])
+    assert bad.returncode != 0
+    assert "ValidationError" in bad.stderr
+
+
+def test_the_atlas_commands_the_skills_name_exist() -> None:
+    review = _atlas("literature", "review", "--help")
+    assert review.returncode == 0, review.stdout + review.stderr
+    for option in sorted(ATLAS_COMMANDS["literature review"]):
+        assert option in review.stdout, option
+    validate = _atlas("validate", "--help")
+    assert validate.returncode == 0, validate.stdout + validate.stderr
