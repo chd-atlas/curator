@@ -61,11 +61,15 @@ def bad(**changes: object) -> str:
 @pytest.mark.parametrize(
     ("stdout", "code", "expected"),
     [
-        ("error: 'NOPE' is not a known gene symbol\n", 2, "'NOPE' is not a known gene symbol"),
+        (
+            "error: 'NOPE' is not a known gene symbol\n",
+            2,
+            r"^the atlas refused 'HOS': 'NOPE' is not a known gene symbol$",
+        ),
         ("not json at all", 0, "not JSON"),
         (bad(format=2), 0, "format 2"),
-        (bad(x=1), 0, "x"),
-        (bad(published="true"), 0, "published"),
+        (bad(x=1), 0, r"unexpected keys: extra \['x'\], missing \[\]"),
+        (bad(published="true"), 0, "published is not a boolean"),
     ],
 )
 def test_an_unusable_atlas_cli_is_refused(
