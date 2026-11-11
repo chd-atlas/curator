@@ -425,3 +425,9 @@ def test_the_triage_skill_carries_each_pilot_class_ruling_the_rules_file_states(
         needle = phrase.lower()
         assert needle in rules, f"{ruling}: the rules file no longer says {phrase!r}"
         assert needle in skill, f"{ruling}: the triage skill does not say {phrase!r}"
+
+
+def test_the_triage_skill_pins_what_the_publication_types_line_shows() -> None:
+    skill = " ".join(SKILL_FILES[1].read_text().split())
+    assert "`Published Erratum`" in skill
+    assert "the reason table decides, not the type alone" in skill
