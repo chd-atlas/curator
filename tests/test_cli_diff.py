@@ -418,9 +418,9 @@ def test_diff_names_a_missing_file_a_missing_second_pass_and_a_broken_one(
 
 
 def test_the_cli_has_no_command_or_option_that_approves() -> None:
-    """curator never approves: spec section 4.5 and F9.
+    """curator never approves: section 4.5 and F9 of the atlas's feeds design spec.
 
-    Spec section 4.5: "It has no approve command and never writes ``approved_by`` or
+    That spec's section 4.5: "It has no approve command and never writes ``approved_by`` or
     ``approved_digest``." F9 keeps approval in the atlas (``chd-atlas literature review
     --approve``), because only a named person's approval makes a finding reach a page.
     The names are read from the registered typer/click objects, not from help text.

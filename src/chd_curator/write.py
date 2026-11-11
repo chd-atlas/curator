@@ -5,8 +5,8 @@ Every file curator writes goes through ``write_literature`` or
 so a refused write leaves the file's bytes as they were. Three things are refused:
 
 - content the atlas's exported JSON Schema refuses;
-- any change to an approval, because an agent must never approve (spec section 4.5,
-  F9): approval is a named human's act, done in the atlas, not here;
+- any change to an approval, because an agent must never approve (section 4.5 and F9 of the
+  atlas's feeds design spec): approval is a named human's act, done in the atlas, not here;
 - a YAML anchor, alias or merge key, which the atlas refuses (YAML002) and which
   would otherwise copy an approval onto a finding nobody approved while still
   validating: the atlas found that with a merge key.

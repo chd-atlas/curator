@@ -1,13 +1,13 @@
 """Comparing a blind second extraction against the first. Pure: no I/O.
 
 Copied from the atlas's ``gene_literature_diff.py`` at b4c8191 (``EXCLUDED_FIELDS``,
-``FindingDiff``, ``_key``, ``_values``, ``diff_findings``, the ambiguous-key rule R11)
+``FindingDiff``, ``_key``, ``_values``, ``diff_findings``, the atlas's ruling R11 on ambiguous keys)
 and reworked to run on plain dicts and the atlas's exported JSON Schema instead of the
 ``Finding`` model, which curator never imports.
 
 Two findings are the same study when they share a key, ``(publication, design, sorted
 cohorts)``. A key carried by more than one finding *within either pass* is ambiguous
-and is never paired (ruling R11): pairing it would let ``--mark-verified`` verify a
+and is never paired (the atlas's ruling R11): pairing it would let ``--mark-verified`` verify a
 finding against an arbitrarily chosen twin, so every finding carrying it is reported as
 present in one pass only and a curator reads it.
 
@@ -16,7 +16,7 @@ the schema's ``$defs.Finding.properties``, so a field added later is compared by
 default instead of being skipped without anyone noticing. Summaries and locators are
 free wording and the curator reads them; the identifier, the extraction and approval
 bookkeeping say who did what, not what the paper says. ``shares_probands_with`` is
-excluded too (ruling R26): it names finding ids, the blind pass uses ids local to its
+excluded too (the atlas's ruling R26): it names finding ids, the blind pass uses ids local to its
 own file, so a list from the first pass could never agree with anything.
 
 A property a finding omits is read as the schema's ``default`` when it has one, and as
@@ -27,7 +27,7 @@ as sets, because their order carries no meaning: ``methods``, ``variant_classes`
 compared by value. Reported values have the set-like lists sorted.
 
 The atlas keeps its own copy of the compared set in ``tests/unit/test_gene_literature_diff.py``
-and curator pins the same 17 in ``tests/test_diff.py``; the two change together (spec F18).
+and curator pins the same 17 in ``tests/test_diff.py``; the two change together (F18 of the atlas's feeds design spec).
 """
 
 from __future__ import annotations

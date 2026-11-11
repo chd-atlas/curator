@@ -4,8 +4,8 @@ Ported from the atlas's ``tests/unit/test_gene_literature_diff.py`` at b4c8191 (
 from ``Finding`` models to plain dicts checked against the atlas's real exported schema
 (``CHD_ATLAS_ROOT/schemas/gene_literature_file.schema.json``). Every pair below differs
 in exactly one thing, so a test that names the field names the only field the diff may
-report. Values within a pair are chosen to differ from every other field's (a fixture whose fields share a value cannot tell
-of the atlas's notes): screened 7 vs 9, de_novo 2 vs 3.
+report. Values within a pair are chosen to differ from every other field's, so a test
+cannot pass by comparing the wrong field with an equal value: screened 7 vs 9, de_novo 2 vs 3.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def test_the_compared_set_is_pinned(schema: dict[str, Any]) -> None:
     """The 17 fields a blind pass is compared on.
 
     The atlas pins the same 17 in ``tests/unit/test_gene_literature_diff.py``
-    (``test_the_compared_set_is_pinned``); the two change together (spec F18). A field the
+    (``test_the_compared_set_is_pinned``); the two change together (F18 of the atlas's feeds design spec). A field the
     atlas adds to ``Finding`` lands in ``compared_fields`` by default, and this test is
     where that is noticed.
     """
@@ -170,7 +170,7 @@ def test_fields_the_curator_reads_are_not_compared(schema: dict[str, Any]) -> No
 def test_a_shares_probands_with_difference_alone_leaves_the_pair_agreed(
     schema: dict[str, Any],
 ) -> None:
-    # R26: the blind pass's ids are local, so the field cannot be compared.
+    # The atlas's ruling R26: the blind pass's ids are local, so the field cannot be compared.
     diff = _pair(
         schema, {"shares_probands_with": ["CHDA:LIT:0000004"]}, {"shares_probands_with": "unknown"}
     )
