@@ -18,16 +18,16 @@ uses no judgment, so any agent or person can run it.
 
 ## Steps
 
-1. From the repository root, run the search:
+1. From the atlas checkout's root, run the search:
 
    ```bash
    chd-curator search <SYMBOL>
    ```
 
-   Pass `--run-on YYYY-MM-DD` only to record a different date. The query is built by the
-   command from a fixed template: the approved symbol and its previous symbols, the CHD
-   term block, the gene's in-scope disease names, and no preprints or reviews. Do not
-   write or edit a query.
+   Pass `--run-on YYYY-MM-DD` only to record a different date. The atlas builds the query
+   from a fixed template (the approved symbol and its previous symbols, the CHD term block,
+   the gene's in-scope disease names, and no preprints or reviews); the command asks
+   `chd-atlas literature target` for it and records it. Do not write or edit a query.
 2. Read the output line: it gives the search id, the hits and the new hits, and the path
    written to, `curation/literature/<SYMBOL>.yaml`.
 3. Check the file. Its `searches` list has one entry per run. Every PMID the search had
@@ -58,6 +58,7 @@ uses no judgment, so any agent or person can run it.
 - Never edit `searches` or any `pmid` or `search` value by hand.
 - Never run this for a gene outside the publication gate: the command refuses it with
   exit 2.
-- If the command exits 1 (PubMed failed, or the literature file is damaged), it wrote
-  nothing. Report the error; do not
-  retry in a loop.
+- If the command exits 1 (PubMed or the network failed, or the existing file could not be
+  read) or 2 (a bad argument, the atlas refused the symbol, or the write was refused: the
+  schema, a YAML anchor or alias, an approval, or the file changed while the search ran),
+  it wrote nothing. The error line says which. Report it; do not retry in a loop.

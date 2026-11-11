@@ -7,10 +7,13 @@ what the atlas accepts. These tests run the atlas's own ``literature target`` an
 
 from __future__ import annotations
 
+import csv
 import json
 import os
+import re
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +50,17 @@ def atlas_copy(tmp_path: Path) -> Path:
     return copy
 
 
+def _registry_targets(root: Path) -> Iterator[tuple[str, dict[str, Any]]]:
+    """`(symbol, the real target's answer)` for each gene of ``mirrors/genes.tsv``, in file
+    order, asking the atlas lazily so a caller stops at the first gene it wants."""
+    with (root / "mirrors" / "genes.tsv").open(newline="", encoding="utf-8") as handle:
+        symbols = [row["symbol"] for row in csv.DictReader(handle, delimiter="\t")]
+    for symbol in symbols:
+        run = _atlas("literature", "target", symbol, "--root", str(root))
+        assert run.returncode == 0, run.stdout + run.stderr
+        yield symbol, json.loads(run.stdout)
+
+
 def _validate(root: Path) -> None:
     run = _atlas("validate", "--root", str(root))
     assert run.returncode == 0, run.stdout + run.stderr
@@ -65,14 +79,12 @@ def test_a_search_on_a_copy_of_the_atlas_validates(
     atlas_copy: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     chosen = None
-    for symbol in ("GATA4", "NKX2-5", "GATA6"):
-        run = _atlas("literature", "target", symbol, "--root", str(atlas_copy))
-        answer = json.loads(run.stdout) if run.returncode == 0 else {}
-        file = atlas_copy / "curation" / "literature" / f"{answer.get('symbol', symbol)}.yaml"
-        if answer.get("published") is True and not file.exists():
+    for symbol, answer in _registry_targets(atlas_copy):
+        file = atlas_copy / "curation" / "literature" / f"{answer['symbol']}.yaml"
+        if answer["published"] is True and not file.exists():
             chosen = (symbol, answer, file)
             break
-    assert chosen is not None, "none of GATA4, NKX2-5, GATA6 is published without a literature file"
+    assert chosen is not None, "no registered gene is published without a literature file"
     symbol, answer, file = chosen
     monkeypatch.setattr(cli, "_fetch", FakePubMed(papers("9", "25", "100")))
     monkeypatch.delenv("NCBI_API_KEY", raising=False)
@@ -97,6 +109,43 @@ def test_a_search_on_a_copy_of_the_atlas_validates(
     assert written["searches"][0]["query"] == answer["query"]
     assert [t["pmid"] for t in written["triage"]] == ["PMID:9", "PMID:25", "PMID:100"]
     _validate(atlas_copy)
+
+
+def test_a_search_on_a_registered_gene_outside_the_gate_is_refused_before_pubmed(
+    atlas_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real registry holds genes the atlas does not publish (BRCA1 is not one of them:
+    it is not registered), so the gate is asked of the real atlas, not a stub."""
+    unpublished = next(
+        ((s, a) for s, a in _registry_targets(atlas_copy) if a["published"] is False), None
+    )
+    assert unpublished is not None, "every registered gene is published, so the gate is untested"
+    symbol, answer = unpublished
+    literature = atlas_copy / "curation" / "literature"
+    files_before = sorted(p.name for p in literature.iterdir())
+    fake = FakePubMed(papers("9"))
+    monkeypatch.setattr(cli, "_fetch", fake)
+    monkeypatch.delenv("NCBI_API_KEY", raising=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "search",
+            symbol,
+            "--root",
+            str(atlas_copy),
+            "--atlas-cli",
+            os.environ["CHD_ATLAS_CLI"],
+        ],
+    )
+
+    assert result.exit_code == 2, result.stdout
+    assert result.stdout == (
+        f"error: {answer['symbol']} ({answer['gene']}) is outside the publication gate; "
+        "its literature would reach no page\n"
+    )
+    assert fake.urls == []
+    assert sorted(p.name for p in literature.iterdir()) == files_before
 
 
 def test_add_publication_on_a_copy_of_the_atlas_validates(
@@ -162,9 +211,8 @@ def test_mark_verified_restores_a_removed_mark_on_the_real_tbx5_byte_for_byte(
 
     One approved finding loses its ``verified_by`` line; the unchanged findings are fed back
     as a blind pass; ``diff --mark-verified`` restores exactly that line. The pass holds
-    only the findings that carried a verified_by originally: the others (8 of 73 when
-    measured) agree with themselves too, and marking them would add lines the original
-    does not have.
+    only the findings that carried a verified_by originally: the others (those with none)
+    agree with themselves too, and marking them would add lines the original does not have.
     """
     path = atlas_copy / "curation" / "literature" / "TBX5.yaml"
     original = path.read_text()
@@ -239,10 +287,22 @@ def test_the_skill_examples_validate_through_the_atlas_models() -> None:
     assert "ValidationError" in bad.stderr
 
 
+def _names_option(text: str, option: str) -> bool:
+    """Whether ``text`` names the whole option, not a prefix of a longer one."""
+    return re.search(rf"(?<![\w-]){re.escape(option)}(?![\w-])", text) is not None
+
+
+def test_an_option_name_is_matched_whole() -> None:
+    assert _names_option("  --on TEXT  Date.\n", "--on") is True
+    assert _names_option("  --only TEXT\n  --not-on X\n  x--on\n", "--on") is False
+
+
 def test_the_atlas_commands_the_skills_name_exist() -> None:
     review = _atlas("literature", "review", "--help")
     assert review.returncode == 0, review.stdout + review.stderr
     for option in sorted(ATLAS_COMMANDS["literature review"]):
-        assert option in review.stdout, option
+        assert _names_option(review.stdout, option), option
+    target = _atlas("literature", "target", "--help")
+    assert target.returncode == 0, target.stdout + target.stderr
     validate = _atlas("validate", "--help")
     assert validate.returncode == 0, validate.stdout + validate.stderr

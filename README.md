@@ -14,20 +14,27 @@ uv tool install git+https://github.com/chd-atlas/curator@v0.1.0
 Then, in Claude Code:
 
 ```text
+/plugin install curator --marketplace chd-atlas/curator
+```
+
+Claude Code's documentation gives 2.1.275 as the first version with `--marketplace` (not
+measured here). On an older version, add the marketplace first:
+
+```text
 /plugin marketplace add chd-atlas/curator
 /plugin install curator@curator
 ```
-
-The one-step form, with `--marketplace`, needs Claude Code 2.1.275 or later.
 
 ## Run
 
 Run from the root of an atlas checkout. `search`, `abstracts` and `diff` ask the atlas about the
 gene by running its CLI, `<root>/.venv/bin/chd-atlas` unless `--atlas-cli` or `CHD_ATLAS_CLI` names
-another; `add-publication` does not, and reads the atlas's exported schemas. curator never imports
-the atlas. The skills read the atlas checkout's `curator/curator-rules.md`. Their hand-off commands,
-`.venv/bin/chd-atlas validate` and `.venv/bin/chd-atlas literature review <SYMBOL>`, assume the
-atlas checkout's own `.venv`; adapt them if your atlas executable is elsewhere.
+another; `add-publication` does not. `search`, `add-publication` and `diff` read the JSON Schemas
+the atlas exports into `<root>/schemas/`, and every file curator writes is checked against them
+first. curator never imports the atlas. The skills read the atlas checkout's
+`curator/curator-rules.md`. Their hand-off commands, `.venv/bin/chd-atlas validate` and
+`.venv/bin/chd-atlas literature review <SYMBOL>`, assume the atlas checkout's own `.venv`; adapt
+them if your atlas executable is elsewhere.
 
 For one published gene:
 

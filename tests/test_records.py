@@ -288,7 +288,7 @@ def test_mark_verified_adds_only_its_line_whatever_separates_the_findings(
         old, new = old_blocks[finding_id], new_blocks[finding_id]
         assert new.count("    verified_by: agent:verify/blind\n") == 1
         assert new.replace("    verified_by: agent:verify/blind\n", "") == old
-        # directly after extracted_by unless a hand-ordered key follows it
+        # always directly after extracted_by, whatever key follows it
         assert "    extracted_by: agent:extract/test\n    verified_by: agent:verify/blind\n" in new
 
 
@@ -309,24 +309,24 @@ def test_with_verified_keeps_an_existing_key_in_place_and_refuses_what_it_cannot
 
 def test_re_marking_the_real_tbx5_file_restores_it_byte_for_byte() -> None:
     """The atlas's own TBX5 file: delete each `verified_by` that sits directly after
-    `extracted_by` (52 of its 73 findings, measured 2026-11-11), re-mark those findings,
-    and the file comes back unchanged."""
+    `extracted_by`, re-mark those findings with the verifier each carried, and the file
+    comes back unchanged."""
     path = literature_path(Path(os.environ["CHD_ATLAS_ROOT"]), "TBX5")
     raw = path.read_text()
     lines = raw.split("\n")
     kept: list[str] = []
-    ids: list[str] = []
+    ids_by_verifier: dict[str, list[str]] = {}
     current = ""
     for i, line in enumerate(lines):
         mark = re.match(r"  - id: (\S+)", line)
         if mark:
             current = mark.group(1)
         if line.startswith("    verified_by:") and lines[i - 1].startswith("    extracted_by:"):
-            ids.append(current)
+            ids_by_verifier.setdefault(line.removeprefix("    verified_by: "), []).append(current)
             continue
         kept.append(line)
-    verifiers = {line for line in lines if line.startswith("    verified_by: ")}
-    assert len(ids) == 52 and len(verifiers) == 1
-    verifier = verifiers.pop().removeprefix("    verified_by: ")
-    restored = with_verified("\n".join(kept).encode(), ids, verifier)
+    assert ids_by_verifier, "no verified_by follows an extracted_by, so nothing was tested"
+    restored = "\n".join(kept).encode()
+    for verifier, ids in sorted(ids_by_verifier.items()):
+        restored = with_verified(restored, ids, verifier)
     assert restored == raw.encode()

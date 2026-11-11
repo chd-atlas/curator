@@ -77,8 +77,8 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
    stays out of `publications.json` while findings cite it and none is approved
    (a record no finding cites publishes), so say in your hand-off which `study_type` you chose and why: the curator checks it and
    `own_lab` (the default `false`; never guess it) in the `review` listing. Exit 1 means
-   the PMID is already in `curation/publications.yaml` (nothing to add), PubMed could
-   not be reached, or the file does not validate; the error says which.
+   the PMID is already in `curation/publications.yaml` (nothing to add), PubMed failed or
+   has no record of it, or the file is missing; exit 2, a bad argument or a schema refusal; the error says which.
 10. Run `.venv/bin/chd-atlas validate` and fix every error it names.
 
 An illustrative finding (every value is made up), in the layout the tooling writes

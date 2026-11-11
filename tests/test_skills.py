@@ -53,6 +53,7 @@ def _rules() -> Path:
 # `tests/test_contract.py` runs the atlas's real --help against it.
 ATLAS_COMMANDS: dict[str, set[str]] = {
     "validate": set(),
+    "literature target": set(),
     "literature review": {
         "--approve",
         "--by",
@@ -237,6 +238,7 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS
     named: set[str] = set()
+    assert {*SKILL_FILES, README, _rules()} == set(_all_files())  # the rules file is read too
     for path in _all_files():
         text = _text(path)
         for line in _command_lines(text, "chd-curator "):
@@ -257,8 +259,9 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
 
 def test_every_atlas_command_the_files_name_is_pinned() -> None:
     named: set[str] = set()
-    # The rules file is the atlas's; it still names the atlas's own `literature search`
-    # until the atlas's Task 9 rewrites it, so only curator's files are pinned here.
+    # The rules file is the atlas's and names `chd-atlas literature search` (line 26 when
+    # measured), which is not in ATLAS_COMMANDS, so only curator's files are pinned here.
+    # `test_every_curator_command_and_option_the_files_name_exists` reads the rules file too.
     for path in CURATOR_FILES:
         for line in _command_lines(_text(path), "chd-atlas "):
             for form in re.finditer(r"chd-atlas (?:literature )?([a-z][a-z-]*)", line):
@@ -372,7 +375,12 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
     assert "--mark-verified agent:literature-verify/<model>" in verify
     assert "curation/.id_registry.yaml" in extract
     assert "agent:literature-extract/<model>" in extract
-    # R26: the verifier writes `unknown`; the curator reads the field in the listing.
+    # A refused write exits 2 (not 1), and the skills must not say otherwise.
+    search = _text(REPO / "skills" / "literature-search" / "SKILL.md")
+    assert "or the file changed while the search ran)" in search
+    assert "exit 2, a bad argument or a schema refusal" in extract
+    assert "the file is damaged" not in search and "does not validate" not in extract
+    # The verifier writes `unknown`; the curator reads the field in the listing.
     assert "always set `shares_probands_with: unknown`" in verify
     assert "field in the `review` listing" in extract
     for path in _all_files():
