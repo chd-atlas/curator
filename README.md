@@ -8,7 +8,7 @@ An agent never approves: a named person does, with `chd-atlas literature review`
 ## Install
 
 ```bash
-uv tool install git+https://github.com/chd-atlas/curator@v0.1.0
+uv tool install git+https://github.com/chd-atlas/curator@v0.0.1
 ```
 
 Then, in Claude Code:
