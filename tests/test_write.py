@@ -262,10 +262,10 @@ def test_publications_are_checked_and_written_through_the_same_path(
         (good.replace("title: T", "title: &t T"), f"{path}: a YAML anchor (&t) is not allowed"),
     ]:
         with pytest.raises(WriteRefused, match=re.escape(message)):
-            write_publications(path, refused.encode(), publication_schema)
+            write_publications(path, refused.encode(), publication_schema, expected=good.encode())
         assert _digest(path) == before
     longer = good + good.replace("PMID:1", "PMID:2").split("\n", 1)[1]
-    write_publications(path, longer.encode(), publication_schema)
+    write_publications(path, longer.encode(), publication_schema, expected=good.encode())
     assert path.read_bytes() == longer.encode()
 
 

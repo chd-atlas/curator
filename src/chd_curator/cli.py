@@ -220,16 +220,15 @@ def add_publication(
         raise _fail(f"{path} does not exist", 1)
     key = _api_key()
     try:
+        existing = path.read_bytes()
         found = pubmed.esummary([digits], _fetch, api_key=key).get(digits)
         if found is None:
             raise PubMedError(f"PubMed returned no record for PMID:{digits}")
-        content = with_publication(
-            path.read_bytes(), pubmed.publication_record(found, study_type), reading
-        )
+        content = with_publication(existing, pubmed.publication_record(found, study_type), reading)
     except (PubMedError, urllib.error.URLError, RecordError, OSError) as exc:
         raise _fail(_redact(str(exc), key), 1) from None
     try:
-        write_publications(path, content, validator)
+        write_publications(path, content, validator, expected=existing)
     except WriteRefused as exc:
         raise _fail(str(exc), 2) from None
     typer.echo(f"added PMID:{digits} to {path}")

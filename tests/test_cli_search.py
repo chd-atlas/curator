@@ -533,6 +533,29 @@ def test_add_publication_without_a_reading_is_refused_by_the_command_line(
     assert path.read_bytes() == before
 
 
+def test_add_publication_does_not_overwrite_a_file_edited_during_the_pubmed_call(
+    root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = root / "curation" / "publications.yaml"
+    fake = FakePubMed(papers("333"))
+
+    def edit_during_the_request(url: str) -> bytes:
+        with path.open("ab") as handle:
+            handle.write(b"# a curator's edit, made meanwhile\n")
+        return fake(url)
+
+    _install(monkeypatch, edit_during_the_request)
+    edited = PUBLICATIONS.encode() + b"# a curator's edit, made meanwhile\n"
+
+    result = _run(
+        stub_atlas, root, "add-publication", "333", "--study-type", "gwas", "--reading", "r"
+    )
+
+    assert result.exit_code == 2, result.stdout
+    assert result.stdout.startswith(f"error: {path}: the file changed since it was read")
+    assert path.read_bytes() == edited
+
+
 def test_a_malformed_esummary_exits_1_and_leaves_publications_untouched(
     root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
