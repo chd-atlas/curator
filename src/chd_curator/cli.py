@@ -8,7 +8,8 @@ written through ``write.py``, which checks the bytes against the atlas's exporte
 Schema first.
 
 Exit codes: 2 for bad arguments, an atlas that refused or could not be asked, a gene
-outside the publication gate, or a write the write path refused; 1 for PubMed
+outside the publication gate, or a write the write path refused (a schema, an
+anchor, an approval, or a file that changed since it was read); 1 for PubMed
 failing, the network, or a file that cannot be read.
 """
 
@@ -39,7 +40,12 @@ from chd_curator.records import (
     with_search,
     with_verified,
 )
-from chd_curator.write import WriteRefused, write_literature, write_publications
+from chd_curator.write import (
+    WriteRefused,
+    schema_error_lines,
+    write_literature,
+    write_publications,
+)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="CHD atlas curator tools.")
 
@@ -86,7 +92,7 @@ def search(
     run_on: str = typer.Option(
         "", "--run-on", help="Date of the search, YYYY-MM-DD (default today)."
     ),
-    root: Path = typer.Option(Path("."), help="Repository root."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
     """Run the recorded PubMed search for a published gene into its literature file."""
@@ -122,7 +128,7 @@ def search(
         raise _fail(_redact(str(exc), key), 1) from None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        write_literature(path, content, validator)
+        write_literature(path, content, validator, expected=existing)
     except WriteRefused as exc:
         raise _fail(str(exc), 2) from None
     typer.echo(
@@ -134,7 +140,7 @@ def search(
 def abstracts(
     symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
     decision: str = typer.Option("pending", help="pending, included or excluded."),
-    root: Path = typer.Option(Path("."), help="Repository root."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
     """Print PMID, year, title and abstract for each triage entry with a decision."""
@@ -193,7 +199,7 @@ def add_publication(
         "--reading",
         help="Why that design: what the paper says. Written as a comment beside the record.",
     ),
-    root: Path = typer.Option(Path("."), help="Repository root."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
 ) -> None:
     """Append a publication record, built from PubMed, to curation/publications.yaml."""
     _require_root(root)
@@ -244,7 +250,7 @@ def diff(
         "--mark-verified",
         help="agent:<skill>/<model>; set verified_by on every agreeing, unverified finding.",
     ),
-    root: Path = typer.Option(Path("."), help="Repository root."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
     """Compare a blind second extraction with the curated findings; exits 0 on differences."""
@@ -267,13 +273,14 @@ def diff(
     try:
         raw = path.read_bytes()
         curated = plain(YAML(typ="safe").load(raw))
-        broken = sorted(validator.iter_errors(curated), key=lambda e: list(map(str, e.path)))
+        broken = schema_error_lines(curated, validator)
         if broken:
-            raise DiffError(f"{path} does not satisfy its schema: {broken[0].message}")
+            raise DiffError(f"{path} does not satisfy its schema:\n" + "\n".join(broken))
         first: list[dict[str, Any]] = list(curated.get("findings") or [])
         second = parse_findings_file(against.read_bytes(), schema)
         result = diff_findings(first, second, schema)
-    except (DiffError, YAMLError, OSError) as exc:
+    # ruamel raises a bare ValueError, not a YAMLError, for a date such as 2026-02-30.
+    except (DiffError, YAMLError, ValueError, OSError) as exc:
         raise _fail(str(exc), 1) from None
 
     typer.echo(f"agreed ({len(result.agreed)}): {_ids(result.agreed)}")
@@ -293,7 +300,9 @@ def diff(
     marked = [i for i in result.agreed if i in unverified]
     if marked:
         try:
-            write_literature(path, with_verified(raw, marked, mark_verified), validator)
+            write_literature(
+                path, with_verified(raw, marked, mark_verified), validator, expected=raw
+            )
         except RecordError as exc:
             raise _fail(str(exc), 1) from None
         except WriteRefused as exc:

@@ -51,6 +51,12 @@ def target(root: Path, symbol: str, atlas_cli: Path) -> Target:
             timeout=_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as exc:
+        # The OS raises this for a missing file and also for an existing script whose
+        # shebang interpreter is missing; only the first is "does not exist".
+        if atlas_cli.exists():
+            raise AtlasError(
+                f"the atlas CLI {atlas_cli} exists but could not be run: {exc}"
+            ) from exc
         raise AtlasError(
             f"the atlas CLI {atlas_cli} does not exist; set CHD_ATLAS_CLI or pass --atlas-cli"
         ) from exc

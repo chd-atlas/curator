@@ -330,6 +330,79 @@ def test_a_write_the_schema_refuses_exits_2_and_leaves_the_file(
     assert path.read_bytes() == before
 
 
+ANCHORED_SEARCHES = {
+    "anchor": "gene: HGNC:11604\nsearches:\n"
+    "  - {id: 1, source: pubmed, query: &s q, run_on: 2026-11-02, hits: 0, new_hits: 0}\n",
+    "anchor and alias": "gene: HGNC:11604\nsearches:\n"
+    "  - {id: 1, source: pubmed, query: &s q, run_on: 2026-11-02, hits: 0, new_hits: 0}\n"
+    "  - {id: 2, source: pubmed, query: *s, run_on: 2026-11-03, hits: 0, new_hits: 0}\n",
+}
+
+
+@pytest.mark.parametrize("text", ANCHORED_SEARCHES.values(), ids=ANCHORED_SEARCHES)
+def test_a_search_over_a_file_with_an_anchor_names_the_file_and_changes_nothing(
+    root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    """The refusal comes from the write path, after the search: PubMed was asked (this
+    test asserts that, so a refusal moved ahead of the network would have to change it)."""
+    path = root / "curation" / "literature" / "TBX5.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(text)
+    before = path.read_bytes()
+    fake = FakePubMed(papers("9"))
+    _install(monkeypatch, fake)
+
+    result = _search(stub_atlas, root, "TBX5")
+
+    assert result.exit_code == 2, result.stdout
+    assert result.stdout == f"error: {path}: a YAML anchor (&s) is not allowed\n"
+    assert fake.urls != []
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_a_search_does_not_overwrite_a_file_edited_during_the_pubmed_calls(
+    root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    path = root / "curation" / "literature" / "TBX5.yaml"
+    if existing:
+        _install(monkeypatch, FakePubMed(papers("9")))
+        assert _search(stub_atlas, root, "TBX5").exit_code == 0
+    else:
+        path.parent.mkdir(parents=True)
+    fake = FakePubMed(papers("9", "25"))
+
+    def edit_during_the_search(url: str) -> bytes:
+        with path.open("ab") as handle:
+            handle.write(b"# a curator's edit, made meanwhile\n")
+        return fake(url)
+
+    _install(monkeypatch, edit_during_the_search)
+    start = path.read_bytes() if existing else b""
+
+    result = _search(stub_atlas, root, "TBX5")
+
+    assert result.exit_code == 2, result.stdout
+    assert result.stdout.startswith(f"error: {path}: the file changed since it was read")
+    assert path.read_bytes().startswith(start)
+    assert path.read_bytes().endswith(b"# a curator's edit, made meanwhile\n")
+    assert b"PMID:25" not in path.read_bytes()
+
+
+def test_search_checks_the_exported_schema_before_asking_pubmed(
+    tmp_path: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakePubMed(papers("9"))
+    _install(monkeypatch, fake)
+
+    result = _search(stub_atlas, tmp_path, "TBX5")  # a root with no schemas/
+
+    assert result.exit_code == 2
+    assert "cannot read the atlas's exported schema" in result.stdout
+    assert fake.urls == []
+    assert not (tmp_path / "curation").exists()
+
+
 def _seed_triage(root: Path) -> Path:
     path = root / "curation" / "literature" / "TBX5.yaml"
     path.parent.mkdir(parents=True)

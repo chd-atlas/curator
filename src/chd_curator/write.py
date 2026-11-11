@@ -2,14 +2,18 @@
 
 Every file curator writes goes through ``write_literature`` or
 ``write_publications``. Each checks first and writes only if every check passes,
-so a refused write leaves the file's bytes as they were. Three things are refused:
+so a refused write leaves the file's bytes as they were. These are refused:
 
 - content the atlas's exported JSON Schema refuses;
-- any change to an approval, because an agent must never approve (section 4.5 and F9 of the
-  atlas's feeds design spec): approval is a named human's act, done in the atlas, not here;
+- any change to an approval, a finding added or removed, or a finding id repeated,
+  because an agent must never approve: approval is a named person's act, done in the
+  atlas (``chd-atlas literature review --approve``), not here;
 - a YAML anchor, alias or merge key, which the atlas refuses (YAML002) and which
   would otherwise copy an approval onto a finding nobody approved while still
-  validating: the atlas found that with a merge key.
+  validating: the atlas found that with a merge key;
+- (``write_literature`` only) a file whose bytes are no longer the ones the caller built
+  its content from, so a stale read cannot overwrite an edit made meanwhile. The check
+  and the replace are two steps, not one, so an edit landing between them is not caught.
 """
 
 from __future__ import annotations
@@ -84,13 +88,19 @@ def _step(part: str | int) -> tuple[int, int, str]:
     return (0, part, "") if isinstance(part, int) else (1, 0, part)
 
 
-def _refuse_schema(path: Path, content: bytes, validator: Draft202012Validator) -> None:
-    data = plain(_safe_load(content, str(path)))
+def schema_error_lines(data: Any, validator: Draft202012Validator) -> list[str]:
+    """Every schema error as ``path: message``, in path order (list indexes numerically).
+
+    The one ordering and format for every schema refusal curator prints. jsonschema
+    yields the root error last, so the sort is what puts ``<root>`` first.
+    """
     errors = sorted(validator.iter_errors(data), key=lambda e: [_step(p) for p in e.absolute_path])
-    if errors:
-        lines = [
-            f"{'/'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}" for e in errors
-        ]
+    return [f"{'/'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}" for e in errors]
+
+
+def _refuse_schema(path: Path, content: bytes, validator: Draft202012Validator) -> None:
+    lines = schema_error_lines(plain(_safe_load(content, str(path))), validator)
+    if lines:
         raise WriteRefused(f"{path} does not satisfy its schema:\n" + "\n".join(lines))
 
 
@@ -133,10 +143,27 @@ def refuse_approval_change(before: bytes | None, after: bytes) -> None:
                 raise WriteRefused(f"{finding_id}: {name} may not change ({was!r} -> {now!r})")
 
 
-def write_literature(path: Path, content: bytes, validator: Draft202012Validator) -> None:
-    """Write a gene's literature file, or raise `WriteRefused` and leave it as it was."""
+def _refuse_constructs(path: Path, content: bytes) -> None:
+    try:
+        refuse_anchors(content)
+    except WriteRefused as exc:
+        raise WriteRefused(f"{path}: {exc}") from exc
+
+
+def write_literature(
+    path: Path, content: bytes, validator: Draft202012Validator, *, expected: bytes | None
+) -> None:
+    """Write a gene's literature file, or raise `WriteRefused` and leave it as it was.
+
+    `expected` is the file's bytes as the caller read them and built `content` from
+    (None: the file did not exist). If the file now holds anything else, the write is
+    refused, so a read made before a slow PubMed call cannot overwrite an edit made
+    during it.
+    """
     before = path.read_bytes() if path.exists() else None
-    refuse_anchors(content)
+    if before != expected:
+        raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
+    _refuse_constructs(path, content)
     _refuse_schema(path, content, validator)
     refuse_approval_change(before, content)
     write_bytes_atomically(path, content)
@@ -144,6 +171,6 @@ def write_literature(path: Path, content: bytes, validator: Draft202012Validator
 
 def write_publications(path: Path, content: bytes, validator: Draft202012Validator) -> None:
     """Write ``publications.yaml``, or raise `WriteRefused` and leave it as it was."""
-    refuse_anchors(content)
+    _refuse_constructs(path, content)
     _refuse_schema(path, content, validator)
     write_bytes_atomically(path, content)

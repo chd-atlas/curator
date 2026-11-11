@@ -20,6 +20,7 @@ import typer
 from typer.core import TyperGroup
 from typer.testing import CliRunner, Result
 
+from chd_curator import cli
 from chd_curator.cli import app
 
 runner = CliRunner()
@@ -417,13 +418,117 @@ def test_diff_names_a_missing_file_a_missing_second_pass_and_a_broken_one(
     assert duplicate.exit_code == 1 and "duplicate" in duplicate.stdout
 
 
-def test_the_cli_has_no_command_or_option_that_approves() -> None:
-    """curator never approves: section 4.5 and F9 of the atlas's feeds design spec.
+def test_diff_reads_the_approved_symbols_file_for_a_previous_symbol(
+    stub_atlas: Path, root: Path, lit_path: Path
+) -> None:
+    # "HOS" is TBX5's retired name; there is no HOS.yaml and the diff must not look for one.
+    result = _diff(stub_atlas, root, _second(root), symbol="HOS")
 
-    That spec's section 4.5: "It has no approve command and never writes ``approved_by`` or
-    ``approved_digest``." F9 keeps approval in the atlas (``chd-atlas literature review
-    --approve``), because only a named person's approval makes a finding reach a page.
-    The names are read from the registered typer/click objects, not from help text.
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.startswith(
+        "agreed (3): CHDA:LIT:0000001, CHDA:LIT:0000002, CHDA:LIT:0000003\n"
+    )
+
+
+def test_diff_refuses_a_curated_file_the_schema_refuses_and_reports_every_error_in_order(
+    stub_atlas: Path, root: Path, lit_path: Path
+) -> None:
+    """Both errors are the curated file's: the blind pass is valid. Without the check
+    the diff would run to the end (nothing else reads the triage decision or the gene)."""
+    lit_path.write_text(
+        LITERATURE.replace("gene: HGNC:11604\n", "").replace(
+            "    decision: included\n", "    decision: maybe\n"
+        )
+    )
+    before = lit_path.read_bytes()
+
+    result = _diff(stub_atlas, root, _second(root))
+
+    assert result.exit_code == 1, result.stdout
+    head, *lines = result.stdout.splitlines()
+    assert head == f"error: {lit_path} does not satisfy its schema:"
+    assert [line.split(":")[0] for line in lines] == ["<root>", "triage/0/decision"]
+    assert lines[0] == "<root>: 'gene' is a required property"
+    assert lit_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("which", ["curated", "blind"])
+def test_an_impossible_yaml_date_is_an_error_line_not_a_traceback(
+    stub_atlas: Path, root: Path, lit_path: Path, which: str
+) -> None:
+    """ruamel raises a bare ValueError for a date it cannot build; the date is written
+    in the YAML text, as a hand edit would leave it."""
+    second = _second(root)
+    if which == "curated":
+        lit_path.write_text(
+            LITERATURE.replace("approved_on: 2026-10-01", "approved_on: 2026-02-30")
+        )
+    else:
+        second = _second(
+            root,
+            VERIFIER.replace("extracted_by: agent:verify/blind", "extracted_on: 2026-02-30", 1),
+        )
+    before = lit_path.read_bytes()
+
+    result = _diff(stub_atlas, root, second, "--mark-verified", "agent:verify/blind")
+
+    assert result.exit_code == 1, result.stdout
+    assert isinstance(result.exception, SystemExit)  # typer.Exit, not an uncaught ValueError
+    assert result.stdout == "error: day is out of range for month\n"
+    assert lit_path.read_bytes() == before
+
+
+ANCHORED = {
+    "anchor": LITERATURE.replace("query: TBX5[tiab]", "query: &s TBX5[tiab]", 1),
+    "anchor and alias": LITERATURE.replace("query: TBX5[tiab]", "query: &s TBX5[tiab]", 1).replace(
+        "triage:\n",
+        "  - id: 2\n    source: pubmed\n    query: *s\n    run_on: 2026-11-03\n"
+        "    hits: 3\n    new_hits: 0\ntriage:\n",
+        1,
+    ),
+}
+
+
+@pytest.mark.parametrize("text", ANCHORED.values(), ids=ANCHORED)
+def test_mark_verified_over_a_file_with_an_anchor_names_the_file_and_changes_nothing(
+    stub_atlas: Path, root: Path, lit_path: Path, text: str
+) -> None:
+    lit_path.write_text(text)
+    before = lit_path.read_bytes()
+
+    result = _diff(stub_atlas, root, _second(root), "--mark-verified", "agent:verify/blind")
+
+    assert result.exit_code == 2, result.stdout
+    assert result.stdout.endswith(f"error: {lit_path}: a YAML anchor (&s) is not allowed\n")
+    assert lit_path.read_bytes() == before
+
+
+def test_mark_verified_does_not_overwrite_an_edit_made_since_it_read_the_file(
+    stub_atlas: Path, root: Path, lit_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = cli.with_verified
+
+    def edit_then_build(existing: bytes, ids: list[str], verifier: str) -> bytes:
+        lit_path.write_bytes(existing + b"# a curator's edit, made meanwhile\n")
+        return real(existing, ids, verifier)
+
+    monkeypatch.setattr(cli, "with_verified", edit_then_build)
+
+    result = _diff(stub_atlas, root, _second(root), "--mark-verified", "agent:verify/blind")
+
+    assert result.exit_code == 2, result.stdout
+    assert result.stdout.endswith(
+        f"error: {lit_path}: the file changed since it was read; nothing was written\n"
+    )
+    assert lit_path.read_bytes() == LITERATURE.encode() + b"# a curator's edit, made meanwhile\n"
+
+
+def test_the_cli_has_no_command_or_option_that_approves() -> None:
+    """curator never approves: approval is a named person's act, done in the atlas
+    (``chd-atlas literature review --approve``), because only a named person's approval makes
+    a finding reach a page. So curator has no approve command and never writes
+    ``approved_by`` or ``approved_digest``. The names are read from the registered typer/click
+    objects, not from help text.
     """
     group = typer.main.get_command(app)
     assert isinstance(group, TyperGroup)

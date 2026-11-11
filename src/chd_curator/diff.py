@@ -1,13 +1,13 @@
 """Comparing a blind second extraction against the first. Pure: no I/O.
 
 Copied from the atlas's ``gene_literature_diff.py`` at b4c8191 (``EXCLUDED_FIELDS``,
-``FindingDiff``, ``_key``, ``_values``, ``diff_findings``, the atlas's ruling R11 on ambiguous keys)
+``FindingDiff``, ``_key``, ``_values``, ``diff_findings``, and its handling of ambiguous keys)
 and reworked to run on plain dicts and the atlas's exported JSON Schema instead of the
 ``Finding`` model, which curator never imports.
 
 Two findings are the same study when they share a key, ``(publication, design, sorted
 cohorts)``. A key carried by more than one finding *within either pass* is ambiguous
-and is never paired (the atlas's ruling R11): pairing it would let ``--mark-verified`` verify a
+and is never paired: pairing it would let ``--mark-verified`` verify a
 finding against an arbitrarily chosen twin, so every finding carrying it is reported as
 present in one pass only and a curator reads it.
 
@@ -16,8 +16,8 @@ the schema's ``$defs.Finding.properties``, so a field added later is compared by
 default instead of being skipped without anyone noticing. Summaries and locators are
 free wording and the curator reads them; the identifier, the extraction and approval
 bookkeeping say who did what, not what the paper says. ``shares_probands_with`` is
-excluded too (the atlas's ruling R26): it names finding ids, the blind pass uses ids local to its
-own file, so a list from the first pass could never agree with anything.
+excluded too: it names finding ids, the blind pass uses ids local to its own file, so a
+list from the first pass could never agree with anything.
 
 A property a finding omits is read as the schema's ``default`` when it has one, and as
 ``[]`` when it is an array property with none (``cohorts``, ``variant_classes``: the
@@ -27,8 +27,7 @@ as sets, because their order carries no meaning: ``methods``, ``variant_classes`
 compared by value. Reported values have the set-like lists sorted.
 
 The atlas keeps its own copy of the compared set in ``tests/unit/test_gene_literature_diff.py``
-and curator pins the same 17 in ``tests/test_diff.py``; the two change together
-(F18 of the atlas's feeds design spec).
+and curator pins the same 17 in ``tests/test_diff.py``; the two change together.
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from chd_curator.atlas import plain
-from chd_curator.write import WriteRefused, refuse_anchors
+from chd_curator.write import WriteRefused, refuse_anchors, schema_error_lines
 
 EXCLUDED_FIELDS: Final = (
     "id",
@@ -101,7 +100,8 @@ def parse_findings_file(raw: bytes, literature_schema: Mapping[str, Any]) -> lis
     try:
         refuse_anchors(raw)
         data = plain(YAML(typ="safe").load(raw))
-    except (WriteRefused, YAMLError) as exc:
+    # ruamel raises a bare ValueError, not a YAMLError, for a date such as 2026-02-30.
+    except (WriteRefused, YAMLError, ValueError) as exc:
         raise DiffError(str(exc)) from exc
     wrapper = {
         "type": "object",
@@ -113,11 +113,8 @@ def parse_findings_file(raw: bytes, literature_schema: Mapping[str, Any]) -> lis
         "$defs": literature_schema["$defs"],
     }
     validator = Draft202012Validator(wrapper, format_checker=Draft202012Validator.FORMAT_CHECKER)
-    errors = sorted(validator.iter_errors(data), key=lambda e: [str(p) for p in e.absolute_path])
-    if errors:
-        lines = [
-            f"{'/'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}" for e in errors
-        ]
+    lines = schema_error_lines(data, validator)
+    if lines:
         raise DiffError(
             "the findings file does not satisfy the Finding schema:\n" + "\n".join(lines)
         )

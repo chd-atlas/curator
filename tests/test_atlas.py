@@ -70,6 +70,12 @@ def bad(**changes: object) -> str:
         (bad(format=2), 0, "format 2"),
         (bad(x=1), 0, r"unexpected keys: extra \['x'\], missing \[\]"),
         (bad(published="true"), 0, "published is not a boolean"),
+        # json.dumps writes these as 1.0 and true; both equal 1 in Python.
+        (bad(format=1.0), 0, r"answered format 1\.0;"),
+        (bad(format=True), 0, "answered format True;"),
+        (bad(gene=11604), 0, "gene is not a string: 11604"),
+        (bad(symbol=None), 0, "symbol is not a string: None"),
+        (bad(query=["q"]), 0, r"query is not a string: \['q'\]"),
     ],
 )
 def test_an_unusable_atlas_cli_is_refused(
@@ -86,6 +92,20 @@ def test_a_missing_atlas_cli_names_the_path_and_the_variable(tmp_path: Path) -> 
         target(tmp_path, "HOS", missing)
     assert str(missing) in str(info.value)
     assert "CHD_ATLAS_CLI" in str(info.value)
+
+
+def test_an_existing_cli_that_cannot_run_is_not_called_missing(tmp_path: Path) -> None:
+    """A script whose shebang interpreter is absent raises FileNotFoundError for the
+    script itself, which says nothing about the script being there."""
+    stub = tmp_path / "chd-atlas"
+    stub.write_text(f"#!{tmp_path}/no-such-interpreter\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    with pytest.raises(AtlasError) as info:
+        target(tmp_path, "HOS", stub)
+    message = str(info.value)
+    assert message.startswith(f"the atlas CLI {stub} exists but could not be run: ")
+    assert "No such file or directory" in message  # the OS error is passed on
+    assert "does not exist" not in message
 
 
 def test_a_missing_exported_schema_is_refused(tmp_path: Path) -> None:

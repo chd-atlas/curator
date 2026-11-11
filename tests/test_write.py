@@ -108,7 +108,7 @@ def test_a_write_that_would_change_an_approval_is_refused(
 ) -> None:
     before = _digest(lit)
     with pytest.raises(WriteRefused, match=message):
-        write_literature(lit, after.encode(), literature_schema)
+        write_literature(lit, after.encode(), literature_schema, expected=BEFORE.encode())
     assert _digest(lit) == before
     assert list(tmp for tmp in lit.parent.iterdir()) == [lit]  # no stray temporary
 
@@ -120,7 +120,7 @@ def test_a_write_that_leaves_every_approval_alone_lands(
         "    extracted_by: agent:extract/test\n",
         "    extracted_by: agent:extract/test\n    verified_by: agent:v\n",
     )
-    write_literature(lit, after.encode(), literature_schema)
+    write_literature(lit, after.encode(), literature_schema, expected=BEFORE.encode())
     assert lit.read_bytes() == after.encode()
     assert APPROVAL_FIELDS == ("approved_by", "approved_on", "approved_digest")
 
@@ -129,11 +129,13 @@ def test_a_new_file_with_no_findings_is_written_and_one_with_a_finding_is_not(
     tmp_path: Path, literature_schema: Draft202012Validator
 ) -> None:
     fresh = tmp_path / "new.yaml"
-    write_literature(fresh, HEADER.replace("findings:\n", "").encode(), literature_schema)
+    write_literature(
+        fresh, HEADER.replace("findings:\n", "").encode(), literature_schema, expected=None
+    )
     assert fresh.read_bytes() == HEADER.replace("findings:\n", "").encode()
     other = tmp_path / "other.yaml"
     with pytest.raises(WriteRefused, match="CHDA:LIT:0000001.*adding a finding"):
-        write_literature(other, (HEADER + _finding(1)).encode(), literature_schema)
+        write_literature(other, (HEADER + _finding(1)).encode(), literature_schema, expected=None)
     assert not other.exists()
 
 
@@ -180,8 +182,9 @@ def test_the_one_write_path_refuses_anchors_aliases_and_merge_keys(
     assert list(literature_schema.iter_errors(plain(YAML(typ="safe").load(after)))) == []
     refuse_approval_change(BEFORE.encode(), after.encode())
     before = _digest(lit)
-    with pytest.raises(WriteRefused, match=re.escape(message)):
-        write_literature(lit, after.encode(), literature_schema)
+    with pytest.raises(WriteRefused) as raised:
+        write_literature(lit, after.encode(), literature_schema, expected=BEFORE.encode())
+    assert str(raised.value) == f"{lit}: {message}"  # the file first, then the construct
     assert _digest(lit) == before
 
 
@@ -193,8 +196,9 @@ def test_an_alias_with_no_anchor_is_refused_as_an_alias(
     # approval check could have refused it first.
     after = BEFORE.replace("methods:\n      - exome", "methods: *m", 1)
     before = _digest(lit)
-    with pytest.raises(WriteRefused, match=re.escape("a YAML alias (*m) is not allowed")):
-        write_literature(lit, after.encode(), literature_schema)
+    with pytest.raises(WriteRefused) as raised:
+        write_literature(lit, after.encode(), literature_schema, expected=BEFORE.encode())
+    assert str(raised.value) == f"{lit}: a YAML alias (*m) is not allowed"
     assert _digest(lit) == before
 
 
@@ -238,7 +242,7 @@ def test_a_write_the_schema_refuses_is_never_made(
 ) -> None:
     before = _digest(lit)
     with pytest.raises(WriteRefused, match=message) as raised:
-        write_literature(lit, edit(BEFORE).encode(), literature_schema)
+        write_literature(lit, edit(BEFORE).encode(), literature_schema, expected=BEFORE.encode())
     assert str(lit) in str(raised.value)  # the message names the file
     assert _digest(lit) == before
 
@@ -255,9 +259,9 @@ def test_publications_are_checked_and_written_through_the_same_path(
     before = _digest(path)
     for refused, message in [
         (good.replace("gwas", "not_a_type"), "study_type"),
-        (good.replace("title: T", "title: &t T"), "anchor"),
+        (good.replace("title: T", "title: &t T"), f"{path}: a YAML anchor (&t) is not allowed"),
     ]:
-        with pytest.raises(WriteRefused, match=message):
+        with pytest.raises(WriteRefused, match=re.escape(message)):
             write_publications(path, refused.encode(), publication_schema)
         assert _digest(path) == before
     longer = good + good.replace("PMID:1", "PMID:2").split("\n", 1)[1]
@@ -280,7 +284,7 @@ def test_every_schema_error_is_reported_in_path_order_with_the_file_named(
     )
     before = _digest(lit)
     with pytest.raises(WriteRefused) as raised:
-        write_literature(lit, after.encode(), literature_schema)
+        write_literature(lit, after.encode(), literature_schema, expected=BEFORE.encode())
     head, *lines = str(raised.value).split("\n")
     assert head == f"{lit} does not satisfy its schema:"
     assert [line.split(":")[0] for line in lines] == [
@@ -290,3 +294,37 @@ def test_every_schema_error_is_reported_in_path_order_with_the_file_named(
     ]
     assert lines[0] == "<root>: 'gene' is a required property"
     assert _digest(lit) == before
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [None, b"gene: something else\n", BEFORE.encode() + b"# edited meanwhile\n"],
+    ids=["file-existed-after-all", "different-bytes", "bytes-plus-an-edit"],
+)
+def test_a_file_that_is_not_the_bytes_the_caller_read_is_never_overwritten(
+    lit: Path, literature_schema: Draft202012Validator, expected: bytes | None
+) -> None:
+    """The content below is otherwise writable, so the stale read is the only fault."""
+    after = BEFORE.replace(
+        "    extracted_by: agent:extract/test\n",
+        "    extracted_by: agent:extract/test\n    verified_by: agent:v\n",
+    )
+    before = _digest(lit)
+    with pytest.raises(WriteRefused) as raised:
+        write_literature(lit, after.encode(), literature_schema, expected=expected)
+    assert str(raised.value) == f"{lit}: the file changed since it was read; nothing was written"
+    assert _digest(lit) == before
+    assert list(lit.parent.iterdir()) == [lit]
+
+
+def test_a_file_that_appeared_after_the_caller_found_none_is_not_overwritten(
+    tmp_path: Path, literature_schema: Draft202012Validator
+) -> None:
+    path = tmp_path / "TBX5.yaml"
+    path.write_text("# a curator created this meanwhile\n")
+    before = _digest(path)
+    with pytest.raises(WriteRefused, match="the file changed since it was read"):
+        write_literature(
+            path, HEADER.replace("findings:\n", "").encode(), literature_schema, expected=None
+        )
+    assert _digest(path) == before

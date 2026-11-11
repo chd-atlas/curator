@@ -67,8 +67,7 @@ def test_the_compared_set_is_pinned(schema: dict[str, Any]) -> None:
     """The 17 fields a blind pass is compared on.
 
     The atlas pins the same 17 in ``tests/unit/test_gene_literature_diff.py``
-    (``test_the_compared_set_is_pinned``); the two change together
-    (F18 of the atlas's feeds design spec). A field the
+    (``test_the_compared_set_is_pinned``); the two change together. A field the
     atlas adds to ``Finding`` lands in ``compared_fields`` by default, and this test is
     where that is noticed.
     """
@@ -171,7 +170,7 @@ def test_fields_the_curator_reads_are_not_compared(schema: dict[str, Any]) -> No
 def test_a_shares_probands_with_difference_alone_leaves_the_pair_agreed(
     schema: dict[str, Any],
 ) -> None:
-    # The atlas's ruling R26: the blind pass's ids are local, so the field cannot be compared.
+    # The blind pass's ids are local to its file, so this field cannot be compared.
     diff = _pair(
         schema, {"shares_probands_with": ["CHDA:LIT:0000004"]}, {"shares_probands_with": "unknown"}
     )
@@ -335,3 +334,14 @@ def test_an_impossible_date_in_a_findings_file_is_refused(schema: dict[str, Any]
     bad = _finding(approved_by="Dr. A", approved_on="2026-13-45")
     with pytest.raises(DiffError, match="approved_on"):
         parse_findings_file(_file(bad), schema)
+
+
+def test_a_yaml_date_ruamel_cannot_build_is_a_diff_error_not_a_value_error(
+    schema: dict[str, Any],
+) -> None:
+    """Written in the YAML text (a JSON string would load as text and reach the schema
+    check instead): ruamel raises a bare ValueError there, which is not a YAMLError."""
+    raw = b"findings:\n  - id: CHDA:LIT:0000001\n    approved_on: 2026-02-30\n"
+    with pytest.raises(DiffError) as err:
+        parse_findings_file(raw, schema)
+    assert str(err.value) == "day is out of range for month"
