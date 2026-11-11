@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -151,16 +152,20 @@ def test_refuse_approval_change_compares_every_field_with_absent_as_none() -> No
 
 
 ANCHOR_CASES = {
-    "anchor": (BEFORE.replace("design: cohort_screen", "design: &d cohort_screen", 1), "anchor"),
-    "alias": (
+    "anchor defined and never used": (
+        BEFORE.replace("design: cohort_screen", "design: &d cohort_screen", 1),
+        "a YAML anchor (&d) is not allowed",
+    ),
+    # The stream reaches the anchor before its alias, so this one is refused as an anchor.
+    "anchor and its alias": (
         BEFORE.replace("methods:\n      - exome", "methods: &m\n      - exome", 1).replace(
             "methods:\n      - exome", "methods: *m", 1
         ),
-        "anchor",
+        "a YAML anchor (&m) is not allowed",
     ),
     "merge key": (
         BEFORE.replace("    syndromic: both\n", "    <<: {syndromic: both}\n", 1),
-        "merge",
+        "a YAML merge key (<<) is not allowed",
     ),
 }
 
@@ -172,20 +177,32 @@ def test_the_one_write_path_refuses_anchors_aliases_and_merge_keys(
     # The file already holds these findings with these approvals, and the loaded
     # content validates and changes no approval: the construct is the only fault.
     assert after != BEFORE
-
     assert list(literature_schema.iter_errors(plain(YAML(typ="safe").load(after)))) == []
     refuse_approval_change(BEFORE.encode(), after.encode())
     before = _digest(lit)
-    with pytest.raises(WriteRefused, match=message):
+    with pytest.raises(WriteRefused, match=re.escape(message)):
+        write_literature(lit, after.encode(), literature_schema)
+    assert _digest(lit) == before
+
+
+def test_an_alias_with_no_anchor_is_refused_as_an_alias(
+    lit: Path, literature_schema: Draft202012Validator
+) -> None:
+    # ruamel's parser accepts `*m` with no `&m` (it yields an AliasEvent), so only the
+    # alias check can name it; the content cannot even be loaded, so no schema or
+    # approval check could have refused it first.
+    after = BEFORE.replace("methods:\n      - exome", "methods: *m", 1)
+    before = _digest(lit)
+    with pytest.raises(WriteRefused, match=re.escape("a YAML alias (*m) is not allowed")):
         write_literature(lit, after.encode(), literature_schema)
     assert _digest(lit) == before
 
 
 def test_refuse_anchors_names_the_construct_and_lets_plain_data_through() -> None:
-    # An alias needs an anchor earlier in the stream, so one anchor branch refuses both;
-    # there is no separate alias branch to pin.
-    with pytest.raises(WriteRefused, match=r"anchor \(&a\)"):
-        refuse_anchors(b"a: &a 1\nb: *a\n")
+    with pytest.raises(WriteRefused, match=re.escape("a YAML anchor (&a) is not allowed")):
+        refuse_anchors(b"a: &a 1\nb: *a\n")  # the anchor comes first in the stream
+    with pytest.raises(WriteRefused, match=re.escape("a YAML alias (*a) is not allowed")):
+        refuse_anchors(b"x: *a\n")
     with pytest.raises(WriteRefused, match="merge key"):
         refuse_anchors(b"a: {x: 1}\nb:\n  <<: {y: 2}\n")
     with pytest.raises(WriteRefused, match="merge key"):  # quoted or not, a key named << goes

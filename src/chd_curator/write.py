@@ -21,7 +21,7 @@ from typing import Any, Final
 from jsonschema import Draft202012Validator
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
-from ruamel.yaml.events import MappingStartEvent, ScalarEvent, SequenceStartEvent
+from ruamel.yaml.events import AliasEvent, MappingStartEvent, ScalarEvent, SequenceStartEvent
 
 from chd_curator.atlas import plain
 from chd_curator.fs import write_bytes_atomically
@@ -36,9 +36,11 @@ class WriteRefused(Exception):
 def refuse_anchors(content: bytes) -> None:
     """Refuse any anchor, alias or ``<<`` merge key, from ruamel's event stream.
 
-    There is no separate alias branch: an alias must name an anchor defined earlier
-    in the same document, and the stream reaches that anchor first, so refusing every
-    anchor refuses every alias (an alias with no anchor is a parse error, also refused).
+    An alias is its own event (``AliasEvent``) whose ``.anchor`` is the name it
+    refers to, so it is checked first and refused as an alias. Measured with ruamel's
+    safe parser: ``*a`` with no ``&a`` still parses, as an ``AliasEvent``. In a document
+    that defines ``&a`` and then uses ``*a``, the stream reaches the anchor first, so
+    that document is refused as an anchor.
 
     Read from events rather than the loaded data, because loading resolves all
     three: the file would look like ordinary mappings and validate.
@@ -48,6 +50,8 @@ def refuse_anchors(content: bytes) -> None:
     stack: list[list[Any]] = []
     try:
         for event in YAML(typ="safe").parse(content):
+            if isinstance(event, AliasEvent):
+                raise WriteRefused(f"a YAML alias (*{event.anchor}) is not allowed")
             if getattr(event, "anchor", None) is not None:
                 raise WriteRefused(f"a YAML anchor (&{event.anchor}) is not allowed")
             is_node = isinstance(event, ScalarEvent | MappingStartEvent | SequenceStartEvent)
