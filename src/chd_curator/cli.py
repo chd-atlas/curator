@@ -1,6 +1,6 @@
 """The ``chd-curator`` command line.
 
-``search``, ``abstracts`` and ``add-publication`` are the atlas's ``chd-atlas
+``search``, ``abstracts``, ``add-publication`` and ``diff`` are the atlas's ``chd-atlas
 literature`` commands of the same names, copied from its ``cli.py`` at b4c8191. What
 changed: the gene is resolved and the publication gate asked by running
 ``chd-atlas literature target`` (never by importing the atlas), and every file is
@@ -14,17 +14,22 @@ failing, the network, or a file that cannot be read.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import urllib.error
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import typer
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from chd_curator import pubmed
-from chd_curator.atlas import AtlasError, default_atlas_cli, schema_validator, target
+from chd_curator.atlas import AtlasError, default_atlas_cli, plain, schema_validator, target
+from chd_curator.diff import DiffError, diff_findings, parse_findings_file
 from chd_curator.pubmed import Fetch, PubMedError, urllib_fetch
 from chd_curator.records import (
     RecordError,
@@ -32,6 +37,7 @@ from chd_curator.records import (
     load_round_trip,
     with_publication,
     with_search,
+    with_verified,
 )
 from chd_curator.write import WriteRefused, write_literature, write_publications
 
@@ -221,3 +227,75 @@ def add_publication(
     except WriteRefused as exc:
         raise _fail(str(exc), 2) from None
     typer.echo(f"added PMID:{digits} to {path}")
+
+
+def _ids(values: Sequence[str]) -> str:
+    return ", ".join(values) or "none"
+
+
+@app.command("diff")
+def diff(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    against: Path = typer.Option(
+        ..., "--against", help="The blind second pass: a YAML file with a top-level `findings:`."
+    ),
+    mark_verified: str | None = typer.Option(
+        None,
+        "--mark-verified",
+        help="agent:<skill>/<model>; set verified_by on every agreeing, unverified finding.",
+    ),
+    root: Path = typer.Option(Path("."), help="Repository root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Compare a blind second extraction with the curated findings; exits 0 on differences."""
+    _require_root(root)
+    if mark_verified is not None and not (
+        mark_verified.startswith("agent:") and mark_verified.removeprefix("agent:").strip()
+    ):
+        raise _fail("--mark-verified names the verifier agent as 'agent:<skill>/<model>'", 2)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        validator = schema_validator(root, "gene_literature_file")
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    path = literature_path(root, approved)
+    if not path.is_file():
+        raise _fail(f"{path} does not exist", 2)
+    if not against.is_file():
+        raise _fail(f"--against {against} is not a file", 2)
+    schema: Any = validator.schema
+    try:
+        raw = path.read_bytes()
+        curated = plain(YAML(typ="safe").load(raw))
+        broken = sorted(validator.iter_errors(curated), key=lambda e: list(map(str, e.path)))
+        if broken:
+            raise DiffError(f"{path} does not satisfy its schema: {broken[0].message}")
+        first: list[dict[str, Any]] = list(curated.get("findings") or [])
+        second = parse_findings_file(against.read_bytes(), schema)
+        result = diff_findings(first, second, schema)
+    except (DiffError, YAMLError, OSError) as exc:
+        raise _fail(str(exc), 1) from None
+
+    typer.echo(f"agreed ({len(result.agreed)}): {_ids(result.agreed)}")
+    typer.echo(f"only in the first pass ({len(result.only_first)}): {_ids(result.only_first)}")
+    typer.echo(f"only in the second pass ({len(result.only_second)}): {_ids(result.only_second)}")
+    typer.echo(f"differ ({len(result.fields)}):")
+    for finding_id, changes in result.fields.items():
+        typer.echo(f"  {finding_id}")
+        for name, mine, theirs in changes:
+            typer.echo(
+                f"    {name}: first {json.dumps(mine, sort_keys=True)}"
+                f" | second {json.dumps(theirs, sort_keys=True)}"
+            )
+    if mark_verified is None:
+        return
+    unverified = {str(f["id"]) for f in first if f.get("verified_by") is None}
+    marked = [i for i in result.agreed if i in unverified]
+    if marked:
+        try:
+            write_literature(path, with_verified(raw, marked, mark_verified), validator)
+        except RecordError as exc:
+            raise _fail(str(exc), 1) from None
+        except WriteRefused as exc:
+            raise _fail(str(exc), 2) from None
+    typer.echo(f"marked verified ({len(marked)}): {_ids(marked)}")

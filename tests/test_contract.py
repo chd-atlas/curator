@@ -124,3 +124,78 @@ def test_add_publication_on_a_copy_of_the_atlas_validates(
     ids = [p["id"] for p in YAML(typ="safe").load(path.read_text())["publications"]]
     assert ids[-1] == "PMID:9"
     _validate(atlas_copy)
+
+
+def _tbx5_target(text: str) -> tuple[int, str, str]:
+    """`(line index, finding id, verifier)` of an approved, verified, unambiguous finding
+    whose ``verified_by`` line directly follows ``extracted_by``."""
+    data = YAML(typ="safe").load(text)
+    keys = [
+        (f["publication"], f["design"], tuple(sorted(f.get("cohorts") or [])))
+        for f in data["findings"]
+    ]
+    unique = {
+        f["id"]
+        for f, k in zip(data["findings"], keys, strict=True)
+        if keys.count(k) == 1 and f.get("approved_by") and f.get("verified_by")
+    }
+    lines = text.splitlines(keepends=True)
+    current = ""
+    for index, line in enumerate(lines):
+        if line.startswith("  - id: "):
+            current = line.removeprefix("  - id: ").strip()
+        if (
+            current in unique
+            and line.startswith("    extracted_by: ")
+            and lines[index + 1].startswith("    verified_by: ")
+        ):
+            return index + 1, current, lines[index + 1].removeprefix("    verified_by: ").strip()
+    raise AssertionError("no approved, unambiguous finding has verified_by after extracted_by")
+
+
+def test_mark_verified_restores_a_removed_mark_on_the_real_tbx5_byte_for_byte(
+    atlas_copy: Path,
+) -> None:
+    """The phase's acceptance point: curator's one fact-writing field round-trips the real file.
+
+    One approved finding loses its ``verified_by`` line; the unchanged findings are fed back
+    as a blind pass; ``diff --mark-verified`` restores exactly that line. The pass holds
+    only the findings that carried a verified_by originally: the others (8 of 73 when
+    measured) agree with themselves too, and marking them would add lines the original
+    does not have.
+    """
+    path = atlas_copy / "curation" / "literature" / "TBX5.yaml"
+    original = path.read_text()
+    index, finding_id, verifier = _tbx5_target(original)
+    lines = original.splitlines(keepends=True)
+    del lines[index]
+    path.write_text("".join(lines))
+    assert path.read_text() != original
+
+    findings = [f for f in YAML(typ="safe").load(original)["findings"] if f.get("verified_by")]
+    second = atlas_copy / "second-pass.yaml"
+    with second.open("w") as handle:
+        YAML(typ="safe").dump({"findings": findings}, handle)
+
+    result = runner.invoke(
+        app,
+        [
+            "diff",
+            "TBX5",
+            "--against",
+            str(second),
+            "--mark-verified",
+            verifier,
+            "--root",
+            str(atlas_copy),
+            "--atlas-cli",
+            os.environ["CHD_ATLAS_CLI"],
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert f"marked verified (1): {finding_id}\n" in result.stdout
+    assert path.read_text() == original
+    run = _atlas("validate", "--root", str(atlas_copy))
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "LIT015" not in run.stdout + run.stderr
