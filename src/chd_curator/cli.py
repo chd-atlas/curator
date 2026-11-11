@@ -143,7 +143,7 @@ def abstracts(
     root: Path = typer.Option(Path("."), help="Atlas checkout root."),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
-    """Print PMID, year, title and abstract for each triage entry with a decision."""
+    """Print PMID, year, title, publication types and abstract per triage entry with a decision."""
     _require_root(root)
     if decision not in _DECISIONS:
         raise _fail(f"--decision {decision!r} is not one of pending, included, excluded", 2)
@@ -172,8 +172,9 @@ def abstracts(
         if found is None:
             typer.echo(f"PMID:{pmid} · {year} · (PubMed returned no record for this PMID)")
         else:
-            title, abstract = found
+            title, abstract, types = found
             typer.echo(f"PMID:{pmid} · {year} · {title}")
+            typer.echo(f"Publication types: {'; '.join(types) or '(none in PubMed)'}")
             typer.echo(abstract or "(no abstract in PubMed)")
         typer.echo("")
 
@@ -220,16 +221,15 @@ def add_publication(
         raise _fail(f"{path} does not exist", 1)
     key = _api_key()
     try:
+        existing = path.read_bytes()
         found = pubmed.esummary([digits], _fetch, api_key=key).get(digits)
         if found is None:
             raise PubMedError(f"PubMed returned no record for PMID:{digits}")
-        content = with_publication(
-            path.read_bytes(), pubmed.publication_record(found, study_type), reading
-        )
+        content = with_publication(existing, pubmed.publication_record(found, study_type), reading)
     except (PubMedError, urllib.error.URLError, RecordError, OSError) as exc:
         raise _fail(_redact(str(exc), key), 1) from None
     try:
-        write_publications(path, content, validator)
+        write_publications(path, content, validator, expected=existing)
     except WriteRefused as exc:
         raise _fail(str(exc), 2) from None
     typer.echo(f"added PMID:{digits} to {path}")

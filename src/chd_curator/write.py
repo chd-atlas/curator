@@ -11,7 +11,7 @@ so a refused write leaves the file's bytes as they were. These are refused:
 - a YAML anchor, alias or merge key, which the atlas refuses (YAML002) and which
   would otherwise copy an approval onto a finding nobody approved while still
   validating: the atlas found that with a merge key;
-- (``write_literature`` only) a file whose bytes are no longer the ones the caller built
+- a file whose bytes are no longer the ones the caller built
   its content from, so a stale read cannot overwrite an edit made meanwhile. The check
   and the replace are two steps, not one, so an edit landing between them is not caught.
 """
@@ -169,8 +169,17 @@ def write_literature(
     write_bytes_atomically(path, content)
 
 
-def write_publications(path: Path, content: bytes, validator: Draft202012Validator) -> None:
-    """Write ``publications.yaml``, or raise `WriteRefused` and leave it as it was."""
+def write_publications(
+    path: Path, content: bytes, validator: Draft202012Validator, *, expected: bytes | None
+) -> None:
+    """Write ``publications.yaml``, or raise `WriteRefused` and leave it as it was.
+
+    `expected` is the file's bytes as the caller read them and built `content` from
+    (None: the file did not exist), with the same meaning as for `write_literature`.
+    """
+    before = path.read_bytes() if path.exists() else None
+    if before != expected:
+        raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
     _refuse_constructs(path, content)
     _refuse_schema(path, content, validator)
     write_bytes_atomically(path, content)

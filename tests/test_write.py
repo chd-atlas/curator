@@ -262,10 +262,10 @@ def test_publications_are_checked_and_written_through_the_same_path(
         (good.replace("title: T", "title: &t T"), f"{path}: a YAML anchor (&t) is not allowed"),
     ]:
         with pytest.raises(WriteRefused, match=re.escape(message)):
-            write_publications(path, refused.encode(), publication_schema)
+            write_publications(path, refused.encode(), publication_schema, expected=good.encode())
         assert _digest(path) == before
     longer = good + good.replace("PMID:1", "PMID:2").split("\n", 1)[1]
-    write_publications(path, longer.encode(), publication_schema)
+    write_publications(path, longer.encode(), publication_schema, expected=good.encode())
     assert path.read_bytes() == longer.encode()
 
 
@@ -328,3 +328,18 @@ def test_a_file_that_appeared_after_the_caller_found_none_is_not_overwritten(
             path, HEADER.replace("findings:\n", "").encode(), literature_schema, expected=None
         )
     assert _digest(path) == before
+
+
+@pytest.mark.parametrize(
+    "expected", [b"publications: []\n", None], ids=["differs", "none-but-exists"]
+)
+def test_write_publications_refuses_a_file_that_is_not_the_one_read(
+    tmp_path: Path, publication_schema: Draft202012Validator, expected: bytes | None
+) -> None:
+    path = tmp_path / "publications.yaml"
+    path.write_text("publications:\n  - id: PMID:1\n")
+    before = path.read_bytes()
+    with pytest.raises(WriteRefused) as raised:
+        write_publications(path, b"publications: []\n", publication_schema, expected=expected)
+    assert str(raised.value) == f"{path}: the file changed since it was read; nothing was written"
+    assert path.read_bytes() == before
