@@ -4,8 +4,8 @@ Ported from the atlas's ``tests/unit/test_pubmed.py`` at b4c8191.
 
 No test here reaches the network. `tests/fixtures/pubmed/` holds three
 responses copied byte-identical from the atlas at b4c8191, where they were recorded
-from the live E-utilities on 2026-11-02 (one call each); everything else is a fake `Fetch` that returns
-bytes built in the test.
+from the live E-utilities on 2026-11-02 (one call each); everything else is a fake
+`Fetch` that returns bytes built in the test.
 """
 
 from __future__ import annotations

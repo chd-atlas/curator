@@ -19,8 +19,8 @@ them. The `PMID:` prefix the atlas uses is added by the callers.
 
 **The API key is passed in, never read here**, and it is never part of an error
 message: `urllib_fetch` builds its messages from the HTTP status, not the URL.
-No `email` parameter is sent, so no contact address can reach a request; the one identifying parameter is
-`tool=chd-curator`.
+No `email` parameter is sent, so no contact address can reach a request; the one
+identifying parameter is `tool=chd-curator`.
 """
 
 from __future__ import annotations
