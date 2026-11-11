@@ -1,0 +1,18 @@
+# Virtual environment and the atlas checkout CI places beside the code
+.venv/
+atlas/
+
+# Caches and build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local agent notes, never committed
+CLAUDE.md
+AGENTS.md
+.claude/
