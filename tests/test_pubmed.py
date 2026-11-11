@@ -3,8 +3,8 @@
 Ported from the atlas's ``tests/unit/test_pubmed.py`` at b4c8191.
 
 No test here reaches the network. `tests/fixtures/pubmed/` holds three
-responses recorded from the live E-utilities on 2026-11-02 (one call each; the
-commit body names the URLs); everything else is a fake `Fetch` that returns
+responses copied byte-identical from the atlas at b4c8191, where they were recorded
+from the live E-utilities on 2026-11-02 (one call each); everything else is a fake `Fetch` that returns
 bytes built in the test.
 """
 
@@ -86,7 +86,7 @@ def test_a_count_that_changes_between_pages_refuses() -> None:
 
 
 def test_a_count_past_the_esearch_ceiling_refuses_rather_than_truncating() -> None:
-    """Measured 2026-11-02: retstart 9999 is refused by NCBI ("can only retrieve the
+    """Measured in the atlas, 2026-11-02: retstart 9999 is refused by NCBI ("can only retrieve the
     first 9,999 records"). A silently truncated search would publish a coverage line
     over a subset of the hits, so the first page is enough to refuse."""
     pages = _Pages([str(n) for n in range(1, 501)], counts=[10000])

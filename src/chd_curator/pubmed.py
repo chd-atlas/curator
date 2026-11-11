@@ -19,7 +19,7 @@ them. The `PMID:` prefix the atlas uses is added by the callers.
 
 **The API key is passed in, never read here**, and it is never part of an error
 message: `urllib_fetch` builds its messages from the HTTP status, not the URL.
-No `email` parameter is sent (ruling R9); the one identifying parameter is
+No `email` parameter is sent, so no contact address can reach a request; the one identifying parameter is
 `tool=chd-curator`.
 """
 
@@ -45,7 +45,7 @@ PAGE_SIZE: Final = 500
 BATCH_SIZE: Final = 200
 TIMEOUT_SECONDS: Final = 30.0
 
-# Measured 2026-11-02 against the live service: esearch with `retstart=9999`
+# Measured in the atlas, 2026-11-02, against the live service: esearch with `retstart=9999`
 # answers "'retstart' cannot be larger than 9998. For PubMed, ESearch can only
 # retrieve the first 9,999 records matching the query", while `retstart=9998`
 # returns the 9,999th record. Past this count a search cannot be paged without
