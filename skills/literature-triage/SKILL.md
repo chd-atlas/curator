@@ -29,15 +29,16 @@ Triage reads an abstract and applies a short rule list.
    No command writes a decision. Change only `decision` and the fields below; never change
    `pmid` or `search`.
 3. Include when the paper reports human genetic evidence on this gene in CHD. When unsure,
-   include. Exclude only for a reason the abstract shows:
+   include. A negative result is included when it is a CHD cohort screened for the gene with no
+   carrier (its finding is a `cohort_screen` with every carrier count 0). Exclude only for a reason the abstract shows:
 
    | reason | use when the abstract shows |
    |---|---|
    | `not_peer_reviewed` | a preprint, thesis, a conference or meeting abstract, or other unreviewed item |
-   | `review_article` | a review or commentary with no new data |
-   | `not_human_genetics` | animal, cell or protein work with no human genetic finding; or DNA methylation or RNA expression measured in human samples with no variant in the gene reported (a paper that also reports a variant in the gene is included) |
-   | `no_finding_in_gene` | the gene named only as background, or nothing reported about a variant in it; a gene among a study's reported results is a finding: include |
-   | `not_chd` | no congenital heart phenotype |
+   | `review_article` | a review or commentary with no new data; a review whose only new analysis is of a trait that is not a congenital heart lesion |
+   | `not_human_genetics` | animal, cell or protein work with no human genetic finding; or DNA methylation or RNA expression measured in human samples with no variant in the gene reported (a paper that also reports a variant in the gene is included); cell, protein or in-silico work on variants that reports no carrier of its own, even when the variants came from patients in earlier papers |
+   | `no_finding_in_gene` | the gene named only as background, or nothing reported about a variant in it; a gene among a study's reported results is a finding: include; a single patient or family in whom the gene was tested and ruled out, the cause lying elsewhere (a CHD cohort screened with no carrier is included, not this) |
+   | `not_chd` | no congenital heart phenotype; a trait that is not a congenital heart lesion (atrial fibrillation alone, adult heart structure, myocardial infarction) |
    | `same_data_as` | the same patients and the same result reported again (add `same_as`); a paper with new results on the same patients is included, and its finding names the other in `shares_probands_with` |
    | `other` | none of the above (add `note` saying why); an erratum or corrigendum is excluded here with `note: erratum to PMID:<the corrected paper>` |
 

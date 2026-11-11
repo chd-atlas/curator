@@ -387,3 +387,41 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
         text = _text(path)
         assert not re.search(r"NCBI_API_KEY\s*=\s*\S", text), path.name
         assert not re.search(r"api_key\s*[=:]\s*\S", text), path.name
+
+
+# Each pilot class ruling's key phrases (literal). Both the atlas's rules file and the triage
+# skill must carry every one, whitespace-normalised, so neither can be reworded alone.
+CLASS_RULINGS = {
+    "negative screen included": [
+        "a CHD cohort screened for the gene with no carrier",
+        "`cohort_screen` with every carrier count 0",
+    ],
+    "single patient ruled out": [
+        "a single patient or family in whom the gene was tested and ruled out, "
+        "the cause lying elsewhere",
+        "`no_finding_in_gene`",
+    ],
+    "cell, protein or in-silico work": [
+        "Cell, protein or in-silico work on variants that reports no carrier of its own",
+        "even when the variants came from patients in earlier papers",
+        "`not_human_genetics`",
+    ],
+    "non-CHD trait": [
+        "a trait that is not a congenital heart lesion",
+        "(atrial fibrillation alone, adult heart structure, myocardial infarction)",
+        "`not_chd`",
+        "a review whose only new analysis is of",
+    ],
+}
+
+
+@pytest.mark.parametrize("ruling", list(CLASS_RULINGS))
+def test_the_triage_skill_carries_each_pilot_class_ruling_the_rules_file_states(
+    ruling: str,
+) -> None:
+    rules = " ".join(_rules().read_text().split()).lower()
+    skill = " ".join((SKILL_FILES[1]).read_text().split()).lower()
+    for phrase in CLASS_RULINGS[ruling]:
+        needle = phrase.lower()
+        assert needle in rules, f"{ruling}: the rules file no longer says {phrase!r}"
+        assert needle in skill, f"{ruling}: the triage skill does not say {phrase!r}"
