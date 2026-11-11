@@ -1,0 +1,42 @@
+[project]
+name = "chd-curator"
+version = "0.0.1"
+description = "Literature curation tools for the CHD atlas"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.12",
+    "ruamel.yaml>=0.18",
+    "jsonschema>=4.18",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "types-jsonschema"]
+
+[project.scripts]
+chd-curator = "chd_curator.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chd_curator"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/chd_curator"]

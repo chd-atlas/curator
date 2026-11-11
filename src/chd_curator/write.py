@@ -1,0 +1,176 @@
+"""curator's one write path.
+
+Every file curator writes goes through ``write_literature`` or
+``write_publications``. Each checks first and writes only if every check passes,
+so a refused write leaves the file's bytes as they were. These are refused:
+
+- content the atlas's exported JSON Schema refuses;
+- any change to an approval, a finding added or removed, or a finding id repeated,
+  because an agent must never approve: approval is a named person's act, done in the
+  atlas (``chd-atlas literature review --approve``), not here;
+- a YAML anchor, alias or merge key, which the atlas refuses (YAML002) and which
+  would otherwise copy an approval onto a finding nobody approved while still
+  validating: the atlas found that with a merge key;
+- (``write_literature`` only) a file whose bytes are no longer the ones the caller built
+  its content from, so a stale read cannot overwrite an edit made meanwhile. The check
+  and the replace are two steps, not one, so an edit landing between them is not caught.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+from typing import Any, Final
+
+from jsonschema import Draft202012Validator
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
+from ruamel.yaml.events import AliasEvent, MappingStartEvent, ScalarEvent, SequenceStartEvent
+
+from chd_curator.atlas import plain
+from chd_curator.fs import write_bytes_atomically
+
+APPROVAL_FIELDS: Final = ("approved_by", "approved_on", "approved_digest")
+
+
+class WriteRefused(Exception):
+    """A write was refused; nothing was written."""
+
+
+def refuse_anchors(content: bytes) -> None:
+    """Refuse any anchor, alias or ``<<`` merge key, from ruamel's event stream.
+
+    An alias is its own event (``AliasEvent``) whose ``.anchor`` is the name it
+    refers to, so it is checked first and refused as an alias. Measured with ruamel's
+    safe parser: ``*a`` with no ``&a`` still parses, as an ``AliasEvent``. In a document
+    that defines ``&a`` and then uses ``*a``, the stream reaches the anchor first, so
+    that document is refused as an anchor.
+
+    Read from events rather than the loaded data, because loading resolves all
+    three: the file would look like ordinary mappings and validate.
+    """
+    # One entry per open collection: True for a mapping, with the count of
+    # scalars/collections seen so far, so a mapping key is the even-numbered one.
+    stack: list[list[Any]] = []
+    try:
+        for event in YAML(typ="safe").parse(content):
+            if isinstance(event, AliasEvent):
+                raise WriteRefused(f"a YAML alias (*{event.anchor}) is not allowed")
+            if getattr(event, "anchor", None) is not None:
+                raise WriteRefused(f"a YAML anchor (&{event.anchor}) is not allowed")
+            is_node = isinstance(event, ScalarEvent | MappingStartEvent | SequenceStartEvent)
+            if is_node and stack and stack[-1][0] is True:
+                is_key = stack[-1][1] % 2 == 0
+                stack[-1][1] += 1
+                if is_key and isinstance(event, ScalarEvent) and event.value == "<<":
+                    raise WriteRefused("a YAML merge key (<<) is not allowed")
+            elif is_node and stack:
+                stack[-1][1] += 1
+            if isinstance(event, MappingStartEvent):
+                stack.append([True, 0])
+            elif isinstance(event, SequenceStartEvent):
+                stack.append([False, 0])
+            elif type(event).__name__ in ("MappingEndEvent", "SequenceEndEvent"):
+                stack.pop()
+    except YAMLError as exc:
+        raise WriteRefused(f"not valid YAML: {exc}") from exc
+
+
+def _safe_load(content: bytes, what: str) -> Any:
+    try:
+        return YAML(typ="safe").load(content)
+    except YAMLError as exc:
+        raise WriteRefused(f"{what} is not valid YAML: {exc}") from exc
+
+
+def _step(part: str | int) -> tuple[int, int, str]:
+    """Sort key for one path step: list indexes numerically (10 after 2), then names."""
+    return (0, part, "") if isinstance(part, int) else (1, 0, part)
+
+
+def schema_error_lines(data: Any, validator: Draft202012Validator) -> list[str]:
+    """Every schema error as ``path: message``, in path order (list indexes numerically).
+
+    The one ordering and format for every schema refusal curator prints. jsonschema
+    yields the root error last, so the sort is what puts ``<root>`` first.
+    """
+    errors = sorted(validator.iter_errors(data), key=lambda e: [_step(p) for p in e.absolute_path])
+    return [f"{'/'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}" for e in errors]
+
+
+def _refuse_schema(path: Path, content: bytes, validator: Draft202012Validator) -> None:
+    lines = schema_error_lines(plain(_safe_load(content, str(path))), validator)
+    if lines:
+        raise WriteRefused(f"{path} does not satisfy its schema:\n" + "\n".join(lines))
+
+
+def _approvals(content: bytes | None, what: str) -> list[tuple[str, tuple[Any, ...]]]:
+    """`(finding id, approval tuple)` per finding, in file order, duplicates kept."""
+    if content is None:
+        return []
+    data = plain(_safe_load(content, what))
+    findings = ((data or {}).get("findings") or []) if isinstance(data, dict) else []
+    return [
+        (str(f.get("id")), tuple(f.get(name) for name in APPROVAL_FIELDS))
+        for f in findings
+        if isinstance(f, dict)
+    ]
+
+
+def refuse_approval_change(before: bytes | None, after: bytes) -> None:
+    """Refuse a write that adds, removes or alters any finding's approval.
+
+    Per finding id the approval is the tuple of `APPROVAL_FIELDS`, an absent key
+    reading as None. The set of finding ids is compared too: a new finding is
+    refused (it could arrive pre-approved), and so is a removed one (an approved
+    finding would vanish), and so is an id that appears twice in the new content
+    (a copy of an approved finding would otherwise collapse into its original).
+    `before` None is a file that does not exist yet.
+    """
+    new_list = _approvals(after, "the new content")
+    counts = Counter(finding_id for finding_id, _ in new_list)
+    for finding_id in sorted(i for i, n in counts.items() if n > 1):
+        raise WriteRefused(f"{finding_id}: more than one finding has this id")
+    old = dict(_approvals(before, "the current file"))
+    new = dict(new_list)
+    for finding_id in sorted(set(new) - set(old)):
+        raise WriteRefused(f"{finding_id}: adding a finding is not allowed here")
+    for finding_id in sorted(set(old) - set(new)):
+        raise WriteRefused(f"{finding_id}: removing a finding is not allowed here")
+    for finding_id in sorted(old):
+        for name, was, now in zip(APPROVAL_FIELDS, old[finding_id], new[finding_id], strict=True):
+            if was != now:
+                raise WriteRefused(f"{finding_id}: {name} may not change ({was!r} -> {now!r})")
+
+
+def _refuse_constructs(path: Path, content: bytes) -> None:
+    try:
+        refuse_anchors(content)
+    except WriteRefused as exc:
+        raise WriteRefused(f"{path}: {exc}") from exc
+
+
+def write_literature(
+    path: Path, content: bytes, validator: Draft202012Validator, *, expected: bytes | None
+) -> None:
+    """Write a gene's literature file, or raise `WriteRefused` and leave it as it was.
+
+    `expected` is the file's bytes as the caller read them and built `content` from
+    (None: the file did not exist). If the file now holds anything else, the write is
+    refused, so a read made before a slow PubMed call cannot overwrite an edit made
+    during it.
+    """
+    before = path.read_bytes() if path.exists() else None
+    if before != expected:
+        raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
+    _refuse_constructs(path, content)
+    _refuse_schema(path, content, validator)
+    refuse_approval_change(before, content)
+    write_bytes_atomically(path, content)
+
+
+def write_publications(path: Path, content: bytes, validator: Draft202012Validator) -> None:
+    """Write ``publications.yaml``, or raise `WriteRefused` and leave it as it was."""
+    _refuse_constructs(path, content)
+    _refuse_schema(path, content, validator)
+    write_bytes_atomically(path, content)

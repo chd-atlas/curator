@@ -1,0 +1,13 @@
+{
+  "name": "curator",
+  "owner": {
+    "name": "chd-atlas"
+  },
+  "plugins": [
+    {
+      "name": "curator",
+      "source": "./",
+      "description": "Four skills that take a published gene through the literature pipeline: search, triage, extract and verify."
+    }
+  ]
+}
