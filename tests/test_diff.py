@@ -4,7 +4,7 @@ Ported from the atlas's ``tests/unit/test_gene_literature_diff.py`` at b4c8191 (
 from ``Finding`` models to plain dicts checked against the atlas's real exported schema
 (``CHD_ATLAS_ROOT/schemas/gene_literature_file.schema.json``). Every pair below differs
 in exactly one thing, so a test that names the field names the only field the diff may
-report. Values within a pair are chosen to differ from every other field's (section 4.30
+report. Values within a pair are chosen to differ from every other field's (a fixture whose fields share a value cannot tell
 of the atlas's notes): screened 7 vs 9, de_novo 2 vs 3.
 """
 

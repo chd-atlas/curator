@@ -2,7 +2,7 @@
 
 Ported from the six diff cases of the atlas's ``tests/unit/test_cli_literature.py`` at
 b4c8191 (prints and writes nothing; stamps only agreeing unverified findings; an
-ambiguous key verifies nothing; a verifier that is not an agent, two cases; a missing
+ambiguous key verifies nothing; a verifier that is not an agent, four values here; a missing
 file). The 8-layout ``--mark-verified`` test is ``test_records.py``'s. Not ported: the
 atlas's last sub-case (a blind pass carrying ``approved_by: agent:x`` is refused),
 because that rule lives in the atlas's pydantic model and not in the exported JSON
