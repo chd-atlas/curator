@@ -27,7 +27,8 @@ as sets, because their order carries no meaning: ``methods``, ``variant_classes`
 compared by value. Reported values have the set-like lists sorted.
 
 The atlas keeps its own copy of the compared set in ``tests/unit/test_gene_literature_diff.py``
-and curator pins the same 17 in ``tests/test_diff.py``; the two change together (F18 of the atlas's feeds design spec).
+and curator pins the same 17 in ``tests/test_diff.py``; the two change together
+(F18 of the atlas's feeds design spec).
 """
 
 from __future__ import annotations

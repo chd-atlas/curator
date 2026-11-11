@@ -67,7 +67,8 @@ def test_the_compared_set_is_pinned(schema: dict[str, Any]) -> None:
     """The 17 fields a blind pass is compared on.
 
     The atlas pins the same 17 in ``tests/unit/test_gene_literature_diff.py``
-    (``test_the_compared_set_is_pinned``); the two change together (F18 of the atlas's feeds design spec). A field the
+    (``test_the_compared_set_is_pinned``); the two change together
+    (F18 of the atlas's feeds design spec). A field the
     atlas adds to ``Finding`` lands in ``compared_fields`` by default, and this test is
     where that is noticed.
     """
