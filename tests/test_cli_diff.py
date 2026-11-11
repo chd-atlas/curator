@@ -11,6 +11,7 @@ Schema curator checks against; a blind pass's approval fields are never compared
 
 from __future__ import annotations
 
+import datetime
 import os
 import re
 from pathlib import Path
@@ -452,6 +453,18 @@ def test_diff_refuses_a_curated_file_the_schema_refuses_and_reports_every_error_
     assert lit_path.read_bytes() == before
 
 
+def _stdlib_feb_30_error() -> str:
+    """The stdlib's own words for 2026-02-30. They differ between Python versions
+    (3.12: "day is out of range for month"; 3.14: "day 30 must be in range 1..28 for
+    month 2 in year 2026", measured on CI), so the expected text is derived, not pinned."""
+    with pytest.raises(ValueError) as err:
+        datetime.date(2026, 2, 30)
+    return str(err.value)
+
+
+_STDLIB_FEB_30_ERROR = _stdlib_feb_30_error()
+
+
 @pytest.mark.parametrize("which", ["curated", "blind"])
 def test_an_impossible_yaml_date_is_an_error_line_not_a_traceback(
     stub_atlas: Path, root: Path, lit_path: Path, which: str
@@ -474,7 +487,7 @@ def test_an_impossible_yaml_date_is_an_error_line_not_a_traceback(
 
     assert result.exit_code == 1, result.stdout
     assert isinstance(result.exception, SystemExit)  # typer.Exit, not an uncaught ValueError
-    assert result.stdout == "error: day is out of range for month\n"
+    assert result.stdout == f"error: {_STDLIB_FEB_30_ERROR}\n"
     assert lit_path.read_bytes() == before
 
 

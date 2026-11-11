@@ -32,10 +32,29 @@ runner = CliRunner()
 IGNORED = (".git", ".venv", "local", "dist", ".superpowers", "CLAUDE.md", ".claude", "superpowers")
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _plain(text: str) -> str:
+    """``text`` without ANSI escape sequences. With GITHUB_ACTIONS=true the atlas's
+    typer/Rich help styles ``--against`` as two segments, ``\\x1b[1;36m-\\x1b[0m
+    \\x1b[1;36m-against\\x1b[0m``, which no option-name match can see through."""
+    return _ANSI.sub("", text)
+
+
 def _atlas(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [os.environ["CHD_ATLAS_CLI"], *args], capture_output=True, text=True, check=False
+    """Run the atlas CLI with colour and wrapping off, and ANSI stripped from the output."""
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"}
+    run = subprocess.run(
+        [os.environ["CHD_ATLAS_CLI"], *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
     )
+    run.stdout = _plain(run.stdout)
+    run.stderr = _plain(run.stderr)
+    return run
 
 
 @pytest.fixture
@@ -295,6 +314,20 @@ def _names_option(text: str, option: str) -> bool:
 def test_an_option_name_is_matched_whole() -> None:
     assert _names_option("  --on TEXT  Date.\n", "--on") is True
     assert _names_option("  --only TEXT\n  --not-on X\n  x--on\n", "--on") is False
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [
+        ("\x1b[1;36m-\x1b[0m\x1b[1;36m-against\x1b[0m  TEXT\n", True),
+        ("\x1b[1;36m-\x1b[0m\x1b[1;36m-against-all\x1b[0m  TEXT\n", False),
+        ("--against\n", True),
+    ],
+)
+def test_a_coloured_split_option_is_recognised_after_stripping(text: str, named: bool) -> None:
+    if text.startswith("\x1b[1;36m-\x1b[0m\x1b[1;36m-against "):
+        assert _names_option(text, "--against") is False  # unstripped, the split hides it
+    assert _names_option(_plain(text), "--against") is named
 
 
 def test_the_atlas_commands_the_skills_name_exist() -> None:

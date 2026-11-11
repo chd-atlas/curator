@@ -10,6 +10,7 @@ cannot pass by comparing the wrong field with an equal value: screened 7 vs 9, d
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 from pathlib import Path
@@ -344,4 +345,8 @@ def test_a_yaml_date_ruamel_cannot_build_is_a_diff_error_not_a_value_error(
     raw = b"findings:\n  - id: CHDA:LIT:0000001\n    approved_on: 2026-02-30\n"
     with pytest.raises(DiffError) as err:
         parse_findings_file(raw, schema)
-    assert str(err.value) == "day is out of range for month"
+    # The stdlib's wording differs between Python versions (3.12 vs 3.14, measured on
+    # CI), so the expected text is derived from the stdlib itself.
+    with pytest.raises(ValueError) as stdlib:
+        datetime.date(2026, 2, 30)
+    assert str(err.value) == str(stdlib.value)
