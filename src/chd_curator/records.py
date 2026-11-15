@@ -43,6 +43,8 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from chd_curator.write import APPROVAL_FIELDS
+
 
 class RecordError(Exception):
     """A literature or publications file cannot be safely extended."""
@@ -158,6 +160,33 @@ def with_verified(existing: bytes, ids: Sequence[str], verifier: str) -> bytes:
         entry.insert(position, "verified_by", verifier)
         if at_end:
             _carry_trailing_comment(entry, "verified_by")
+    return dump_bytes(data)
+
+
+def with_synthesis(existing: bytes, draft: Mapping[str, Any]) -> bytes:
+    """The file's new content with its ``synthesis`` set to an unapproved draft.
+
+    `draft` carries ``sentences`` (each ``text`` and ``cites``) and ``drafted_by``; the
+    block is written in that order, the model's field order. A synthesis already in the
+    file is replaced where it stands (a redraft); otherwise the block is appended last,
+    where the atlas's ``GeneLiteratureFile`` has the field. A current block holding any
+    approval field is refused: a person deletes the approval by hand first, so an agent
+    never silently voids one. Not validated here: the caller's write is.
+    """
+    data = load_round_trip(existing)
+    current = data.get("synthesis")
+    if isinstance(current, Mapping) and any(name in current for name in APPROVAL_FIELDS):
+        raise RecordError("the file's synthesis has an approval; delete it by hand first")
+    try:
+        data["synthesis"] = {
+            "sentences": [
+                {"text": sentence["text"], "cites": list(sentence["cites"])}
+                for sentence in draft["sentences"]
+            ],
+            "drafted_by": draft["drafted_by"],
+        }
+    except (KeyError, TypeError) as exc:
+        raise RecordError(f"the draft is malformed: {exc!r}") from exc
     return dump_bytes(data)
 
 

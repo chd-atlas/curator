@@ -5,9 +5,9 @@ Every file curator writes goes through ``write_literature`` or
 so a refused write leaves the file's bytes as they were. These are refused:
 
 - content the atlas's exported JSON Schema refuses;
-- any change to an approval, a finding added or removed, or a finding id repeated,
-  because an agent must never approve: approval is a named person's act, done in the
-  atlas (``chd-atlas literature review --approve``), not here;
+- any change to an approval (a finding's or the synthesis's), a finding added or removed,
+  or a finding id repeated, because an agent must never approve: approval is a named
+  person's act, done in the atlas (``chd-atlas literature review --approve``), not here;
 - a YAML anchor, alias or merge key, which the atlas refuses (YAML002) and which
   would otherwise copy an approval onto a finding nobody approved while still
   validating: the atlas found that with a merge key;
@@ -117,8 +117,20 @@ def _approvals(content: bytes | None, what: str) -> list[tuple[str, tuple[Any, .
     ]
 
 
+def _synthesis_approval(content: bytes | None, what: str) -> tuple[Any, ...]:
+    """The synthesis block's approval tuple; an absent block reads as all None."""
+    data = plain(_safe_load(content, what)) if content is not None else None
+    block = data.get("synthesis") if isinstance(data, dict) else None
+    block = block if isinstance(block, dict) else {}
+    return tuple(block.get(name) for name in APPROVAL_FIELDS)
+
+
 def refuse_approval_change(before: bytes | None, after: bytes) -> None:
     """Refuse a write that adds, removes or alters any finding's approval.
+
+    The synthesis block's approval is held to the same rule, as one more tuple of
+    `APPROVAL_FIELDS`: an approved synthesis cannot be added, and no field of an existing
+    one can change or go.
 
     Per finding id the approval is the tuple of `APPROVAL_FIELDS`, an absent key
     reading as None. The set of finding ids is compared too: a new finding is
@@ -141,6 +153,11 @@ def refuse_approval_change(before: bytes | None, after: bytes) -> None:
         for name, was, now in zip(APPROVAL_FIELDS, old[finding_id], new[finding_id], strict=True):
             if was != now:
                 raise WriteRefused(f"{finding_id}: {name} may not change ({was!r} -> {now!r})")
+    synthesis_was = _synthesis_approval(before, "the current file")
+    synthesis_now = _synthesis_approval(after, "the new content")
+    for name, was, now in zip(APPROVAL_FIELDS, synthesis_was, synthesis_now, strict=True):
+        if was != now:
+            raise WriteRefused(f"synthesis: {name} may not change ({was!r} -> {now!r})")
 
 
 def _refuse_constructs(path: Path, content: bytes) -> None:

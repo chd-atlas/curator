@@ -23,6 +23,7 @@ from chd_curator.records import (
     literature_path,
     with_publication,
     with_search,
+    with_synthesis,
     with_verified,
 )
 
@@ -330,3 +331,65 @@ def test_re_marking_the_real_tbx5_file_restores_it_byte_for_byte() -> None:
     for verifier, ids in sorted(ids_by_verifier.items()):
         restored = with_verified(restored, ids, verifier)
     assert restored == raw.encode()
+
+
+SYNTHESIS_DRAFT = {
+    "sentences": [
+        {"text": "Septal defects are the usual presentation.", "cites": ["CHDA:LIT:0000001"]},
+        {"text": "Segregation is reported in one family.", "cites": ["CHDA:AST:0000002"]},
+    ],
+    "drafted_by": "agent:gene-synthesis/opus",
+}
+SYNTHESIS_TEXT = (
+    "synthesis:\n"
+    "  sentences:\n"
+    "    - text: Septal defects are the usual presentation.\n"
+    "      cites:\n"
+    "        - CHDA:LIT:0000001\n"
+    "    - text: Segregation is reported in one family.\n"
+    "      cites:\n"
+    "        - CHDA:AST:0000002\n"
+    "  drafted_by: agent:gene-synthesis/opus\n"
+)
+OTHER_DRAFT = {
+    "sentences": [{"text": "A different single sentence.", "cites": ["CHDA:LIT:0000003"]}],
+    "drafted_by": "agent:gene-synthesis/other",
+}
+OTHER_TEXT = (
+    "synthesis:\n"
+    "  sentences:\n"
+    "    - text: A different single sentence.\n"
+    "      cites:\n"
+    "        - CHDA:LIT:0000003\n"
+    "  drafted_by: agent:gene-synthesis/other\n"
+)
+
+
+def test_with_synthesis_adds_one_block_last_and_replaces_an_unapproved_one_in_place(
+    literature_schema: Draft202012Validator,
+) -> None:
+    added = with_synthesis(CANONICAL.encode(), SYNTHESIS_DRAFT)
+    assert added.decode() == CANONICAL + SYNTHESIS_TEXT  # every prior byte kept, block last
+    _assert_valid(literature_schema, added)
+    # a redraft replaces the block: one block remains, holding only the new text
+    middle = CANONICAL + SYNTHESIS_TEXT
+    redrafted = with_synthesis(middle.encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT
+    assert redrafted.decode().count("synthesis:") == 1
+
+
+@pytest.mark.parametrize(
+    "approval",
+    [
+        "  approved_by: Dr. A\n",
+        "  approved_on: 2026-11-03\n",
+        "  approved_digest: sha256:abc\n",
+    ],
+    ids=["approved_by", "approved_on", "approved_digest"],
+)
+def test_with_synthesis_refuses_to_replace_a_block_carrying_any_approval_field(
+    approval: str,
+) -> None:
+    existing = (CANONICAL + SYNTHESIS_TEXT + approval).encode()
+    with pytest.raises(RecordError, match="has an approval; delete it by hand first"):
+        with_synthesis(existing, OTHER_DRAFT)

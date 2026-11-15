@@ -34,7 +34,13 @@ from chd_curator.atlas import plain
 from chd_curator.cli import app
 
 REPO = Path(__file__).resolve().parent.parent
-SKILLS = ("literature-search", "literature-triage", "literature-extract", "literature-verify")
+SKILLS = (
+    "literature-search",
+    "literature-triage",
+    "literature-extract",
+    "literature-verify",
+    "gene-synthesis",
+)
 SKILL_FILES = [REPO / "skills" / name / "SKILL.md" for name in SKILLS]
 README = REPO / "README.md"
 # The skills and the README are curator's; the rules file is read from the atlas checkout.
@@ -56,6 +62,7 @@ ATLAS_COMMANDS: dict[str, set[str]] = {
     "literature target": set(),
     "literature review": {
         "--approve",
+        "--approve-synthesis",
         "--by",
         "--on",
         "--allow-unverified",
@@ -141,9 +148,11 @@ def _model_fields() -> set[str]:
         "Publication",
         "InTextLocator",
         "SupplementaryLocator",
+        "Synthesis",
+        "SynthesisSentence",
     ):
         fields |= set(defs[name]["properties"])
-    return fields | {"findings", "triage", "searches", "gene"}
+    return fields | {"findings", "triage", "searches", "gene", "synthesis"}
 
 
 def _option_names() -> set[str]:
@@ -234,7 +243,7 @@ def test_a_skill_has_its_frontmatter_its_sections_and_its_hand_offs(path: Path) 
 
 def test_every_curator_command_and_option_the_files_name_exists() -> None:
     commands = _commands()
-    assert set(commands) == {"search", "abstracts", "add-publication", "diff"}
+    assert set(commands) == {"search", "abstracts", "add-publication", "diff", "synthesis"}
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS
     named: set[str] = set()

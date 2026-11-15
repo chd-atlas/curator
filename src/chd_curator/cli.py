@@ -1,6 +1,7 @@
 """The ``chd-curator`` command line.
 
-``search``, ``abstracts``, ``add-publication`` and ``diff`` are the atlas's ``chd-atlas
+``synthesis`` is new here: it writes a gene's drafted, unapproved synthesis. ``search``,
+``abstracts``, ``add-publication`` and ``diff`` are the atlas's ``chd-atlas
 literature`` commands of the same names, copied from its ``cli.py`` at b4c8191. What
 changed: the gene is resolved and the publication gate asked by running
 ``chd-atlas literature target`` (never by importing the atlas), and every file is
@@ -38,10 +39,12 @@ from chd_curator.records import (
     load_round_trip,
     with_publication,
     with_search,
+    with_synthesis,
     with_verified,
 )
 from chd_curator.write import (
     WriteRefused,
+    refuse_anchors,
     schema_error_lines,
     write_literature,
     write_publications,
@@ -308,3 +311,61 @@ def diff(
         except WriteRefused as exc:
             raise _fail(str(exc), 2) from None
     typer.echo(f"marked verified ({len(marked)}): {_ids(marked)}")
+
+
+_DRAFT_KEYS = ("sentences", "drafted_by")
+
+
+@app.command("synthesis")
+def synthesis(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    draft: Path = typer.Option(
+        ..., "--draft", help="A YAML file holding exactly `sentences` and `drafted_by`."
+    ),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Write a drafted, unapproved synthesis into a gene's literature file.
+
+    Checks the file against the exported schema only; the atlas's SYN rules (citations,
+    numbers, length) are run by `chd-atlas validate`. A person approves, in the atlas.
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        validator = schema_validator(root, "gene_literature_file")
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    path = literature_path(root, approved)
+    if not path.is_file():
+        raise _fail(f"{path} does not exist; run `chd-curator search {approved}` first", 2)
+    if not draft.is_file():
+        raise _fail(f"--draft {draft} is not a file", 2)
+    try:
+        raw_draft = draft.read_bytes()
+        refuse_anchors(raw_draft)
+        loaded = plain(YAML(typ="safe").load(raw_draft))
+    except WriteRefused as exc:
+        raise _fail(f"the draft: {exc}", 2) from None
+    except (YAMLError, ValueError, OSError) as exc:
+        raise _fail(f"the draft cannot be read: {exc}", 2) from None
+    if not isinstance(loaded, dict):
+        raise _fail("the draft must be a mapping with sentences and drafted_by", 2)
+    extra = sorted(str(key) for key in loaded if key not in _DRAFT_KEYS)
+    if extra:
+        raise _fail(
+            f"the draft may hold only sentences and drafted_by; remove {', '.join(extra)}", 2
+        )
+    try:
+        existing = path.read_bytes()
+        content = with_synthesis(existing, loaded)
+    except RecordError as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    try:
+        write_literature(path, content, validator, expected=existing)
+    except WriteRefused as exc:
+        raise _fail(str(exc), 2) from None
+    count = len(loaded["sentences"])
+    typer.echo(f"{approved}: wrote a {count}-sentence synthesis, unapproved, to {path}")

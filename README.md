@@ -2,7 +2,8 @@
 
 Literature curation tools for the [CHD atlas](https://github.com/chd-atlas/chd-atlas.github.io).
 `chd-curator` searches PubMed for a published gene, records the hits, adds papers and compares a
-blind second extraction with the first. Four Claude Code skills drive agents through those steps.
+blind second extraction with the first, and writes a drafted gene synthesis. Five Claude Code skills
+drive agents through those steps.
 An agent never approves: a named person does, with `chd-atlas literature review` in the atlas.
 
 ## Install
@@ -27,9 +28,9 @@ measured here). On an older version, add the marketplace first:
 
 ## Run
 
-Run from the root of an atlas checkout. `search`, `abstracts` and `diff` ask the atlas about the
+Run from the root of an atlas checkout. `search`, `abstracts`, `diff` and `synthesis` ask the atlas about the
 gene by running its CLI, `<root>/.venv/bin/chd-atlas` unless `--atlas-cli` or `CHD_ATLAS_CLI` names
-another; `add-publication` does not. `search`, `add-publication` and `diff` read the JSON Schemas
+another; `add-publication` does not. `search`, `add-publication`, `diff` and `synthesis` read the JSON Schemas
 the atlas exports into `<root>/schemas/`, and every file curator writes is checked against them
 first. curator never imports the atlas. The skills read the atlas checkout's
 `curator/curator-rules.md`. Their hand-off commands, `.venv/bin/chd-atlas validate` and
@@ -50,6 +51,13 @@ For one published gene:
    findings. Approve with `--approve <id> --by "<your name>"`, or mark one with
    `--pending-review <id> --note "<what differs>"`. Add `--against <the verifier's file>` to see
    where the blind pass read a finding differently.
+
+Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
+paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
+<file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and
+refuses a draft carrying an approval. The atlas's own checks (`SYN001` to `SYN004`) run in
+`chd-atlas validate`. You then run `.venv/bin/chd-atlas literature review <SYMBOL>` and approve the
+text with `--approve-synthesis --by "<your name>"`.
 
 Run `.venv/bin/chd-atlas validate` after each step.
 
