@@ -50,6 +50,10 @@ class RecordError(Exception):
     """A literature or publications file cannot be safely extended."""
 
 
+class ApprovedSynthesis(RecordError):
+    """The file's synthesis carries an approval, which only a person may remove."""
+
+
 def literature_path(root: Path, symbol: str) -> Path:
     return root / "curation" / "literature" / f"{symbol}.yaml"
 
@@ -176,7 +180,7 @@ def with_synthesis(existing: bytes, draft: Mapping[str, Any]) -> bytes:
     data = load_round_trip(existing)
     current = data.get("synthesis")
     if isinstance(current, Mapping) and any(name in current for name in APPROVAL_FIELDS):
-        raise RecordError("the file's synthesis has an approval; delete it by hand first")
+        raise ApprovedSynthesis("the file's synthesis has an approval; delete it by hand first")
     try:
         data["synthesis"] = {
             "sentences": [
@@ -186,7 +190,7 @@ def with_synthesis(existing: bytes, draft: Mapping[str, Any]) -> bytes:
             "drafted_by": draft["drafted_by"],
         }
     except (KeyError, TypeError) as exc:
-        raise RecordError(f"the draft is malformed: {exc!r}") from exc
+        raise RecordError("the draft must hold sentences, each with text and cites") from exc
     return dump_bytes(data)
 
 

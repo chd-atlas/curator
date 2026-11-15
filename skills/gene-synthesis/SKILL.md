@@ -28,13 +28,15 @@ and a weaker model states that with more confidence than the records carry.
    - genotype and phenotype observations;
    - the mechanism the curated records state, never one you infer;
    - how much of the evidence is abstract only (`not_accessible`), so a reader can weigh it.
-3. Keep to the rules file: one to five sentences, at most 120 words in all, and every
+3. Do not restate the validity grade or the burden results: the card states them above the
+   text. Keep to the rules file: one to five sentences, at most 120 words in all, and every
    sentence cites at least one record id in `cites` (`SYN001`). A sentence rests only on
    the records it cites, so cite the findings and assertions that say it.
 4. Write no number in any form (`SYN002`): no digits, no number words, and no counts hidden
    in other words, such as a decade, an age, a year, "several", "a handful" or "most". Say
    "in families" or "in affected individuals" and leave the count to the card's line. Gene
-   names and variants (TBX5, 22q11.2, p.Gly80Arg) are fine.
+   names and variants (TBX5, 22q11.2, p.Gly80Arg) are fine. A few ordinary terms trip the
+   check, such as a half-sibling or a trisomy; the rules file lists them with the wording to use.
 5. Write the draft to `local/literature/<SYMBOL>.synthesis.yaml` (`local/` is gitignored).
    It holds exactly `sentences` and `drafted_by`:
 

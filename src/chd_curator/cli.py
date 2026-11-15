@@ -11,7 +11,8 @@ Schema first.
 Exit codes: 2 for bad arguments, an atlas that refused or could not be asked, a gene
 outside the publication gate, or a write the write path refused (a schema, an
 anchor, an approval, or a file that changed since it was read); 1 for PubMed
-failing, the network, or a file that cannot be read.
+failing, the network, or a file that cannot be read (for ``synthesis``, a literature file
+that is not valid YAML, as for ``search`` and ``diff --mark-verified``).
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from chd_curator.atlas import AtlasError, default_atlas_cli, plain, schema_valid
 from chd_curator.diff import DiffError, diff_findings, parse_findings_file
 from chd_curator.pubmed import Fetch, PubMedError, urllib_fetch
 from chd_curator.records import (
+    ApprovedSynthesis,
     RecordError,
     literature_path,
     load_round_trip,
@@ -314,6 +316,36 @@ def diff(
 
 
 _DRAFT_KEYS = ("sentences", "drafted_by")
+_SENTENCE_KEYS = ("text", "cites")
+
+
+def _check_draft_shape(loaded: Any) -> None:
+    """Refuse (exit 2) a draft that is not `sentences` + `drafted_by`, naming the fault.
+
+    Only the shape is checked; what the values may be is the atlas schema's, in the write.
+    """
+    if not isinstance(loaded, dict):
+        raise _fail("the draft must be a mapping with sentences and drafted_by", 2)
+    extra = sorted(str(key) for key in loaded if key not in _DRAFT_KEYS)
+    if extra:
+        raise _fail(
+            f"the draft may hold only sentences and drafted_by; remove {', '.join(extra)}", 2
+        )
+    missing = [key for key in _DRAFT_KEYS if key not in loaded]
+    if missing:
+        raise _fail(f"the draft has no {', '.join(missing)}", 2)
+    sentences = loaded["sentences"]
+    if not isinstance(sentences, list) or not all(isinstance(s, dict) for s in sentences):
+        raise _fail("the draft's sentences must be a list of mappings with text and cites", 2)
+    for sentence in sentences:
+        stray = sorted(str(key) for key in sentence if key not in _SENTENCE_KEYS)
+        if stray:
+            raise _fail(f"a sentence may hold only text and cites; remove {', '.join(stray)}", 2)
+        absent = [key for key in _SENTENCE_KEYS if key not in sentence]
+        if absent:
+            raise _fail(f"a sentence has no {', '.join(absent)}", 2)
+        if not isinstance(sentence["cites"], list):
+            raise _fail("a sentence's cites must be a list", 2)
 
 
 @app.command("synthesis")
@@ -349,19 +381,13 @@ def synthesis(
         raise _fail(f"the draft: {exc}", 2) from None
     except (YAMLError, ValueError, OSError) as exc:
         raise _fail(f"the draft cannot be read: {exc}", 2) from None
-    if not isinstance(loaded, dict):
-        raise _fail("the draft must be a mapping with sentences and drafted_by", 2)
-    extra = sorted(str(key) for key in loaded if key not in _DRAFT_KEYS)
-    if extra:
-        raise _fail(
-            f"the draft may hold only sentences and drafted_by; remove {', '.join(extra)}", 2
-        )
+    _check_draft_shape(loaded)
     try:
         existing = path.read_bytes()
         content = with_synthesis(existing, loaded)
-    except RecordError as exc:
+    except ApprovedSynthesis as exc:
         raise _fail(str(exc), 2) from None
-    except OSError as exc:
+    except (RecordError, OSError) as exc:
         raise _fail(str(exc), 1) from None
     try:
         write_literature(path, content, validator, expected=existing)

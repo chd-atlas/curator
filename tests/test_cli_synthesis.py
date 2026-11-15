@@ -130,9 +130,46 @@ REFUSALS = {
         "error: the draft: a YAML anchor (&d) is not allowed\n",
         LITERATURE,
     ),
+    "a stray key in a sentence": (
+        DRAFT.replace("  - text: Segregation", "  - note: x\n    text: Segregation"),
+        "error: a sentence may hold only text and cites; remove note\n",
+        LITERATURE,
+    ),
+    "no drafted_by": (
+        DRAFT.replace("drafted_by: agent:gene-synthesis/opus\n", ""),
+        "error: the draft has no drafted_by\n",
+        LITERATURE,
+    ),
+    "sentences that is not a list": (
+        "sentences: hello\ndrafted_by: agent:x/y\n",
+        "error: the draft's sentences must be a list of mappings with text and cites\n",
+        LITERATURE,
+    ),
+    "a sentence that is not a mapping": (
+        "sentences: [hello]\ndrafted_by: agent:x/y\n",
+        "error: the draft's sentences must be a list of mappings with text and cites\n",
+        LITERATURE,
+    ),
+    "a sentence with no cites": (
+        "sentences:\n  - text: Hello.\ndrafted_by: agent:x/y\n",
+        "error: a sentence has no cites\n",
+        LITERATURE,
+    ),
+    "a sentence with empty cites": (
+        DRAFT.replace("[CHDA:LIT:0000003]", "[]"),
+        "SCHEMA'cites': []",
+        LITERATURE,
+    ),
+    "six sentences": (
+        "sentences:\n"
+        + "  - text: Another one.\n    cites: [CHDA:LIT:0000001]\n" * 6
+        + "drafted_by: agent:x/y\n",
+        "SCHEMA'text': 'Another one.'",
+        LITERATURE,
+    ),
     "a citation the schema refuses": (
         DRAFT.replace("CHDA:LIT:0000003", "CHDA:LIT:3"),
-        None,
+        "SCHEMA'CHDA:LIT:3'",
         LITERATURE,
     ),
     "an approved synthesis already in the file": (
@@ -145,15 +182,15 @@ REFUSALS = {
 
 @pytest.mark.parametrize("draft, message, current", REFUSALS.values(), ids=list(REFUSALS))
 def test_a_refused_draft_exits_2_and_leaves_the_file_as_it_was(
-    stub_atlas: Path, root: Path, lit_path: Path, draft: str, message: str | None, current: str
+    stub_atlas: Path, root: Path, lit_path: Path, draft: str, message: str, current: str
 ) -> None:
     lit_path.write_text(current)
     result = _synthesis(stub_atlas, root, _draft(root, draft))
     assert result.exit_code == 2, result.stdout
-    if message is None:  # the schema's own wording, which the atlas owns
+    if message.startswith("SCHEMA"):  # the atlas owns the wording
         assert result.stdout.startswith(f"error: {lit_path} does not satisfy its schema:\n")
         assert "\nsynthesis: " in result.stdout
-        assert "'CHDA:LIT:3'" in result.stdout
+        assert message.removeprefix("SCHEMA") in result.stdout
     else:
         assert result.stdout == message
     assert lit_path.read_text() == current
@@ -186,3 +223,13 @@ def test_it_does_not_overwrite_an_edit_made_since_it_read_the_file(
         f"error: {lit_path}: the file changed since it was read; nothing was written\n"
     )
     assert lit_path.read_bytes() == LITERATURE.encode() + b"# a curator's edit, made meanwhile\n"
+
+
+def test_an_existing_file_that_is_not_valid_yaml_exits_1_like_the_other_commands(
+    stub_atlas: Path, root: Path, lit_path: Path
+) -> None:
+    lit_path.write_text("gene: [unclosed\n")
+    result = _synthesis(stub_atlas, root, _draft(root))
+    assert result.exit_code == 1, result.stdout
+    assert result.stdout.startswith("error: not valid YAML: ")
+    assert lit_path.read_text() == "gene: [unclosed\n"
