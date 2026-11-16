@@ -138,6 +138,24 @@ def _carry_trailing_comment(entry: CommentedMap, new_last: str) -> None:
     entry.ca.items[new_last] = [None, None, moved, None]
 
 
+def _trailing_end(node: CommentedMap, key: str) -> Any:
+    """A copy of the comment held as the end marker of the last list under `node[key]`.
+
+    ruamel parks what follows a block on a list's `ca.end` rather than on a key when
+    the list's last item ends in a flow-style value (`cites: [..]`) and the list is the
+    block's last key. None when no list on the last path holds one.
+    """
+    child: Any = node[key]
+    while isinstance(child, CommentedMap | CommentedSeq) and len(child):
+        end = child.ca.end if isinstance(child, CommentedSeq) else None
+        if end:
+            moved = copy.copy(end[0])
+            moved.value = "\n" + "".join(t.value for t in end)
+            return moved
+        child = child[list(child)[-1] if isinstance(child, CommentedMap) else len(child) - 1]
+    return None
+
+
 def _trailing_comment(node: CommentedMap, key: str) -> Any:
     """A copy of the comment that follows `node[key]`'s block, minus a same-line comment.
 
@@ -146,7 +164,7 @@ def _trailing_comment(node: CommentedMap, key: str) -> Any:
     """
     found = _trailing_slot(node, key)
     if found is None:
-        return None
+        return _trailing_end(node, key)
     container, inner, slot = found
     token = container.ca.items[inner][slot]
     first, _, rest = token.value.partition("\n")
@@ -156,6 +174,24 @@ def _trailing_comment(node: CommentedMap, key: str) -> Any:
             return None
         moved.value = "\n" + rest
     return moved
+
+
+def _drop_trailing_after_scalar(node: CommentedMap, key: str) -> None:
+    """Remove what follows a scalar `node[key]` (`synthesis: null`), keeping a same-line comment.
+
+    The note hangs on the key itself, so replacing the value would leave it there as well
+    as wherever it was carried to.
+    """
+    row = node.ca.items.get(key)
+    if not row or row[2] is None:
+        return
+    first, newline, _ = row[2].value.partition("\n")
+    if first.strip():
+        row[2].value = first + newline
+    else:
+        row[2] = None
+        if all(item is None for item in row):
+            node.ca.items.pop(key)
 
 
 def with_verified(existing: bytes, ids: Sequence[str], verifier: str) -> bytes:
@@ -212,6 +248,8 @@ def with_synthesis(existing: bytes, draft: Mapping[str, Any]) -> bytes:
             "stop and ask that person"
         )
     trailing = _trailing_comment(data, "synthesis") if "synthesis" in data else None
+    if trailing is not None and not isinstance(current, CommentedMap | CommentedSeq):
+        _drop_trailing_after_scalar(data, "synthesis")
     try:
         block = CommentedMap()
         block["sentences"] = [

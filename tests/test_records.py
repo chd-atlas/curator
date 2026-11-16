@@ -426,3 +426,30 @@ def test_with_synthesis_carries_a_comment_that_followed_the_old_block() -> None:
     existing = CANONICAL + SYNTHESIS_TEXT + "\n# reviewer note after the block\n"
     redrafted = with_synthesis(existing.encode(), OTHER_DRAFT)
     assert redrafted.decode() == CANONICAL + OTHER_TEXT + "\n# reviewer note after the block\n"
+
+
+def test_with_synthesis_carries_a_note_once_after_synthesis_null() -> None:
+    # Measured at d121c38: the note came out twice, once under `synthesis:` and once
+    # after the new block, because it hung on the null's own key and was also copied.
+    existing = CANONICAL + "synthesis: null\n\n# reviewer note after the block\n"
+    redrafted = with_synthesis(existing.encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT + "\n# reviewer note after the block\n"
+    commented = CANONICAL + "synthesis: null  # to be drafted\n\n# reviewer note after the block\n"
+    again = with_synthesis(commented.encode(), OTHER_DRAFT).decode()
+    assert again.count("# reviewer note after the block") == 1
+    assert again.count("# to be drafted") == 1
+
+
+def test_with_synthesis_carries_a_note_when_the_old_block_is_not_in_canonical_order() -> None:
+    # Measured at d121c38: with drafted_by first and a flow-style `cites: [..]` last, the
+    # note sits on the sentences list's end marker, not on a key, and was dropped.
+    old = (
+        "synthesis:\n"
+        "  drafted_by: agent:gene-synthesis/opus\n"
+        "  sentences:\n"
+        "    - text: Septal defects are the usual presentation.\n"
+        "      cites: [CHDA:LIT:0000001]\n"
+    )
+    existing = CANONICAL + old + "\n# reviewer note after the block\n"
+    redrafted = with_synthesis(existing.encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT + "\n# reviewer note after the block\n"
