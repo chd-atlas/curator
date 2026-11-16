@@ -11,8 +11,9 @@ Schema first.
 Exit codes: 2 for bad arguments, an atlas that refused or could not be asked, a gene
 outside the publication gate, or a write the write path refused (a schema, an
 anchor, an approval, or a file that changed since it was read); 1 for PubMed
-failing, the network, or a file that cannot be read (for ``synthesis``, a literature file
-that is not valid YAML, as for ``search`` and ``diff --mark-verified``).
+failing, the network, or a file that cannot be read. For ``synthesis`` an unreadable or
+refused ``--draft`` exits 2, and a literature file that is not valid YAML exits 1, as for
+``search`` and ``diff --mark-verified``.
 """
 
 from __future__ import annotations
@@ -316,6 +317,8 @@ def diff(
 
 
 _DRAFT_KEYS = ("sentences", "drafted_by")
+_MAX_DRAFT_BYTES = 64 * 1024
+_MAX_SENTENCES = 5
 _SENTENCE_KEYS = ("text", "cites")
 
 
@@ -337,6 +340,8 @@ def _check_draft_shape(loaded: Any) -> None:
     sentences = loaded["sentences"]
     if not isinstance(sentences, list) or not all(isinstance(s, dict) for s in sentences):
         raise _fail("the draft's sentences must be a list of mappings with text and cites", 2)
+    if len(sentences) > _MAX_SENTENCES:
+        raise _fail("the draft holds more than five sentences", 2)
     for sentence in sentences:
         stray = sorted(str(key) for key in sentence if key not in _SENTENCE_KEYS)
         if stray:
@@ -346,6 +351,26 @@ def _check_draft_shape(loaded: Any) -> None:
             raise _fail(f"a sentence has no {', '.join(absent)}", 2)
         if not isinstance(sentence["cites"], list):
             raise _fail("a sentence's cites must be a list", 2)
+        if not all(isinstance(cite, str) for cite in sentence["cites"]):
+            raise _fail("a sentence's cites must all be strings", 2)
+
+
+def _check_written(content: bytes, loaded: dict[str, Any]) -> None:
+    """Refuse (exit 2) unless the content, read back, holds the draft's synthesis as drafted.
+
+    YAML turns some characters (U+0085, for one) into other ones on the way through, so a
+    draft can be written as different text while every other check passes.
+    """
+    try:
+        block = plain(YAML(typ="safe").load(content)).get("synthesis")
+    except (YAMLError, AttributeError):
+        block = None
+    drafted = {
+        "sentences": [{"text": s["text"], "cites": list(s["cites"])} for s in loaded["sentences"]],
+        "drafted_by": loaded["drafted_by"],
+    }
+    if not isinstance(block, dict) or {k: block.get(k) for k in drafted} != drafted:
+        raise _fail("the written synthesis would differ from the draft; nothing was written", 2)
 
 
 @app.command("synthesis")
@@ -374,6 +399,8 @@ def synthesis(
     if not draft.is_file():
         raise _fail(f"--draft {draft} is not a file", 2)
     try:
+        if draft.stat().st_size > _MAX_DRAFT_BYTES:
+            raise _fail("the draft is larger than 64 KiB", 2)
         raw_draft = draft.read_bytes()
         refuse_anchors(raw_draft)
         loaded = plain(YAML(typ="safe").load(raw_draft))
@@ -385,6 +412,7 @@ def synthesis(
     try:
         existing = path.read_bytes()
         content = with_synthesis(existing, loaded)
+        _check_written(content, loaded)
     except ApprovedSynthesis as exc:
         raise _fail(str(exc), 2) from None
     except (RecordError, OSError) as exc:

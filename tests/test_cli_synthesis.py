@@ -164,7 +164,25 @@ REFUSALS = {
         "sentences:\n"
         + "  - text: Another one.\n    cites: [CHDA:LIT:0000001]\n" * 6
         + "drafted_by: agent:x/y\n",
-        "SCHEMA'text': 'Another one.'",
+        "error: the draft holds more than five sentences\n",
+        LITERATURE,
+    ),
+    "a cite that is not a string": (
+        DRAFT.replace("[CHDA:LIT:0000003]", "[3]"),
+        "error: a sentence's cites must all be strings\n",
+        LITERATURE,
+    ),
+    "a draft over 64 KiB": (
+        DRAFT + "# " + "x" * 65536 + "\n",
+        "error: the draft is larger than 64 KiB\n",
+        LITERATURE,
+    ),
+    "text the file would not keep": (
+        # `\N` is U+0085 (NEL); the dump writes it as a line break that reads back as spaces
+        DRAFT.replace(
+            "text: Segregation is reported in one family.", 'text: "Segregation\\Nis reported."'
+        ),
+        "error: the written synthesis would differ from the draft; nothing was written\n",
         LITERATURE,
     ),
     "a citation the schema refuses": (
@@ -174,7 +192,8 @@ REFUSALS = {
     ),
     "an approved synthesis already in the file": (
         DRAFT.replace("usual", "common"),
-        "error: the file's synthesis has an approval; delete it by hand first\n",
+        "error: the synthesis is approved by Dr. A on (not set); an agent never removes an"
+        " approval: stop and ask that person\n",
         LITERATURE + APPROVED_BLOCK,
     ),
 }

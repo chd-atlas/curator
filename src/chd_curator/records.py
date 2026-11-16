@@ -10,7 +10,9 @@ Two files, two strategies, chosen by what each needs to preserve:
 
 - ``curation/literature/<SYMBOL>.yaml`` is rewritten through ruamel's
   round-trip loader with ONE canonical indent (mappings 2, sequences 4, dashes
-  at offset 2; no indent detection). Values and comments are kept. A file
+  at offset 2; no indent detection). Values and comments are kept; a redrafted
+  synthesis replaces the old block's values, and a comment that followed the old block is
+  carried to the new one. A file
   already in that style changes only in the lines a command adds (measured
   2026-11-03 in the atlas: marking verified on such a file changed one line, the
   added ``verified_by``). A wrapped plain scalar is reflowed onto one line, and a
@@ -136,6 +138,26 @@ def _carry_trailing_comment(entry: CommentedMap, new_last: str) -> None:
     entry.ca.items[new_last] = [None, None, moved, None]
 
 
+def _trailing_comment(node: CommentedMap, key: str) -> Any:
+    """A copy of the comment that follows `node[key]`'s block, minus a same-line comment.
+
+    None when nothing follows. A comment on the block's last line (`drafted_by: x  # why`)
+    belongs to the old value and stays with it; only what comes after it is returned.
+    """
+    found = _trailing_slot(node, key)
+    if found is None:
+        return None
+    container, inner, slot = found
+    token = container.ca.items[inner][slot]
+    first, _, rest = token.value.partition("\n")
+    moved = copy.copy(token)
+    if first.strip():
+        if not rest:
+            return None
+        moved.value = "\n" + rest
+    return moved
+
+
 def with_verified(existing: bytes, ids: Sequence[str], verifier: str) -> bytes:
     """The file's new content with ``verified_by: <verifier>`` on the named findings.
 
@@ -173,24 +195,35 @@ def with_synthesis(existing: bytes, draft: Mapping[str, Any]) -> bytes:
     `draft` carries ``sentences`` (each ``text`` and ``cites``) and ``drafted_by``; the
     block is written in that order, the model's field order. A synthesis already in the
     file is replaced where it stands (a redraft); otherwise the block is appended last,
-    where the atlas's ``GeneLiteratureFile`` has the field. A current block holding any
-    approval field is refused: a person deletes the approval by hand first, so an agent
-    never silently voids one. Not validated here: the caller's write is.
+    where the atlas's ``GeneLiteratureFile`` has the field. A current block holding a
+    non-null approval field is refused (`ApprovedSynthesis`, naming who approved and when):
+    an agent never removes an approval. A comment that followed the old block moves to the
+    new one's last key. Not validated here: the caller's write is.
     """
     data = load_round_trip(existing)
     current = data.get("synthesis")
-    if isinstance(current, Mapping) and any(name in current for name in APPROVAL_FIELDS):
-        raise ApprovedSynthesis("the file's synthesis has an approval; delete it by hand first")
+    if isinstance(current, Mapping) and any(
+        current.get(name) is not None for name in APPROVAL_FIELDS
+    ):
+        who, when = (current.get(name) for name in ("approved_by", "approved_on"))
+        raise ApprovedSynthesis(
+            f"the synthesis is approved by {'(not set)' if who is None else who} on "
+            f"{'(not set)' if when is None else when}; an agent never removes an approval: "
+            "stop and ask that person"
+        )
+    trailing = _trailing_comment(data, "synthesis") if "synthesis" in data else None
     try:
-        data["synthesis"] = {
-            "sentences": [
-                {"text": sentence["text"], "cites": list(sentence["cites"])}
-                for sentence in draft["sentences"]
-            ],
-            "drafted_by": draft["drafted_by"],
-        }
+        block = CommentedMap()
+        block["sentences"] = [
+            {"text": sentence["text"], "cites": list(sentence["cites"])}
+            for sentence in draft["sentences"]
+        ]
+        block["drafted_by"] = draft["drafted_by"]
     except (KeyError, TypeError) as exc:
         raise RecordError("the draft must hold sentences, each with text and cites") from exc
+    if trailing is not None:
+        block.ca.items["drafted_by"] = [None, None, trailing, None]
+    data["synthesis"] = block
     return dump_bytes(data)
 
 

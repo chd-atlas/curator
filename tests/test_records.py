@@ -19,6 +19,7 @@ from ruamel.yaml import YAML
 
 from chd_curator.atlas import plain, schema_validator
 from chd_curator.records import (
+    ApprovedSynthesis,
     RecordError,
     literature_path,
     with_publication,
@@ -379,17 +380,49 @@ def test_with_synthesis_adds_one_block_last_and_replaces_an_unapproved_one_in_pl
 
 
 @pytest.mark.parametrize(
-    "approval",
+    "approval, message",
     [
-        "  approved_by: Dr. A\n",
-        "  approved_on: 2026-11-03\n",
-        "  approved_digest: sha256:abc\n",
+        (
+            "  approved_by: Dr. A\n",
+            "the synthesis is approved by Dr. A on (not set); an agent never removes an approval:"
+            " stop and ask that person",
+        ),
+        (
+            "  approved_on: 2026-11-03\n",
+            "the synthesis is approved by (not set) on 2026-11-03; an agent never removes an"
+            " approval: stop and ask that person",
+        ),
+        (
+            "  approved_digest: sha256:abc\n",
+            "the synthesis is approved by (not set) on (not set); an agent never removes an"
+            " approval: stop and ask that person",
+        ),
     ],
     ids=["approved_by", "approved_on", "approved_digest"],
 )
 def test_with_synthesis_refuses_to_replace_a_block_carrying_any_approval_field(
-    approval: str,
+    approval: str, message: str
 ) -> None:
     existing = (CANONICAL + SYNTHESIS_TEXT + approval).encode()
-    with pytest.raises(RecordError, match="has an approval; delete it by hand first"):
+    with pytest.raises(ApprovedSynthesis) as raised:
         with_synthesis(existing, OTHER_DRAFT)
+    assert str(raised.value) == message
+
+
+def test_with_synthesis_reads_null_approval_keys_as_none_and_any_value_as_an_approval() -> None:
+    nulls = "  approved_by:\n  approved_on: null\n  approved_digest: ~\n"
+    redrafted = with_synthesis((CANONICAL + SYNTHESIS_TEXT + nulls).encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT
+    mixed = "  approved_by:\n  approved_on: 2026-11-03\n  approved_digest: ~\n"
+    with pytest.raises(ApprovedSynthesis) as raised:
+        with_synthesis((CANONICAL + SYNTHESIS_TEXT + mixed).encode(), OTHER_DRAFT)
+    assert str(raised.value) == (
+        "the synthesis is approved by (not set) on 2026-11-03; an agent never removes an"
+        " approval: stop and ask that person"
+    )
+
+
+def test_with_synthesis_carries_a_comment_that_followed_the_old_block() -> None:
+    existing = CANONICAL + SYNTHESIS_TEXT + "\n# reviewer note after the block\n"
+    redrafted = with_synthesis(existing.encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT + "\n# reviewer note after the block\n"
