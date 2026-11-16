@@ -55,7 +55,8 @@ For one published gene:
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and
-refuses a draft carrying an approval. The atlas's own checks (`SYN001` to `SYN004`) run in
+refuses a draft carrying an approval, and refuses to replace an approved synthesis: an agent
+never removes an approval. The atlas's own checks (`SYN001` to `SYN004`) run in
 `chd-atlas validate`. You then run `.venv/bin/chd-atlas literature review <SYMBOL>` and approve the
 text with `--approve-synthesis --by "<your name>"`.
 
