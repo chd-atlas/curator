@@ -545,7 +545,7 @@ def test_the_cli_has_no_command_or_option_that_approves() -> None:
     """
     group = typer.main.get_command(app)
     assert isinstance(group, TyperGroup)
-    assert set(group.commands) == {"search", "abstracts", "add-publication", "diff"}
+    assert set(group.commands) == {"search", "abstracts", "add-publication", "diff", "synthesis"}
     forbidden = {"--approve", "--by", "--on"}
     for name, command in group.commands.items():
         options = {opt for param in command.params for opt in param.opts + param.secondary_opts}

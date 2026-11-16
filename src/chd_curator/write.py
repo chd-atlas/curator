@@ -5,15 +5,18 @@ Every file curator writes goes through ``write_literature`` or
 so a refused write leaves the file's bytes as they were. These are refused:
 
 - content the atlas's exported JSON Schema refuses;
-- any change to an approval, a finding added or removed, or a finding id repeated,
-  because an agent must never approve: approval is a named person's act, done in the
-  atlas (``chd-atlas literature review --approve``), not here;
+- any change to an approval (a finding's or the synthesis's), a finding added or removed,
+  or a finding id repeated, because an agent must never approve: approval is a named
+  person's act, done in the atlas (``chd-atlas literature review --approve`` for a finding,
+  ``--approve-synthesis`` for the synthesis), not here;
 - a YAML anchor, alias or merge key, which the atlas refuses (YAML002) and which
   would otherwise copy an approval onto a finding nobody approved while still
   validating: the atlas found that with a merge key;
 - a file whose bytes are no longer the ones the caller built
-  its content from, so a stale read cannot overwrite an edit made meanwhile. The check
-  and the replace are two steps, not one, so an edit landing between them is not caught.
+  its content from, so a stale read cannot overwrite an edit made meanwhile. The bytes are
+  compared twice: on entry, and again after the checks (which parse the YAML three times and
+  take seconds on a real file) just before the rename. A window remains between that last
+  read and the rename, so an edit landing in those few instructions is not caught.
 """
 
 from __future__ import annotations
@@ -117,8 +120,20 @@ def _approvals(content: bytes | None, what: str) -> list[tuple[str, tuple[Any, .
     ]
 
 
+def _synthesis_approval(content: bytes | None, what: str) -> tuple[Any, ...]:
+    """The synthesis block's approval tuple; an absent block reads as all None."""
+    data = plain(_safe_load(content, what)) if content is not None else None
+    block = data.get("synthesis") if isinstance(data, dict) else None
+    block = block if isinstance(block, dict) else {}
+    return tuple(block.get(name) for name in APPROVAL_FIELDS)
+
+
 def refuse_approval_change(before: bytes | None, after: bytes) -> None:
     """Refuse a write that adds, removes or alters any finding's approval.
+
+    The synthesis block's approval is held to the same rule, as one more tuple of
+    `APPROVAL_FIELDS`: an approved synthesis cannot be added, and no field of an existing
+    one can change or go.
 
     Per finding id the approval is the tuple of `APPROVAL_FIELDS`, an absent key
     reading as None. The set of finding ids is compared too: a new finding is
@@ -141,6 +156,11 @@ def refuse_approval_change(before: bytes | None, after: bytes) -> None:
         for name, was, now in zip(APPROVAL_FIELDS, old[finding_id], new[finding_id], strict=True):
             if was != now:
                 raise WriteRefused(f"{finding_id}: {name} may not change ({was!r} -> {now!r})")
+    synthesis_was = _synthesis_approval(before, "the current file")
+    synthesis_now = _synthesis_approval(after, "the new content")
+    for name, was, now in zip(APPROVAL_FIELDS, synthesis_was, synthesis_now, strict=True):
+        if was != now:
+            raise WriteRefused(f"synthesis: {name} may not change ({was!r} -> {now!r})")
 
 
 def _refuse_constructs(path: Path, content: bytes) -> None:
@@ -148,6 +168,13 @@ def _refuse_constructs(path: Path, content: bytes) -> None:
         refuse_anchors(content)
     except WriteRefused as exc:
         raise WriteRefused(f"{path}: {exc}") from exc
+
+
+def _refuse_if_changed(path: Path, expected: bytes | None) -> None:
+    """Raise `WriteRefused` unless the file holds exactly `expected` (None: no file) now."""
+    current = path.read_bytes() if path.exists() else None
+    if current != expected:
+        raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
 
 
 def write_literature(
@@ -160,12 +187,11 @@ def write_literature(
     refused, so a read made before a slow PubMed call cannot overwrite an edit made
     during it.
     """
-    before = path.read_bytes() if path.exists() else None
-    if before != expected:
-        raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
+    _refuse_if_changed(path, expected)
     _refuse_constructs(path, content)
     _refuse_schema(path, content, validator)
-    refuse_approval_change(before, content)
+    refuse_approval_change(expected, content)
+    _refuse_if_changed(path, expected)
     write_bytes_atomically(path, content)
 
 
@@ -177,9 +203,8 @@ def write_publications(
     `expected` is the file's bytes as the caller read them and built `content` from
     (None: the file did not exist), with the same meaning as for `write_literature`.
     """
-    before = path.read_bytes() if path.exists() else None
-    if before != expected:
-        raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
+    _refuse_if_changed(path, expected)
     _refuse_constructs(path, content)
     _refuse_schema(path, content, validator)
+    _refuse_if_changed(path, expected)
     write_bytes_atomically(path, content)

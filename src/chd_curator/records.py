@@ -10,7 +10,9 @@ Two files, two strategies, chosen by what each needs to preserve:
 
 - ``curation/literature/<SYMBOL>.yaml`` is rewritten through ruamel's
   round-trip loader with ONE canonical indent (mappings 2, sequences 4, dashes
-  at offset 2; no indent detection). Values and comments are kept. A file
+  at offset 2; no indent detection). Values and comments are kept; a redrafted
+  synthesis replaces the old block's values, and a comment that followed the old block is
+  carried to the new one. A file
   already in that style changes only in the lines a command adds (measured
   2026-11-03 in the atlas: marking verified on such a file changed one line, the
   added ``verified_by``). A wrapped plain scalar is reflowed onto one line, and a
@@ -43,9 +45,15 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from chd_curator.write import APPROVAL_FIELDS
+
 
 class RecordError(Exception):
     """A literature or publications file cannot be safely extended."""
+
+
+class ApprovedSynthesis(RecordError):
+    """The file's synthesis carries an approval, which only a person may remove."""
 
 
 def literature_path(root: Path, symbol: str) -> Path:
@@ -130,6 +138,62 @@ def _carry_trailing_comment(entry: CommentedMap, new_last: str) -> None:
     entry.ca.items[new_last] = [None, None, moved, None]
 
 
+def _trailing_end(node: CommentedMap, key: str) -> Any:
+    """A copy of the comment held as the end marker of the last list under `node[key]`.
+
+    ruamel parks what follows a block on a list's `ca.end` rather than on a key when
+    the list's last item ends in a flow-style value (`cites: [..]`) and the list is the
+    block's last key. None when no list on the last path holds one.
+    """
+    child: Any = node[key]
+    while isinstance(child, CommentedMap | CommentedSeq) and len(child):
+        end = child.ca.end if isinstance(child, CommentedSeq) else None
+        if end:
+            moved = copy.copy(end[0])
+            moved.value = "\n" + "".join(t.value for t in end)
+            return moved
+        child = child[list(child)[-1] if isinstance(child, CommentedMap) else len(child) - 1]
+    return None
+
+
+def _trailing_comment(node: CommentedMap, key: str) -> Any:
+    """A copy of the comment that follows `node[key]`'s block, minus a same-line comment.
+
+    None when nothing follows. A comment on the block's last line (`drafted_by: x  # why`)
+    belongs to the old value and stays with it; only what comes after it is returned.
+    """
+    found = _trailing_slot(node, key)
+    if found is None:
+        return _trailing_end(node, key)
+    container, inner, slot = found
+    token = container.ca.items[inner][slot]
+    first, _, rest = token.value.partition("\n")
+    moved = copy.copy(token)
+    if first.strip():
+        if not rest:
+            return None
+        moved.value = "\n" + rest
+    return moved
+
+
+def _drop_trailing_after_scalar(node: CommentedMap, key: str) -> None:
+    """Remove what follows a scalar `node[key]` (`synthesis: null`), keeping a same-line comment.
+
+    The note hangs on the key itself, so replacing the value would leave it there as well
+    as wherever it was carried to.
+    """
+    row = node.ca.items.get(key)
+    if not row or row[2] is None:
+        return
+    first, newline, _ = row[2].value.partition("\n")
+    if first.strip():
+        row[2].value = first + newline
+    else:
+        row[2] = None
+        if all(item is None for item in row):
+            node.ca.items.pop(key)
+
+
 def with_verified(existing: bytes, ids: Sequence[str], verifier: str) -> bytes:
     """The file's new content with ``verified_by: <verifier>`` on the named findings.
 
@@ -158,6 +222,46 @@ def with_verified(existing: bytes, ids: Sequence[str], verifier: str) -> bytes:
         entry.insert(position, "verified_by", verifier)
         if at_end:
             _carry_trailing_comment(entry, "verified_by")
+    return dump_bytes(data)
+
+
+def with_synthesis(existing: bytes, draft: Mapping[str, Any]) -> bytes:
+    """The file's new content with its ``synthesis`` set to an unapproved draft.
+
+    `draft` carries ``sentences`` (each ``text`` and ``cites``) and ``drafted_by``; the
+    block is written in that order, the model's field order. A synthesis already in the
+    file is replaced where it stands (a redraft); otherwise the block is appended last,
+    where the atlas's ``GeneLiteratureFile`` has the field. A current block holding a
+    non-null approval field is refused (`ApprovedSynthesis`, naming who approved and when):
+    an agent never removes an approval. A comment that followed the old block moves to the
+    new one's last key. Not validated here: the caller's write is.
+    """
+    data = load_round_trip(existing)
+    current = data.get("synthesis")
+    if isinstance(current, Mapping) and any(
+        current.get(name) is not None for name in APPROVAL_FIELDS
+    ):
+        who, when = (current.get(name) for name in ("approved_by", "approved_on"))
+        raise ApprovedSynthesis(
+            f"the synthesis is approved by {'(not set)' if who is None else who} on "
+            f"{'(not set)' if when is None else when}; an agent never removes an approval: "
+            "stop and ask that person"
+        )
+    trailing = _trailing_comment(data, "synthesis") if "synthesis" in data else None
+    if trailing is not None and not isinstance(current, CommentedMap | CommentedSeq):
+        _drop_trailing_after_scalar(data, "synthesis")
+    try:
+        block = CommentedMap()
+        block["sentences"] = [
+            {"text": sentence["text"], "cites": list(sentence["cites"])}
+            for sentence in draft["sentences"]
+        ]
+        block["drafted_by"] = draft["drafted_by"]
+    except (KeyError, TypeError) as exc:
+        raise RecordError("the draft must hold sentences, each with text and cites") from exc
+    if trailing is not None:
+        block.ca.items["drafted_by"] = [None, None, trailing, None]
+    data["synthesis"] = block
     return dump_bytes(data)
 
 

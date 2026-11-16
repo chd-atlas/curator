@@ -19,10 +19,12 @@ from ruamel.yaml import YAML
 
 from chd_curator.atlas import plain, schema_validator
 from chd_curator.records import (
+    ApprovedSynthesis,
     RecordError,
     literature_path,
     with_publication,
     with_search,
+    with_synthesis,
     with_verified,
 )
 
@@ -330,3 +332,124 @@ def test_re_marking_the_real_tbx5_file_restores_it_byte_for_byte() -> None:
     for verifier, ids in sorted(ids_by_verifier.items()):
         restored = with_verified(restored, ids, verifier)
     assert restored == raw.encode()
+
+
+SYNTHESIS_DRAFT = {
+    "sentences": [
+        {"text": "Septal defects are the usual presentation.", "cites": ["CHDA:LIT:0000001"]},
+        {"text": "Segregation is reported in one family.", "cites": ["CHDA:AST:0000002"]},
+    ],
+    "drafted_by": "agent:gene-synthesis/opus",
+}
+SYNTHESIS_TEXT = (
+    "synthesis:\n"
+    "  sentences:\n"
+    "    - text: Septal defects are the usual presentation.\n"
+    "      cites:\n"
+    "        - CHDA:LIT:0000001\n"
+    "    - text: Segregation is reported in one family.\n"
+    "      cites:\n"
+    "        - CHDA:AST:0000002\n"
+    "  drafted_by: agent:gene-synthesis/opus\n"
+)
+OTHER_DRAFT = {
+    "sentences": [{"text": "A different single sentence.", "cites": ["CHDA:LIT:0000003"]}],
+    "drafted_by": "agent:gene-synthesis/other",
+}
+OTHER_TEXT = (
+    "synthesis:\n"
+    "  sentences:\n"
+    "    - text: A different single sentence.\n"
+    "      cites:\n"
+    "        - CHDA:LIT:0000003\n"
+    "  drafted_by: agent:gene-synthesis/other\n"
+)
+
+
+def test_with_synthesis_adds_one_block_last_and_replaces_an_unapproved_one_in_place(
+    literature_schema: Draft202012Validator,
+) -> None:
+    added = with_synthesis(CANONICAL.encode(), SYNTHESIS_DRAFT)
+    assert added.decode() == CANONICAL + SYNTHESIS_TEXT  # every prior byte kept, block last
+    _assert_valid(literature_schema, added)
+    # a redraft replaces the block: one block remains, holding only the new text
+    middle = CANONICAL + SYNTHESIS_TEXT
+    redrafted = with_synthesis(middle.encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT
+    assert redrafted.decode().count("synthesis:") == 1
+
+
+@pytest.mark.parametrize(
+    "approval, message",
+    [
+        (
+            "  approved_by: Dr. A\n",
+            "the synthesis is approved by Dr. A on (not set); an agent never removes an approval:"
+            " stop and ask that person",
+        ),
+        (
+            "  approved_on: 2026-11-03\n",
+            "the synthesis is approved by (not set) on 2026-11-03; an agent never removes an"
+            " approval: stop and ask that person",
+        ),
+        (
+            "  approved_digest: sha256:abc\n",
+            "the synthesis is approved by (not set) on (not set); an agent never removes an"
+            " approval: stop and ask that person",
+        ),
+    ],
+    ids=["approved_by", "approved_on", "approved_digest"],
+)
+def test_with_synthesis_refuses_to_replace_a_block_carrying_any_approval_field(
+    approval: str, message: str
+) -> None:
+    existing = (CANONICAL + SYNTHESIS_TEXT + approval).encode()
+    with pytest.raises(ApprovedSynthesis) as raised:
+        with_synthesis(existing, OTHER_DRAFT)
+    assert str(raised.value) == message
+
+
+def test_with_synthesis_reads_null_approval_keys_as_none_and_any_value_as_an_approval() -> None:
+    nulls = "  approved_by:\n  approved_on: null\n  approved_digest: ~\n"
+    redrafted = with_synthesis((CANONICAL + SYNTHESIS_TEXT + nulls).encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT
+    mixed = "  approved_by:\n  approved_on: 2026-11-03\n  approved_digest: ~\n"
+    with pytest.raises(ApprovedSynthesis) as raised:
+        with_synthesis((CANONICAL + SYNTHESIS_TEXT + mixed).encode(), OTHER_DRAFT)
+    assert str(raised.value) == (
+        "the synthesis is approved by (not set) on 2026-11-03; an agent never removes an"
+        " approval: stop and ask that person"
+    )
+
+
+def test_with_synthesis_carries_a_comment_that_followed_the_old_block() -> None:
+    existing = CANONICAL + SYNTHESIS_TEXT + "\n# reviewer note after the block\n"
+    redrafted = with_synthesis(existing.encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT + "\n# reviewer note after the block\n"
+
+
+def test_with_synthesis_carries_a_note_once_after_synthesis_null() -> None:
+    # Measured at d121c38: the note came out twice, once under `synthesis:` and once
+    # after the new block, because it hung on the null's own key and was also copied.
+    existing = CANONICAL + "synthesis: null\n\n# reviewer note after the block\n"
+    redrafted = with_synthesis(existing.encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT + "\n# reviewer note after the block\n"
+    commented = CANONICAL + "synthesis: null  # to be drafted\n\n# reviewer note after the block\n"
+    again = with_synthesis(commented.encode(), OTHER_DRAFT).decode()
+    assert again.count("# reviewer note after the block") == 1
+    assert again.count("# to be drafted") == 1
+
+
+def test_with_synthesis_carries_a_note_when_the_old_block_is_not_in_canonical_order() -> None:
+    # Measured at d121c38: with drafted_by first and a flow-style `cites: [..]` last, the
+    # note sits on the sentences list's end marker, not on a key, and was dropped.
+    old = (
+        "synthesis:\n"
+        "  drafted_by: agent:gene-synthesis/opus\n"
+        "  sentences:\n"
+        "    - text: Septal defects are the usual presentation.\n"
+        "      cites: [CHDA:LIT:0000001]\n"
+    )
+    existing = CANONICAL + old + "\n# reviewer note after the block\n"
+    redrafted = with_synthesis(existing.encode(), OTHER_DRAFT)
+    assert redrafted.decode() == CANONICAL + OTHER_TEXT + "\n# reviewer note after the block\n"

@@ -18,6 +18,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from ruamel.yaml import YAML
 
+from chd_curator import write
 from chd_curator.atlas import plain, schema_validator
 from chd_curator.write import (
     APPROVAL_FIELDS,
@@ -343,3 +344,120 @@ def test_write_publications_refuses_a_file_that_is_not_the_one_read(
         write_publications(path, b"publications: []\n", publication_schema, expected=expected)
     assert str(raised.value) == f"{path}: the file changed since it was read; nothing was written"
     assert path.read_bytes() == before
+
+
+SYNTHESIS = (
+    "synthesis:\n  sentences:\n    - text: Septal defects are usual.\n      cites:\n"
+    "        - CHDA:LIT:0000001\n  drafted_by: agent:gene-synthesis/opus\n"
+)
+SYNTHESIS_APPROVAL = (
+    "  approved_by: Dr. S\n  approved_on: 2026-11-04\n  approved_digest: sha256:syn999\n"
+)
+WITH_UNAPPROVED = BEFORE + SYNTHESIS
+WITH_APPROVED = BEFORE + SYNTHESIS + SYNTHESIS_APPROVAL
+
+SYNTHESIS_CASES = {
+    "an approved synthesis added to a file with none": (
+        BEFORE,
+        WITH_APPROVED,
+        "synthesis: approved_by may not change \\(None -> 'Dr. S'\\)",
+    ),
+    "approved_by added to an unapproved synthesis": (
+        WITH_UNAPPROVED,
+        WITH_UNAPPROVED + "  approved_by: Dr. S\n",
+        "synthesis: approved_by may not change \\(None -> 'Dr. S'\\)",
+    ),
+    "approved_by changed": (
+        WITH_APPROVED,
+        WITH_APPROVED.replace("Dr. S", "Dr. T"),
+        "synthesis: approved_by may not change \\('Dr. S' -> 'Dr. T'\\)",
+    ),
+    "approved_on changed": (
+        WITH_APPROVED,
+        WITH_APPROVED.replace("2026-11-04", "2026-11-09"),
+        "synthesis: approved_on may not change",
+    ),
+    "approved_digest changed": (
+        WITH_APPROVED,
+        WITH_APPROVED.replace("syn999", "syn998"),
+        "synthesis: approved_digest may not change",
+    ),
+    "all three removed with the text kept": (
+        WITH_APPROVED,
+        WITH_UNAPPROVED,
+        "synthesis: approved_by may not change \\('Dr. S' -> None\\)",
+    ),
+    "an approved synthesis deleted outright": (
+        WITH_APPROVED,
+        BEFORE,
+        "synthesis: approved_by may not change \\('Dr. S' -> None\\)",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "before, after, message", SYNTHESIS_CASES.values(), ids=list(SYNTHESIS_CASES)
+)
+def test_a_write_that_would_change_the_synthesis_approval_is_refused(
+    tmp_path: Path,
+    literature_schema: Draft202012Validator,
+    before: str,
+    after: str,
+    message: str,
+) -> None:
+    path = tmp_path / "TBX5.yaml"
+    path.write_text(before)
+    with pytest.raises(WriteRefused, match=message):
+        write_literature(path, after.encode(), literature_schema, expected=before.encode())
+    assert path.read_text() == before
+
+
+def test_an_unapproved_synthesis_is_written_and_redrafted_without_touching_any_approval(
+    tmp_path: Path, literature_schema: Draft202012Validator
+) -> None:
+    path = tmp_path / "TBX5.yaml"
+    path.write_text(BEFORE)
+    write_literature(path, WITH_UNAPPROVED.encode(), literature_schema, expected=BEFORE.encode())
+    assert path.read_text() == WITH_UNAPPROVED
+    redraft = BEFORE + SYNTHESIS.replace("usual", "common")
+    write_literature(path, redraft.encode(), literature_schema, expected=WITH_UNAPPROVED.encode())
+    assert path.read_text() == redraft
+
+
+def test_a_change_that_lands_during_the_checks_is_refused_and_the_other_writers_bytes_survive(
+    tmp_path: Path,
+    literature_schema: Draft202012Validator,
+    publication_schema: Draft202012Validator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first comparison passes; a person stamps the file while the checks run (they
+    parse the YAML three times, ~2.7 s on a real file). Only a second comparison, made just
+    before the rename, sees it. Both writers are held to it."""
+    real = write._refuse_schema
+    lit_path = tmp_path / "TBX5.yaml"
+    lit_path.write_text(BEFORE)
+    pub_path = tmp_path / "publications.yaml"
+    good = (
+        b"publications:\n  - id: PMID:1\n    title: T\n    journal: J\n    year: 2000\n"
+        b"    authors:\n      - A A\n    study_type: gwas\n"
+    )
+    pub_path.write_bytes(good)
+    stamped = {lit_path: b"# stamped meanwhile\n", pub_path: good + b"# stamped\n"}
+
+    def edit_during_checks(path: Path, content: bytes, validator: Draft202012Validator) -> None:
+        real(path, content, validator)
+        path.write_bytes(stamped[path])
+
+    monkeypatch.setattr(write, "_refuse_schema", edit_during_checks)
+    with pytest.raises(WriteRefused) as raised:
+        write_literature(lit_path, BEFORE.encode(), literature_schema, expected=BEFORE.encode())
+    assert str(raised.value) == (
+        f"{lit_path}: the file changed since it was read; nothing was written"
+    )
+    assert lit_path.read_bytes() == stamped[lit_path]
+    with pytest.raises(WriteRefused) as raised:
+        write_publications(pub_path, good, publication_schema, expected=good)
+    assert str(raised.value) == (
+        f"{pub_path}: the file changed since it was read; nothing was written"
+    )
+    assert pub_path.read_bytes() == stamped[pub_path]
