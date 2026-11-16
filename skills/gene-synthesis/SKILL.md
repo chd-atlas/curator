@@ -35,11 +35,12 @@ and a weaker model states that with more confidence than the records carry.
    the records it cites, so cite the findings and assertions that say it.
 4. Write no number in any form (`SYN002`): no digits, no number words, and no counts hidden
    in other words. Say "in families" or "in affected individuals" and leave the count to the
-   card's line. Gene names and variants (TBX5, 22q11.2, p.Gly80Arg) are fine. `SYN002` checks
-   digits and number words only. Years, decades, ages and words such as "several" or "a
-   handful" pass it, and this skill forbids them anyway: that rule is the skill's own and
-   stricter. A few ordinary terms do trip `SYN002`; the rules file names them with the wording
-   to use instead.
+   card's line. Gene names and variants (TBX5, 22q11.2, p.Gly80Arg) are fine. `SYN002` refuses
+   digits in any form (years, ages, decades such as 1990s, ordinals such as 3rd, 3x) and number
+   words (twenty, hundreds, percent, twice, quarter, "three-fold"). Words such as "a decade",
+   "several" or "a handful" pass it, and this skill forbids them anyway: that rule is the
+   skill's own and stricter. A few ordinary terms do trip `SYN002`; the rules file names them
+   with the wording to use instead.
 5. Write the draft to `local/literature/<SYMBOL>.synthesis.yaml` (`local/` is gitignored).
    It holds exactly `sentences` and `drafted_by`:
 
@@ -66,14 +67,15 @@ and a weaker model states that with more confidence than the records carry.
 ## Done when
 
 - `.venv/bin/chd-atlas validate` reports **0 errors**. Hand off: the person
-  runs `.venv/bin/chd-atlas literature review <SYMBOL>`, which lists the text and what each
-  sentence cites, and then `--approve-synthesis --by <their name>`.
+  runs `.venv/bin/chd-atlas literature review <SYMBOL>`, which lists each sentence beside what
+  it cites and ends with an `approve with:` line carrying the digest of what it listed, and
+  then runs that line with their own name in `--by`.
 - Say which sentences lean on abstract-only findings, so the person weighs them.
 
 ## Never
 
 - Never write `approved_by`, `approved_on` or `approved_digest`, and never run
-  `literature review --approve-synthesis`. A named person approves, in the atlas.
+  `literature review --approve-synthesis`, with or without a digest. A named person approves, in the atlas.
 - Never delete an approval to redraft. If `chd-curator synthesis` reports that one exists,
   stop and tell the person: removing it is theirs to do, by hand.
 - Never cite or draw on a finding with no `approved_by`, or on anything outside the page's

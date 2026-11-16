@@ -57,8 +57,9 @@ paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synth
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and
 refuses a draft carrying an approval, and refuses to replace an approved synthesis: an agent
 never removes an approval. The atlas's own checks (`SYN001` to `SYN004`) run in
-`chd-atlas validate`. You then run `.venv/bin/chd-atlas literature review <SYMBOL>` and approve the
-text with `--approve-synthesis --by "<your name>"`.
+`chd-atlas validate`. You then run `.venv/bin/chd-atlas literature review <SYMBOL>`, which lists each sentence
+beside what it cites and prints an `approve with:` line carrying the digest of what it listed;
+you run that line with your own name in `--by`.
 
 Run `.venv/bin/chd-atlas validate` after each step.
 

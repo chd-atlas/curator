@@ -63,6 +63,7 @@ ATLAS_COMMANDS: dict[str, set[str]] = {
     "literature review": {
         "--approve",
         "--approve-synthesis",
+        "--digest",
         "--by",
         "--on",
         "--allow-unverified",
