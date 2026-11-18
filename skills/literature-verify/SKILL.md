@@ -24,13 +24,21 @@ first pass.
    ```
 
 2. Extract each paper from scratch, as the `literature-extract` skill describes (steps 2,
-   4, 5 and 6), but always set `shares_probands_with: unknown` (it names finding ids and
+   4, 5, 6, 7 and 8), but always set `shares_probands_with: unknown` (it names finding ids and
    yours are local, so `diff` does not compare it), and write to `local/literature/<SYMBOL>.verify.yaml`, not to `curation/`.
    Create `local/literature/` if it is missing; `local/` is gitignored. The file has one
    top-level key, `findings:`, holding full findings. Ids are local to this file
    (`CHDA:LIT:0000001`, `CHDA:LIT:0000002`, ...); do not take them from the registry and
    do not add `Publication` records.
-3. Leave `verified_by`, `approved_by` and `approved_on` unset. Set
+3. Extract the variants blind, by `literature-extract` step 5 and its rules: one entry per
+   distinct variant per genotype context, `as_reported` verbatim, each name in `reported`
+   as written, and never choose between the paper's own names. Write `not_stated` only when
+   the paper is silent and `unclear` with its reason (step 6) otherwise; a `pending_review`
+   mark carries `review_settled_by`. Leave `hgvs_c`, `hgvs_p`, `grch38` and `normalisation`
+   unset: `chd-curator normalise` runs on the curated file only, so `diff` will list them
+   where the first pass was placed. Report that, and never copy a placement or a name from
+   the first pass.
+4. Leave `verified_by`, `approved_by` and `approved_on` unset. Set
    `extracted_by: agent:literature-verify/<model>`.
 
    ```yaml
@@ -43,6 +51,15 @@ first pass.
        screened: 1
        carriers: {de_novo: 1, inherited: 0, origin_unknown: 0}
        variant_classes: [snv_indel]
+       variants:
+         - id: 1
+           as_reported: c.835C>T (p.R279X)
+           locator: {kind: in_text, element: Table 1}
+           kind: snv_indel
+           reported: {c: c.835C>T, p: p.R279X}
+           placement: mane
+           zygosity: heterozygous
+           carriers: {de_novo: 1, inherited: 0, origin_unknown: 0}
        phenotypes: [HP:0001631]
        lesion_groups: [septal]
        syndromic: isolated
@@ -53,7 +70,7 @@ first pass.
        summary: Illustrative text.
        extracted_by: agent:literature-verify/<model>
    ```
-4. Compare. This writes nothing and exits 0 even when findings differ:
+5. Compare. This writes nothing and exits 0 even when findings differ:
 
    ```bash
    chd-curator diff <SYMBOL> --against local/literature/<SYMBOL>.verify.yaml
@@ -62,17 +79,19 @@ first pass.
    It lists agreed findings, findings in one pass only, and each differing field with both
    values. Two findings pair when they share a PMID, a design and the same cohorts; a key
    carried twice in either pass is never paired and is listed as one-pass only. Summaries
-   and locators are not compared; a curator reads them.
-5. Mark the agreed findings. This sets `verified_by` only where it is unset, and only on
+   and locators are not compared; a curator reads them. A variant is compared on the
+   paper's names, placement, kind, zygosity, phase, carriers and phenotypes, not on its
+   `id`, `with` links, locator, `unclear` entry or review mark.
+6. Mark the agreed findings. This sets `verified_by` only where it is unset, and only on
    findings with no field difference:
 
    ```bash
    chd-curator diff <SYMBOL> --against local/literature/<SYMBOL>.verify.yaml \
      --mark-verified agent:literature-verify/<model>
    ```
-6. Report every difference and every one-pass-only finding to the curator, with both
+7. Report every difference and every one-pass-only finding to the curator, with both
    values. Do not edit the first pass to settle one.
-7. Run `.venv/bin/chd-atlas validate`.
+8. Run `.venv/bin/chd-atlas validate`.
 
 ## Done when
 

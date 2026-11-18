@@ -60,6 +60,7 @@ def _rules() -> Path:
 ATLAS_COMMANDS: dict[str, set[str]] = {
     "validate": set(),
     "literature target": set(),
+    "literature frame": {"--root"},
     "literature questions": {"--root"},
     "literature review": {
         "--approve",
@@ -99,6 +100,11 @@ OTHER_OPTIONS = {"--plugin-dir", "--marketplace"}
 # The burden mirror's count units. The atlas exports no enum for them (the column is a plain
 # string in schemas/tables/burden.v1.json), so they are a literal; a Finding refuses them.
 BURDEN_COUNT_UNITS = {"individuals", "alleles", "de_novo_mutations"}
+
+
+# A skill is one page an agent reads in full. Raised from 120 when extract gained the
+# variants and `unclear` steps (C0 task 16); it is a ceiling, not a target.
+LINE_LIMIT = 210
 
 
 def _text(path: Path) -> str:
@@ -156,6 +162,7 @@ def _model_fields() -> set[str]:
         "Variant",
         "ReportedNames",
         "Normalisation",
+        "Unclear",
     ):
         fields |= set(defs[name]["properties"])
     return fields | {"findings", "triage", "searches", "gene", "synthesis", "normalisations"}
@@ -186,7 +193,8 @@ def _walk(node: Any) -> Iterator[tuple[str, Any]]:
     if isinstance(node, dict):
         for key, value in node.items():
             yield str(key), value
-            yield from _walk(value)
+            if str(key) != "unclear":  # its reason and settler are checked as an `Unclear`
+                yield from _walk(value)
     elif isinstance(node, list):
         for item in node:
             yield from _walk(item)
@@ -239,7 +247,7 @@ def test_a_skill_has_its_frontmatter_its_sections_and_its_hand_offs(path: Path) 
     assert match.group(2).startswith("Use when ")
     for heading in ("## Inputs", "## Steps", "## Done when", "## Never"):
         assert len(re.findall(rf"^{heading}$", text, flags=re.M)) == 1, heading
-    assert len(text.splitlines()) <= 120
+    assert len(text.splitlines()) <= LINE_LIMIT
     assert "the atlas checkout's `curator/curator-rules.md`" in text
     # Every skill ends by validating and handing the work to the human, in the atlas.
     tail = text[text.rindex("## Done when") :]
@@ -322,18 +330,28 @@ def test_the_yaml_examples_hold_real_vocabulary_and_validate_against_the_schema(
         "syndromic": enums["SyndromicStatus"],
         "lesion_groups": enums["LesionGroup"],
         "review_status": enums["ReviewStatus"],
+        "review_settled_by": enums["SettledBy"],
+        "settled_by": enums["SettledBy"],
+        "placement": enums["VariantPlacement"],
+        "zygosity": enums["VariantZygosity"],
+        "phase": enums["Phase"],
     }
     defs = _defs()
     validators = {
         name: Draft202012Validator({"$ref": f"#/$defs/{name}", "$defs": defs})
         for name in ("Finding", "TriageEntry")
     }
+    unclear_validator = Draft202012Validator({"$ref": "#/$defs/Unclear", "$defs": defs})
     seen_fields: set[str] = set()
     for path in CURATOR_FILES:
         for block in _fenced_yaml(_text(path)):
             for key, value in _walk(block):
                 assert key in _model_fields(), f"{path.name}: unknown field {key}"
                 seen_fields.add(key)
+                if key == "unclear":
+                    for entry in value.values():
+                        unclear_validator.validate(entry)
+                    seen_fields |= {"reason", "settled_by"}
                 if key in by_field:
                     values = value if isinstance(value, list) else [value]
                     assert set(values) <= by_field[key], f"{path.name}: {key}: {values}"
@@ -345,6 +363,10 @@ def test_the_yaml_examples_hold_real_vocabulary_and_validate_against_the_schema(
         validators["TriageEntry"].validate(record)
     # The examples cover both record kinds, so they are not vacuous.
     assert {"findings", "decision", "design", "locators"} <= seen_fields
+    # ... and a placed variant and an `unclear` one with its reason and settler.
+    assert {"variants", "placement", "unclear", "reason", "settled_by"} <= seen_fields
+    unclear = [v for f in findings for v in f.get("variants", []) if v.get("zygosity") == "unclear"]
+    assert [v["unclear"]["zygosity"]["settled_by"] for v in unclear] == ["atlas_model"]
 
 
 def test_backticked_names_are_real_values_fields_or_options() -> None:
@@ -401,7 +423,22 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
     search = _text(REPO / "skills" / "literature-search" / "SKILL.md")
     assert "or the file changed while the search ran)" in search
     assert "exit 2, a bad argument or a schema refusal" in extract
+    # The variant rulings (spec 7.1, ruling D16') and the three-way rule (unclear spec 5.1).
+    flat = " ".join(extract.split())
+    assert "one entry per distinct variant per genotype context" in flat
+    assert "`as_reported` is verbatim" in flat
+    assert "never choose between the paper's own names" in flat
+    assert "`unclear` with its reason" in flat
+    assert "`not_stated` only when the paper is silent" in flat
+    assert "chd-curator normalise <SYMBOL>" in extract
+    assert "chd-atlas literature frame <SYMBOL>" in extract
+    assert "--settled-by <full_text|authors|expert|atlas_model>" in extract
     assert "the file is damaged" not in search and "does not validate" not in extract
+    # The verifier extracts variants blind and leaves the placed fields to `normalise`.
+    flat_verify = " ".join(verify.split()).lower()
+    assert "variants blind" in flat_verify
+    assert "never copy a placement or a name from the first pass" in flat_verify
+    assert "leave `hgvs_c`, `hgvs_p`, `grch38` and `normalisation` unset" in flat_verify
     # The verifier writes `unknown`; the curator reads the field in the listing.
     assert "always set `shares_probands_with: unknown`" in verify
     assert "field in the `review` listing" in extract
