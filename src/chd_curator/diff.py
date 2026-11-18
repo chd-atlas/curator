@@ -31,7 +31,8 @@ every default of the exported schema's ``Variant`` and ``ReportedNames`` (and of
 object) is filled first, because the atlas compares after a pydantic dump with every default
 written and curator compares plain YAML; then each variant loses ``id``, ``with``,
 ``normalisation``, ``locator``, ``review_status`` and ``review_note`` and the dicts are sorted
-by canonical JSON. Without the fill, a pass that writes ``zygosity: not_stated`` and one that
+by canonical JSON. String leaves are stripped, as the atlas's models strip them.
+Without the fill, a pass that writes ``zygosity: not_stated`` and one that
 omits it would agree in ``chd-atlas literature review --against`` and differ here.
 
 The atlas keeps its own copy of the compared set in ``tests/unit/test_gene_literature_diff.py``
@@ -200,6 +201,17 @@ def _fill_object(
     return out
 
 
+def _stripped(value: Any) -> Any:
+    """`value` with every string leaf stripped, as the atlas's ``_NonBlankStr`` does on load."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return [_stripped(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _stripped(v) for k, v in value.items()}
+    return value
+
+
 def _variants(
     finding: Mapping[str, Any], properties: Mapping[str, Any], defs: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
@@ -209,7 +221,7 @@ def _variants(
     except (KeyError, TypeError) as exc:
         raise DiffError("the atlas's gene_literature_file schema has no $defs.Variant") from exc
     listed = _filled(finding, "variants", properties["variants"])
-    filled = (_fill_object(v, variant_schema, defs) for v in listed)
+    filled = (_stripped(_fill_object(v, variant_schema, defs)) for v in listed)
     return sorted(
         ({k: v for k, v in item.items() if k not in _VARIANT_BOOKKEEPING} for item in filled),
         key=lambda item: json.dumps(item, sort_keys=True),

@@ -441,3 +441,10 @@ def test_variants_ignore_bookkeeping_and_order(schema: dict[str, Any]) -> None:
     # ... and the same variants with a different name for one are a difference.
     changed = _variant(2, as_reported="variant 2", reported={"c": "c.998G>T", "p": "p.D111H"})
     assert _pair(schema, {"variants": [one, two]}, {"variants": [one, changed]}).fields
+
+
+def test_variants_that_differ_only_in_surrounding_whitespace_agree(schema: dict[str, Any]) -> None:
+    """The atlas's models strip every string; curator compares raw YAML, so it strips too."""
+    padded = _variant(1, as_reported="variant 1 ", reported={"c": " c.835C>T", "p": "p.R279X\t"})
+    result = _pair(schema, {"variants": [_variant(1)]}, {"variants": [padded]})
+    assert result.agreed == ("CHDA:LIT:0000001",)

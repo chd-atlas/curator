@@ -67,15 +67,15 @@ VariantValidator REST service (at most one request a second, the only network us
 fills `hgvs_c`, `hgvs_p` and `grch38` and records the run under `normalisations`. A variant
 VariantValidator refuses, or whose predicted `p.` disagrees with the paper's, becomes `unplaced` and
 `pending_review` with a note naming why; it never touches an approval or `verified_by`. A network
-failure writes nothing (exit 1); two variants that would share one `grch38` and the same `with`
-partners write nothing either (exit 2). Run `chd-atlas validate` after it: the atlas, not curator,
+failure writes nothing (exit 1); two variants the atlas would refuse as one name repeated (the same
+`grch38`, in one genotype context or one `with` group, ruling D16') write nothing either (exit 2). Run `chd-atlas validate` after it: the atlas, not curator,
 checks a refused variant's kept residue. Editing a finding's variants changes its approval digest, so
 re-approve it afterwards.
 
 Run `.venv/bin/chd-atlas validate` after each step.
 
 `NCBI_API_KEY` is optional, read from the environment only and never written to a file.
-`search`, `abstracts` and `add-publication` need the network.
+`search`, `abstracts`, `add-publication` and `normalise` need the network.
 
 ## Develop
 

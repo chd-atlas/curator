@@ -294,14 +294,14 @@ def test_two_variants_normalising_to_one_key_write_nothing_and_exit_2(
     result = _normalise(stub_atlas, root)
 
     assert result.exit_code == 2
-    assert "variants 1 and 2 both normalise to 12:114366312:G:A" in result.stdout
+    assert "variants 1 and 2 both name 12:114366312:G:A" in result.stdout
     assert path.read_text() == text
 
 
 def test_the_same_key_with_different_partners_is_allowed(
     stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D16: a repeated key is fine when the `with` partner sets differ."""
+    """D16': a repeated key is fine when the `with` partner sets differ."""
     second = variant(2, "c.835C>T", "p.R279X").replace(
         "        carriers:", "        with: [3]\n        carriers:"
     )
@@ -461,3 +461,150 @@ def test_an_approved_finding_it_changes_is_reported_void_in_one_literal_line(
     )
     again = _normalise(stub_atlas, root)
     assert again.exit_code == 0 and "approval is now void" not in again.stdout
+
+
+def linked(
+    number: int,
+    c: str,
+    *,
+    as_reported: str | None = None,
+    p: str | None = None,
+    with_: list[int] | None = None,
+    phase: str = "trans",
+    kind: str = "snv_indel",
+) -> str:
+    """A variant written compactly, optionally linked to partners by `with`."""
+    reported = f"{{c: '{c}'" + (f", p: '{p}'" if p else "") + "}"
+    text = (
+        f"      - id: {number}\n        as_reported: '{as_reported or c}'\n"
+        "        locator: {kind: in_text, element: Table 2}\n"
+        f"        kind: {kind}\n        placement: mane\n        reported: {reported}\n"
+    )
+    if with_ is not None:
+        text += f"        zygosity: heterozygous\n        with: {with_}\n        phase: {phase}\n"
+    return text + "        carriers: {de_novo: 1, inherited: 0, origin_unknown: 0}\n"
+
+
+BOTH = {f"{TBX5}:c.835C>T": C835, f"{TBX5}:c.998G>T": C998}
+
+
+@pytest.mark.parametrize(
+    "variants",
+    [
+        # S1: one trans pair written twice under different ids; the partners are named alike.
+        [
+            linked(1, "c.835C>T", with_=[3]),
+            linked(2, "c.835C>T", with_=[4]),
+            linked(3, "c.998G>T", with_=[1]),
+            linked(4, "c.998G>T", with_=[2]),
+        ],
+        # S2: one change twice inside one `with` pair, which is in effect homozygous.
+        [
+            linked(1, "c.835C>T", as_reported="a", with_=[2]),
+            linked(2, "c.835C>T", as_reported="b", with_=[1]),
+        ],
+        # The same key twice with no partner at all.
+        [linked(1, "c.835C>T", as_reported="a"), linked(2, "c.835C>T", as_reported="b")],
+    ],
+    ids=["same-pair-twice", "one-change-twice-in-a-pair", "plain-twice"],
+)
+def test_the_atlas_d16_prime_duplicates_write_nothing_and_exit_2(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch, variants: list[str]
+) -> None:
+    text = literature(*variants)
+    path = _write(root, text)
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for(BOTH))
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 2, result.stdout
+    assert "one genotype context" in result.stdout
+    assert path.read_text() == text
+
+
+@pytest.mark.parametrize(
+    "variants",
+    [
+        # Partners named differently (as_reported of an unplaced partner) are different contexts.
+        [
+            linked(1, "c.835C>T", with_=[3]),
+            linked(2, "c.835C>T", with_=[4]),
+            linked(3, "c.998G>T", as_reported="A", with_=[1]),
+            linked(4, "c.998G>T", as_reported="B", with_=[2]),
+        ],
+        # So are different phases.
+        [
+            linked(1, "c.835C>T", with_=[3], phase="trans"),
+            linked(2, "c.835C>T", with_=[4], phase="cis"),
+            linked(3, "c.998G>T", with_=[1], phase="trans"),
+            linked(4, "c.998G>T", with_=[2], phase="cis"),
+        ],
+    ],
+    ids=["different-partner-names", "different-phase"],
+)
+def test_distinct_contexts_are_written(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch, variants: list[str]
+) -> None:
+    path = _write(root, literature(*variants))
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for(BOTH))
+
+    assert _normalise(stub_atlas, root).exit_code == 0
+    assert _variants(path)[1]["grch38"] == _variants(path)[2]["grch38"]
+
+
+def test_a_bare_question_mark_is_a_p_naming_a_residue_like_the_atlas_reads_it(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S6: `?` is not a `p.` description, the atlas's parser rejects it and reads that as
+    "names a residue", so it disagrees with Arg279Ter and the variant is unplaced."""
+    path = _write(root, literature(linked(1, "c.835C>T", p="?")))
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for(BOTH))
+
+    assert _normalise(stub_atlas, root).exit_code == 0
+    assert _variants(path)[1]["placement"] == "unplaced"
+
+
+def test_a_count_less_frameshift_is_kept_in_a_form_the_atlas_reads(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(root, literature(linked(1, "c.998G>T", p="p.D111fsX")))
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for(BOTH))
+
+    assert _normalise(stub_atlas, root).exit_code == 0
+    assert _variants(path)[1]["hgvs_p"] == "NP_852259.1:p.(Asp111fs)"
+
+
+def test_a_protein_on_another_accession_is_unplaced_naming_both(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(root, literature(linked(1, "c.835C>T", p="p.R279X")))
+    answer = json.loads((FIXTURES / C835).read_text())
+    entry = answer[f"{TBX5}:c.835C>T"]["hgvs_predicted_protein_consequence"]
+    entry["tlr"] = "NP_852259.2:p.(Arg279Ter)"
+    monkeypatch.setattr(cli, "_vv_fetch", lambda u: json.dumps(answer).encode())
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 0
+    one = _variants(path)[1]
+    assert one["placement"] == "unplaced" and one["review_status"] == "pending_review"
+    assert "NP_852259.2" in one["review_note"] and "NP_852259.1" in one["review_note"]
+    assert not {"hgvs_c", "hgvs_p", "grch38"} & set(one)
+    assert "unplaced: VariantValidator's protein is NP_852259.2, not NP_852259.1" in result.stdout
+
+
+def test_only_snv_indel_variants_are_asked_and_the_rest_are_reported_skipped(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = literature(linked(1, "c.835C>T"), linked(2, "c.998G>T", kind="cnv"))
+    path = _write(root, text)
+    fetch = fixture_for({f"{TBX5}:c.835C>T": C835})
+    monkeypatch.setattr(cli, "_vv_fetch", fetch)
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 0, result.stdout
+    assert "variant 2 (c.998G>T): skipped, kind cnv is not snv_indel" in result.stdout
+    assert "asked about 1 variant(s)" in result.stdout
+    assert "normalisation" not in _variants(path)[2]
+    assert len(fetch.asked) == 1  # type: ignore[attr-defined]

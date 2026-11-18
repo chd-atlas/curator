@@ -1,15 +1,17 @@
 """Whether two ``p.`` descriptions state the same change.
 
 Reimplemented from the atlas's ``hgvs.py`` (``same_protein_change``) and
-``validate/finding_variants.py`` (``_lit025``, ``_names_a_residue``) at 3af62c5, without
-importing ``chd_atlas``. ``normalise`` must call a variant "agreeing" exactly when the atlas's
-LIT025 would, or a variant curator places would be refused by ``chd-atlas validate``.
+``validate/finding_variants.py`` (``_lit025``, ``_names_a_residue``) at 9594d10, without
+importing ``chd_atlas``. The comparison and the residue test are the atlas's, so a variant
+curator places is not refused by LIT025. ``normalise`` is more conservative than LIT025 in two
+places (see ``cli._agrees``): it unplaces a ``hgvs_p`` on another protein accession, which the
+atlas reports as LIT016 instead, and an empty ``hgvs_p`` beside a paper residue.
 
 The rules, in the atlas's words: parts after ``p.`` (any accession dropped) are compared with
 parentheses stripped, three-letter codes mapped to one-letter, and ``Ter``, ``*`` and ``X``
 equal. A frameshift naming no new residue (``R279fs``, ``H445fsX136``) equals any frameshift
 at the same residue and position (owner rulings D5, D5'). A ``p.`` naming no residue
-(``p.?``, ``p.=``, ``p.0``) has nothing to compare (D6).
+(``p.?``, ``p.=``, ``p.0``) has nothing to compare on either side (D6, D6').
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ _ONE_TO_THREE["X"] = "Ter"
 _THREE: Final = "|".join(THREE_LETTER)
 _NO_RESIDUE: Final = frozenset({"?", "=", "0", "0?"})
 # Reference residue, position, the new residue (empty when none is named), the rest.
+_P_DESCRIPTION: Final = re.compile(r"(?:[^:\s]+:)?p\.(\S+)")
 _FRAMESHIFT: Final = re.compile(r"([A-Z*])(\d+)([A-Z*]?)fs(.*)")
 
 
@@ -59,6 +62,11 @@ def _protein_change(text: str) -> str:
     return body.replace("X", "*")
 
 
+def protein_key(text: str) -> str:
+    """The canonical reading of a ``p.`` description, for grouping (the atlas's ``protein_key``)."""
+    return _protein_change(text)
+
+
 def same_protein_change(a: str, b: str) -> bool:
     first, second = _protein_change(a), _protein_change(b)
     one, two = _FRAMESHIFT.fullmatch(first), _FRAMESHIFT.fullmatch(second)
@@ -68,8 +76,15 @@ def same_protein_change(a: str, b: str) -> bool:
 
 
 def names_a_residue(text: str) -> bool:
-    """False only for a ``p.`` naming no residue: ``p.?``, ``p.=``, ``p.0``, bracketed or not."""
-    body = _after_p(text.strip())
+    """False only for a ``p.`` description that names no residue, as the atlas's
+    ``_names_a_residue`` is: ``p.?``, ``p.=``, ``p.0``, bracketed or not, with or without an
+    accession. Anything that is not a ``p.`` description (a bare ``?``, say) is True, because the
+    atlas's parser rejects it and the function reads a rejection as "names a residue".
+    """
+    match = _P_DESCRIPTION.fullmatch(text)
+    if match is None:
+        return True
+    body = match[1]
     if body.startswith("(") and body.endswith(")"):
         body = body[1:-1]
     return body not in _NO_RESIDUE
@@ -79,13 +94,16 @@ def three_letter(text: str) -> str:
     """The description after ``p.`` with every one-letter residue written in three letters.
 
     ``p.D111Y`` and ``p.(Asp111Tyr)`` both give ``Asp111Tyr``; ``*`` and ``X`` give ``Ter``.
-    Lowercase edit words (``fs``, ``del``, ``ext``) are left as written.
+    Lowercase edit words (``fs``, ``del``, ``ext``) are left as written. A frameshift's stop
+    with no count (``D111fsX``) is dropped, giving ``Asp111fs``: the atlas reads ``fs`` and
+    ``fsTer5`` and ``fsTer?`` but rejects a bare ``fsTer`` (LIT021).
     """
     body = _after_p(text.strip())
     if body.startswith("(") and body.endswith(")"):
         body = body[1:-1]
-    return re.sub(
+    three = re.sub(
         rf"({_THREE})|([A-Z*])",
         lambda m: m.group(1) or _ONE_TO_THREE.get(m.group(2), m.group(2)),
         body,
     )
+    return re.sub(r"fsTer(?![\d?])", "fs", three)

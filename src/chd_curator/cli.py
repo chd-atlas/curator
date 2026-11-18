@@ -42,7 +42,7 @@ from chd_curator.atlas import (
     target,
 )
 from chd_curator.diff import DiffError, diff_findings, parse_findings_file
-from chd_curator.hgvs import names_a_residue, same_protein_change, three_letter
+from chd_curator.hgvs import names_a_residue, protein_key, same_protein_change, three_letter
 from chd_curator.pubmed import Fetch, PubMedError, urllib_fetch
 from chd_curator.records import (
     ApprovedSynthesis,
@@ -341,7 +341,13 @@ def _on_mane(reported_transcript: str | None, mane: Frame) -> bool:
 
 
 def _agrees(reported: dict[str, Any], hgvs_p: str | None, mane: Frame) -> bool:
-    """Whether the atlas's LIT025 would accept `hgvs_p` beside the paper's `p.`."""
+    """Whether `hgvs_p` may be written beside the paper's `p.` (the atlas's LIT025 with D6').
+
+    The comparison is the atlas's. curator is more conservative in two places, on purpose:
+    an absent `hgvs_p` beside a paper residue disagrees (as in the atlas), and `_decide`
+    unplaces a `hgvs_p` on another protein accession, where the atlas skips LIT025 for an
+    unreadable or off-protein `hgvs_p` and reports the accession itself (LIT016).
+    """
     paper = reported.get("p")
     if paper is None or not _on_mane(reported.get("transcript"), mane):
         return True
@@ -367,15 +373,25 @@ def _decide(
     """The fields to write for one variant, and the line to print about it."""
     reported: dict[str, Any] = variant.get("reported") or {}
     if isinstance(result, variantvalidator.Placed):
-        if _agrees(reported, result.hgvs_p, mane):
+        accession = (
+            result.hgvs_p.split(":", 1)[0] if result.hgvs_p and ":" in result.hgvs_p else None
+        )
+        if accession is not None and accession != mane.protein:
+            note = (
+                f"VariantValidator places {description} on protein {accession}, not the pinned "
+                f"{mane.protein}; the variant is unplaced"
+            )
+            message = f"unplaced: VariantValidator's protein is {accession}, not {mane.protein}"
+        elif _agrees(reported, result.hgvs_p, mane):
             fields = {"hgvs_c": result.hgvs_c, "hgvs_p": result.hgvs_p, "grch38": result.grch38}
             return fields, f"placed {result.hgvs_c} at {result.grch38} ({result.hgvs_p or 'no p.'})"
-        shown = result.hgvs_p or "no protein change"
-        note = (
-            f"the paper names {reported['p']} but VariantValidator places {description} as "
-            f"{shown}; the two disagree, so the variant is unplaced"
-        )
-        message = f"unplaced: the paper names {reported['p']}, VariantValidator gives {shown}"
+        else:
+            shown = result.hgvs_p or "no protein change"
+            note = (
+                f"the paper names {reported['p']} but VariantValidator places {description} as "
+                f"{shown}; the two disagree, so the variant is unplaced"
+            )
+            message = f"unplaced: the paper names {reported['p']}, VariantValidator gives {shown}"
     else:
         note = f"VariantValidator refused {description}: {result.warnings[0]}"
         message = f"unplaced: {result.warnings[0]}"
@@ -400,26 +416,97 @@ def _decide(
     return fields, message
 
 
+def _row_key(variant: dict[str, Any]) -> str | None:
+    """The key the atlas groups a variant's page row under, or None (`_row_key` there)."""
+    if variant.get("placement") == "mane" and variant.get("grch38") is not None:
+        return "g:" + str(variant["grch38"])
+    if variant.get("placement") == "protein" and variant.get("hgvs_p") is not None:
+        return "p:" + protein_key(str(variant["hgvs_p"]))
+    return None
+
+
+def _groups(variants: list[dict[str, Any]]) -> dict[int, int]:
+    """Variant id -> its `with` group number: connected components of the links that resolve,
+    read undirected, of size two or more. Empty when two variants share an id."""
+    ids = [v["id"] for v in variants]
+    if len(set(ids)) != len(ids):
+        return {}
+    parent = {i: i for i in ids}
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for v in variants:
+        for other in v.get("with") or []:
+            if other in parent and other != v["id"]:
+                parent[find(v["id"])] = find(other)
+    members: dict[int, list[int]] = {}
+    for i in ids:
+        members.setdefault(find(i), []).append(i)
+    sized = [g for g in members.values() if len(g) > 1]
+    return {i: n for n, group in enumerate(sized) for i in group}
+
+
+def _context(variant: dict[str, Any], by_id: dict[int, dict[str, Any]]) -> tuple[Any, Any]:
+    """The genotype context (ruling D16'): the partners' names and the phase.
+
+    A partner is named by its row key, or by `as_reported` when it has none, so the same
+    pair written under different ids is one context.
+    """
+    names = set()
+    for other in variant.get("with") or []:
+        partner = by_id.get(other)
+        names.add(f"#{other}" if partner is None else _row_key(partner) or partner["as_reported"])
+    return frozenset(names), variant.get("phase")
+
+
 def _duplicate_keys(
     findings: list[dict[str, Any]], changes: dict[tuple[str, int], dict[str, Any]]
 ) -> list[str]:
-    """Pairs of variants one finding would hold under one grch38 and one `with` set (D16)."""
+    """Pairs of variants the atlas would refuse as one name repeated (LIT022, ruling D16').
+
+    Computed on the state after normalisation. Two variants with one row key clash when their
+    genotype contexts are equal, or when both sit in one `with` group (one change twice in a
+    group is in effect homozygous).
+    """
     problems: list[str] = []
     for finding in findings:
-        seen: dict[tuple[str, frozenset[int]], int] = {}
-        for variant in finding.get("variants") or []:
-            merged = {**variant, **changes.get((str(finding["id"]), variant["id"]), {})}
-            if merged.get("placement") != "mane" or merged.get("grch38") is None:
+        merged = [
+            {**v, **changes.get((str(finding["id"]), v["id"]), {})}
+            for v in finding.get("variants") or []
+        ]
+        by_id = {v["id"]: v for v in merged}
+        group_of = _groups(merged)
+        seen: dict[str, list[dict[str, Any]]] = {}
+        for variant in merged:
+            key = _row_key(variant)
+            if key is None:
                 continue
-            key = (merged["grch38"], frozenset(merged.get("with") or []))
-            if key in seen:
+            twin = next(
+                (
+                    w
+                    for w in seen.get(key, [])
+                    if w["id"] != variant["id"]
+                    and (
+                        _context(w, by_id) == _context(variant, by_id)
+                        or (
+                            variant["id"] in group_of
+                            and group_of.get(w["id"]) == group_of[variant["id"]]
+                        )
+                    )
+                ),
+                None,
+            )
+            if twin is not None:
                 problems.append(
-                    f"{finding['id']}: variants {seen[key]} and {variant['id']} both normalise "
-                    f"to {key[0]} with the same `with` partners; the atlas would refuse the "
-                    "file (LIT022), so fix their as-reported names or links first"
+                    f"{finding['id']}: variants {twin['id']} and {variant['id']} both name "
+                    f"{key[2:]} in one genotype context (or one `with` group); the atlas would "
+                    "refuse the file (LIT022), so fix their names or links first"
                 )
-            else:
-                seen[key] = variant["id"]
+            seen.setdefault(key, []).append(variant)
     return problems
 
 
@@ -455,6 +542,7 @@ def normalise(
 
     changes: dict[tuple[str, int], dict[str, Any]] = {}
     lines: list[str] = []
+    skipped: list[str] = []
     metadata: variantvalidator.Metadata | None = None
     for finding in findings:
         for variant in finding.get("variants") or []:
@@ -464,6 +552,13 @@ def normalise(
                 or reported.get("c") is None
                 or variant.get("normalisation") is not None
             ):
+                continue
+            if variant.get("kind") != "snv_indel":
+                skipped.append(
+                    f"{finding['id']} variant {variant['id']} ({variant['as_reported']}): skipped, "
+                    f"kind {variant.get('kind')} is not snv_indel (the atlas refuses a mane "
+                    "variant of that kind, LIT022)"
+                )
                 continue
             description = f"{reported.get('transcript') or mane.transcript}:{reported['c']}"
             try:
@@ -481,6 +576,8 @@ def normalise(
                 f"{finding['id']} variant {variant['id']} ({variant['as_reported']}): {message}"
             )
     if metadata is None:
+        for line in skipped:
+            typer.echo(line)
         typer.echo("no variant is placed `mane` with a reported c. and no normalisation")
         return
     problems = _duplicate_keys(findings, changes)
@@ -503,7 +600,7 @@ def normalise(
         raise _fail(str(exc), 1) from None
     except WriteRefused as exc:
         raise _fail(str(exc), 2) from None
-    for line in lines:
+    for line in [*lines, *skipped]:
         typer.echo(line)
     approved = {str(f["id"]) for f in findings if f.get("approved_by") is not None}
     for finding_id in sorted({f for f, _ in changes} & approved):
@@ -513,7 +610,7 @@ def normalise(
             "--by <name>"
         )
     typer.echo(
-        f"normalised {len(lines)} variant(s) in {path} as run {run_id}; run chd-atlas validate"
+        f"asked about {len(lines)} variant(s) in {path} as run {run_id}; run chd-atlas validate"
     )
 
 

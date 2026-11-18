@@ -1,4 +1,4 @@
-"""The agree rule, ported from the atlas's ``tests/unit/test_hgvs.py`` at 3af62c5.
+"""The agree rule, ported from the atlas's ``tests/unit/test_hgvs.py`` at 9594d10.
 
 ``normalise`` must call a variant agreeing exactly when the atlas's LIT025 would, so the
 parametrised cases below are the atlas's own (D5, D5'), plus D6's no-residue forms.
@@ -45,6 +45,8 @@ def test_same_protein_change_matches_the_atlas(a: str, b: str, same: bool) -> No
 @pytest.mark.parametrize(
     ("text", "names"),
     [
+        ("?", True),
+        ("=", True),
         ("p.?", False),
         ("p.(?)", False),
         ("p.=", False),
@@ -70,6 +72,9 @@ def test_a_p_naming_no_residue_is_recognised_as_d6_does(text: str, names: bool) 
         ("p.H445fsX136", "His445fsTer136"),
         ("p.R279Gfs*5", "Arg279GlyfsTer5"),
         ("p.Gln70dup", "Gln70dup"),
+        ("p.D111fsX", "Asp111fs"),
+        ("p.D111Gfs*", "Asp111Glyfs"),
+        ("p.D111fsX?", "Asp111fsTer?"),
     ],
 )
 def test_three_letter_form_for_the_paper_kept_hgvs_p(text: str, expected: str) -> None:
