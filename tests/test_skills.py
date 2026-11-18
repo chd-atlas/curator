@@ -440,6 +440,12 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
     assert "never copy a placement or a name from the first pass" in flat_verify
     assert "leave `hgvs_c`, `hgvs_p`, `grch38` and `normalisation` unset" in flat_verify
     # The verifier writes `unknown`; the curator reads the field in the listing.
+    # R-E1: both readings are compared before `normalise` places anything.
+    assert "compared before `chd-curator normalise` places anything" in flat_verify
+    assert "a mane variant needs hgvs_c" in flat
+    assert "a mane variant needs grch38" in flat
+    assert "a mane variant needs normalisation" in flat
+    assert "once `chd-curator diff <SYMBOL> --against ... --mark-verified ...` has marked" in flat
     assert "always set `shares_probands_with: unknown`" in verify
     assert "field in the `review` listing" in extract
     for path in _all_files():

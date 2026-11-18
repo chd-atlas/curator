@@ -53,7 +53,7 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
    - `placement`: `mane` when the paper gives a `c.` name; `protein` for a `p.` name alone
      (then set `hgvs_p`); `structural` for a CNV or chromosomal change; `outside_region` for
      an rsID or a position beyond the exons +/-50 bp. Leave `hgvs_c`, `hgvs_p`, `grch38` and
-     `normalisation` of a `mane` variant to `normalise` (step 12).
+     `normalisation` of a `mane` variant to `normalise` (step 13).
    - `carriers` per variant, in the finding's `count_unit` (refused on a
      `common_variant_association`; the total may not exceed the finding's, a `with` group
      counted once). Name no variant the paper gives no carrier for.
@@ -117,11 +117,15 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
    `own_lab` (the default `false`; never guess it) in the `review` listing. Exit 1 means
    the PMID is already in `curation/publications.yaml` (nothing to add), PubMed failed or
    has no record of it, or the file is missing; exit 2, a bad argument or a schema refusal; the error says which.
-12. Run `chd-curator normalise <SYMBOL>` before validating. It places each `mane` variant on
-    the frame and fills `hgvs_c`, `hgvs_p`, `grch38` and `normalisation`. A variant it cannot
-    place becomes `unplaced` with a `pending_review` mark it writes; do not edit one by hand.
-    Do not write `hgvs_c`, `hgvs_p` or `grch38` yourself.
-13. Run `.venv/bin/chd-atlas validate` and fix every error it names.
+12. Run `.venv/bin/chd-atlas validate`. Before `normalise` the only errors allowed are "a mane
+    variant needs hgvs_c", "a mane variant needs grch38" and "a mane variant needs
+    normalisation"; fix every other error. Then hand off to verification.
+13. After verification, once `chd-curator diff <SYMBOL> --against ... --mark-verified ...` has
+    marked the agreeing findings, run `chd-curator normalise <SYMBOL>`, then validate again:
+    no error may remain. `normalise` places each `mane` variant and fills `hgvs_c`, `hgvs_p`,
+    `grch38` and `normalisation`; one it cannot place becomes `unplaced` with a
+    `pending_review` mark it writes, never edited by hand. Never write `hgvs_c` or `grch38`
+    yourself, nor `hgvs_p` on a `mane` variant; a `protein` variant holds its own `hgvs_p`.
 
 An illustrative finding (every value is made up), in the layout the tooling writes
 (entries at indent 2, fields at 4, nested lists at 6):
@@ -193,7 +197,7 @@ findings:
 ## Done when
 
 - Every included paper has a finding and a Publication record: validate reports no
-  `LIT003` or `LIT011`, and `normalise` then `validate` report no variant issue.
+  `LIT003` or `LIT011`, and after verification `normalise` then validate report no variant issue.
 - `.venv/bin/chd-atlas validate` reports no error. Hand off to the `literature-verify`
   skill, then the curator runs `.venv/bin/chd-atlas literature review <SYMBOL>`.
 

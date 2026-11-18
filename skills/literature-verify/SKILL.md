@@ -35,8 +35,8 @@ first pass.
    as written, and never choose between the paper's own names. Write `not_stated` only when
    the paper is silent and `unclear` with its reason (step 6) otherwise; a `pending_review`
    mark carries `review_settled_by`. Leave `hgvs_c`, `hgvs_p`, `grch38` and `normalisation`
-   unset: `chd-curator normalise` runs on the curated file only, so `diff` will list them
-   where the first pass was placed. Report that, and never copy a placement or a name from
+   unset: both passes are compared before `chd-curator normalise` places anything, so neither
+   carries them. Never copy a placement or a name from
    the first pass.
 4. Leave `verified_by`, `approved_by` and `approved_on` unset. Set
    `extracted_by: agent:literature-verify/<model>`.
@@ -91,7 +91,7 @@ first pass.
    ```
 7. Report every difference and every one-pass-only finding to the curator, with both
    values. Do not edit the first pass to settle one.
-8. Run `.venv/bin/chd-atlas validate`.
+8. Run `chd-curator normalise <SYMBOL>`, then `.venv/bin/chd-atlas validate`.
 
 ## Done when
 
