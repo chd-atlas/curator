@@ -616,3 +616,81 @@ def test_only_snv_indel_variants_are_asked_and_the_rest_are_reported_skipped(
     assert "asked about 1 variant(s)" in result.stdout
     assert "normalisation" not in _variants(path)[2]
     assert len(fetch.asked) == 1  # type: ignore[attr-defined]
+
+
+def test_a_padded_partner_name_is_the_same_context_as_the_stripped_one(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S8: the atlas strips every string on load, so a partner named `c.998G>T ` and one named
+    `c.998G>T` are one context and the pair written twice is refused (exit 2)."""
+    text = literature(
+        linked(1, "c.835C>T", with_=[3]),
+        linked(2, "c.835C>T", with_=[4]),
+        linked(3, "c.998G>T", as_reported="c.998G>T ", with_=[1]),
+        linked(4, "c.998G>T", with_=[2]),
+    )
+    path = _write(root, text)
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for(BOTH))
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 2, result.stdout
+    assert path.read_text() == text
+
+
+@pytest.mark.parametrize("padded", [" p.?", "p.? ", " p.R279X ", "\tp.(?)"])
+def test_a_padded_paper_p_is_read_stripped_and_untouched_text_stays_as_written(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch, padded: str
+) -> None:
+    text = literature(linked(1, "c.835C>T", p=padded))
+    path = _write(root, text)
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for(BOTH))
+
+    assert _normalise(stub_atlas, root).exit_code == 0
+    got = _variants(path)[1]
+    assert got["placement"] == "mane" and got["hgvs_p"] == "NP_852259.1:p.(Arg279Ter)"
+    assert got["reported"]["p"] == padded  # the paper's own text is not rewritten
+
+
+def test_a_count_less_stop_loss_is_kept_in_variantvalidators_form(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S9: the atlas reads `ext*?` but rejects a bare `extTer`."""
+    path = _write(root, literature(linked(1, "c.998G>T", p="p.*519Qext*")))
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for(BOTH))
+
+    assert _normalise(stub_atlas, root).exit_code == 0
+    assert _variants(path)[1]["hgvs_p"] == "NP_852259.1:p.(Ter519GlnextTer?)"
+
+
+def test_when_only_a_skipped_variant_exists_none_was_asked_and_the_skip_is_shown(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S10."""
+    path = _write(root, literature(linked(1, "c.835C>T", kind="cnv")))
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for({}))
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 0
+    assert "variant 1 (c.835C>T): skipped, kind cnv is not snv_indel" in result.stdout
+    assert "no variant was asked about" in result.stdout
+    assert "is placed `mane`" not in result.stdout
+    assert "normalisation" not in path.read_text()
+
+
+def test_a_padded_reported_c_is_asked_stripped_and_the_agree_rule_strips_both_sides(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chd_curator.atlas import Frame
+
+    mane = Frame("HGNC:11604", "TBX5", TBX5, "NP_852259.1")
+    assert cli._agrees({"p": " p.? "}, "NP_852259.1:p.(Arg279Ter)", mane)
+    assert cli._agrees({"p": "p.R279X"}, " NP_852259.1:p.(Arg279Ter) ", mane)
+    assert not cli._agrees({"p": " p.R279Q"}, "NP_852259.1:p.(Arg279Ter)", mane)
+    assert cli._agrees({"p": "p.R279Q", "transcript": " NM_000192.3 "}, "NP_852259.1:p.X", mane)
+
+    path = _write(root, literature(linked(1, " c.835C>T ")))
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for({f"{TBX5}:c.835C>T": C835}))  # strict URL
+    assert _normalise(stub_atlas, root).exit_code == 0
+    assert _variants(path)[1]["grch38"] == "12:114366312:G:A"

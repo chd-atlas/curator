@@ -41,7 +41,7 @@ from chd_curator.atlas import (
     schema_validator,
     target,
 )
-from chd_curator.diff import DiffError, diff_findings, parse_findings_file
+from chd_curator.diff import DiffError, diff_findings, parse_findings_file, stripped
 from chd_curator.hgvs import names_a_residue, protein_key, same_protein_change, three_letter
 from chd_curator.pubmed import Fetch, PubMedError, urllib_fetch
 from chd_curator.records import (
@@ -343,14 +343,17 @@ def _on_mane(reported_transcript: str | None, mane: Frame) -> bool:
 def _agrees(reported: dict[str, Any], hgvs_p: str | None, mane: Frame) -> bool:
     """Whether `hgvs_p` may be written beside the paper's `p.` (the atlas's LIT025 with D6').
 
-    The comparison is the atlas's. curator is more conservative in two places, on purpose:
-    an absent `hgvs_p` beside a paper residue disagrees (as in the atlas), and `_decide`
-    unplaces a `hgvs_p` on another protein accession, where the atlas skips LIT025 for an
-    unreadable or off-protein `hgvs_p` and reports the accession itself (LIT016).
+    The comparison is the atlas's, and so is an absent `hgvs_p` beside a paper residue (a
+    disagreement). curator is stricter only where the atlas skips LIT025 for a `hgvs_p` it
+    cannot use and reports that itself: `_decide` unplaces one on another protein accession
+    (the atlas: LIT016), and this unplaces an on-MANE one the atlas cannot read, such as
+    `p.(Met1ext-5)` or `p.(Gln70[3])` (the atlas: LIT021).
     """
-    paper = reported.get("p")
-    if paper is None or not _on_mane(reported.get("transcript"), mane):
+    paper, transcript = reported.get("p"), reported.get("transcript")
+    if paper is None or not _on_mane(transcript.strip() if transcript else None, mane):
         return True
+    paper = paper.strip()  # the atlas's models strip every string
+    hgvs_p = hgvs_p.strip() if hgvs_p else None
     if hgvs_p is None:
         return not names_a_residue(paper)
     # D6': with a residue named on only one side there is nothing to compare.
@@ -475,7 +478,7 @@ def _duplicate_keys(
     problems: list[str] = []
     for finding in findings:
         merged = [
-            {**v, **changes.get((str(finding["id"]), v["id"]), {})}
+            {**stripped(v), **changes.get((str(finding["id"]), v["id"]), {})}
             for v in finding.get("variants") or []
         ]
         by_id = {v["id"]: v for v in merged}
@@ -545,7 +548,9 @@ def normalise(
     skipped: list[str] = []
     metadata: variantvalidator.Metadata | None = None
     for finding in findings:
-        for variant in finding.get("variants") or []:
+        for raw_variant in finding.get("variants") or []:
+            # The atlas's models strip every string; the decisions read the stripped view.
+            variant = stripped(raw_variant)
             reported = variant.get("reported") or {}
             if (
                 variant.get("placement") != "mane"
@@ -578,7 +583,10 @@ def normalise(
     if metadata is None:
         for line in skipped:
             typer.echo(line)
-        typer.echo("no variant is placed `mane` with a reported c. and no normalisation")
+        typer.echo(
+            "no variant was asked about: none is a snv_indel placed `mane` with a reported c. "
+            "and no normalisation"
+        )
         return
     problems = _duplicate_keys(findings, changes)
     if problems:

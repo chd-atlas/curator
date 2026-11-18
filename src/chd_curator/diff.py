@@ -201,14 +201,14 @@ def _fill_object(
     return out
 
 
-def _stripped(value: Any) -> Any:
+def stripped(value: Any) -> Any:
     """`value` with every string leaf stripped, as the atlas's ``_NonBlankStr`` does on load."""
     if isinstance(value, str):
         return value.strip()
     if isinstance(value, list):
-        return [_stripped(item) for item in value]
+        return [stripped(item) for item in value]
     if isinstance(value, dict):
-        return {k: _stripped(v) for k, v in value.items()}
+        return {k: stripped(v) for k, v in value.items()}
     return value
 
 
@@ -221,7 +221,7 @@ def _variants(
     except (KeyError, TypeError) as exc:
         raise DiffError("the atlas's gene_literature_file schema has no $defs.Variant") from exc
     listed = _filled(finding, "variants", properties["variants"])
-    filled = (_stripped(_fill_object(v, variant_schema, defs)) for v in listed)
+    filled = (stripped(_fill_object(v, variant_schema, defs)) for v in listed)
     return sorted(
         ({k: v for k, v in item.items() if k not in _VARIANT_BOOKKEEPING} for item in filled),
         key=lambda item: json.dumps(item, sort_keys=True),

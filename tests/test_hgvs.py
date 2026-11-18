@@ -1,7 +1,8 @@
 """The agree rule, ported from the atlas's ``tests/unit/test_hgvs.py`` at 9594d10.
 
-``normalise`` must call a variant agreeing exactly when the atlas's LIT025 would, so the
-parametrised cases below are the atlas's own (D5, D5'), plus D6's no-residue forms.
+The comparison and the residue test are the atlas's, so the parametrised cases below are the
+atlas's own (D5, D5'), plus D6's no-residue forms. ``normalise`` is stricter than LIT025 only
+where the atlas skips it for a ``hgvs_p`` it cannot use (see ``hgvs.py``).
 """
 
 from __future__ import annotations
@@ -73,6 +74,9 @@ def test_a_p_naming_no_residue_is_recognised_as_d6_does(text: str, names: bool) 
         ("p.R279Gfs*5", "Arg279GlyfsTer5"),
         ("p.Gln70dup", "Gln70dup"),
         ("p.D111fsX", "Asp111fs"),
+        ("p.*519Qext*", "Ter519GlnextTer?"),
+        ("p.*519Qext*?", "Ter519GlnextTer?"),
+        ("p.*519Qext*7", "Ter519GlnextTer7"),
         ("p.D111Gfs*", "Asp111Glyfs"),
         ("p.D111fsX?", "Asp111fsTer?"),
     ],

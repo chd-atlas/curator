@@ -2,10 +2,12 @@
 
 Reimplemented from the atlas's ``hgvs.py`` (``same_protein_change``) and
 ``validate/finding_variants.py`` (``_lit025``, ``_names_a_residue``) at 9594d10, without
-importing ``chd_atlas``. The comparison and the residue test are the atlas's, so a variant
-curator places is not refused by LIT025. ``normalise`` is more conservative than LIT025 in two
-places (see ``cli._agrees``): it unplaces a ``hgvs_p`` on another protein accession, which the
-atlas reports as LIT016 instead, and an empty ``hgvs_p`` beside a paper residue.
+importing ``chd_atlas``. The comparison and the residue test are the atlas's. ``normalise`` is
+stricter than LIT025 where the atlas would skip it for a ``hgvs_p`` it cannot use, and reports
+that ``hgvs_p`` itself instead: curator unplaces a ``hgvs_p`` on another protein accession
+(the atlas: LIT016) and an on-MANE ``hgvs_p`` the atlas cannot read, such as ``p.(Met1ext-5)``
+or ``p.(Gln70[3])`` (the atlas: LIT021). An absent ``hgvs_p`` beside a paper residue is not
+stricter: LIT025 fires there too.
 
 The rules, in the atlas's words: parts after ``p.`` (any accession dropped) are compared with
 parentheses stripped, three-letter codes mapped to one-letter, and ``Ter``, ``*`` and ``X``
@@ -96,7 +98,8 @@ def three_letter(text: str) -> str:
     ``p.D111Y`` and ``p.(Asp111Tyr)`` both give ``Asp111Tyr``; ``*`` and ``X`` give ``Ter``.
     Lowercase edit words (``fs``, ``del``, ``ext``) are left as written. A frameshift's stop
     with no count (``D111fsX``) is dropped, giving ``Asp111fs``: the atlas reads ``fs`` and
-    ``fsTer5`` and ``fsTer?`` but rejects a bare ``fsTer`` (LIT021).
+    ``fsTer5`` and ``fsTer?`` but rejects a bare ``fsTer`` (LIT021). A stop-loss with no count
+    (``*519Qext*``) becomes ``Ter519GlnextTer?``, VariantValidator's own form.
     """
     body = _after_p(text.strip())
     if body.startswith("(") and body.endswith(")"):
@@ -106,4 +109,5 @@ def three_letter(text: str) -> str:
         lambda m: m.group(1) or _ONE_TO_THREE.get(m.group(2), m.group(2)),
         body,
     )
-    return re.sub(r"fsTer(?![\d?])", "fs", three)
+    three = re.sub(r"fsTer(?![\d?])", "fs", three)
+    return re.sub(r"extTer(?![\d?])", "extTer?", three)
