@@ -397,6 +397,8 @@ _VARIANT_ORDER = (
     "phenotypes",
     "review_status",
     "review_note",
+    "review_settled_by",
+    "unclear",
 )
 _NORMALISATION_ORDER = (
     "id",
