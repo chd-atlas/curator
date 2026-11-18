@@ -129,3 +129,40 @@ def test_the_throttle_spaces_requests_one_second_apart() -> None:
     throttle.wait()  # already more than a second since the last: no wait
     assert slept == [pytest.approx(0.75)]
     assert vv._Throttle.GAP == 1.0
+
+
+class _Response:
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return b"{}"
+
+
+def test_every_real_request_waits_on_the_throttle_and_failures_name_no_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+    import urllib.request
+
+    waits: list[str] = []
+
+    class Recorder:
+        def wait(self) -> None:
+            waits.append("wait")
+
+    monkeypatch.setattr(vv, "_throttle", Recorder())
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: _Response())
+    assert vv.urllib_fetch("https://example.invalid/x") == b"{}"
+    assert waits == ["wait"]
+
+    def refuse(*_a: object, **_k: object) -> None:
+        raise urllib.error.URLError("secret-host")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    with pytest.raises(VariantValidatorError, match="could not reach VariantValidator: URLError"):
+        vv.urllib_fetch("https://example.invalid/x")
+    assert waits == ["wait", "wait"]
