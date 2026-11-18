@@ -65,9 +65,9 @@ def _pair(schema: dict[str, Any], first: dict[str, Any], second: dict[str, Any])
 
 
 def test_the_compared_set_is_pinned(schema: dict[str, Any]) -> None:
-    """The 17 fields a blind pass is compared on.
+    """The 18 fields a blind pass is compared on.
 
-    The atlas pins the same 17 in ``tests/unit/test_gene_literature_diff.py``
+    The atlas pins the same 18 in ``tests/unit/test_gene_literature_diff.py``
     (``test_the_compared_set_is_pinned``); the two change together. A field the
     atlas adds to ``Finding`` lands in ``compared_fields`` by default, and this test is
     where that is noticed.
@@ -82,6 +82,7 @@ def test_the_compared_set_is_pinned(schema: dict[str, Any]) -> None:
         "screened",
         "carriers",
         "variant_classes",
+        "variants",
         "cases",
         "controls",
         "p_value",
@@ -91,7 +92,7 @@ def test_the_compared_set_is_pinned(schema: dict[str, Any]) -> None:
         "syndromic",
         "cohorts",
     }
-    assert len(compared_fields(schema)) == 17
+    assert len(compared_fields(schema)) == 18
     assert list(compared_fields(schema)) == sorted(compared_fields(schema))
     assert set(EXCLUDED_FIELDS) == {
         "id",
@@ -350,3 +351,93 @@ def test_a_yaml_date_ruamel_cannot_build_is_a_diff_error_not_a_value_error(
     with pytest.raises(ValueError) as stdlib:
         datetime.date(2026, 2, 30)
     assert str(err.value) == str(stdlib.value)
+
+
+def _variant(number: int, **changes: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "id": number,
+        "as_reported": f"variant {number}",
+        "locator": {"kind": "in_text", "element": "Table 2"},
+        "kind": "snv_indel",
+        "placement": "mane",
+        "reported": {"c": "c.835C>T", "p": "p.R279X"},
+        "carriers": {"de_novo": 1, "inherited": 0, "origin_unknown": 0},
+    }
+    base.update(changes)
+    return base
+
+
+# Every default the atlas's Variant and ReportedNames give a variant that omits it.
+_EXPLICIT_DEFAULTS: dict[str, Any] = {
+    "zygosity": "not_stated",
+    "with": [],
+    "phenotypes": [],
+    "hgvs_c": None,
+    "hgvs_p": None,
+    "grch38": None,
+    "phase": None,
+    "normalisation": None,
+    "review_status": None,
+    "review_note": None,
+}
+
+
+def test_variants_that_differ_only_in_a_written_default_agree(schema: dict[str, Any]) -> None:
+    """The atlas compares after a pydantic dump with every default filled; curator compares
+    plain YAML, so it fills the schema's defaults itself, or one pass writing
+    ``zygosity: not_stated`` and one omitting it would agree in the atlas's
+    ``literature review --against`` and differ in ``chd-curator diff``."""
+    omitted = _variant(1)
+    written = _variant(
+        1,
+        **_EXPLICIT_DEFAULTS,
+        reported={"c": "c.835C>T", "p": "p.R279X", "rsid": None, "transcript": None},
+    )
+
+    result = _pair(schema, {"variants": [omitted]}, {"variants": [written]})
+    assert result.agreed == ("CHDA:LIT:0000001",) and not result.fields
+
+    # A nested object partly written, and a pass that omits `reported` against one that
+    # writes it empty, are the same default too.
+    bare = _variant(1)
+    del bare["reported"]
+    empty = _variant(1, reported={"c": None, "p": None, "rsid": None, "transcript": None})
+    assert _pair(schema, {"variants": [bare]}, {"variants": [empty]}).agreed
+    partial = _variant(1, reported={"c": "c.835C>T"})
+    full = _variant(1, reported={"c": "c.835C>T", "p": None, "rsid": None, "transcript": None})
+    assert _pair(schema, {"variants": [partial]}, {"variants": [full]}).agreed
+
+
+def test_a_non_default_variant_field_is_a_difference(schema: dict[str, Any]) -> None:
+    """The fill must not paper over a real difference: a zygosity that is not the default."""
+    result = _pair(
+        schema, {"variants": [_variant(1)]}, {"variants": [_variant(1, zygosity="homozygous")]}
+    )
+    assert result.agreed == ()
+    assert [name for name, *_ in result.fields["CHDA:LIT:0000001"]] == ["variants"]
+
+
+def test_variants_ignore_bookkeeping_and_order(schema: dict[str, Any]) -> None:
+    """`id`, `with`, `normalisation`, `locator`, `review_status` and `review_note` are not what
+    the paper says; the order variants are listed in carries no meaning either. `as_reported`
+    is what the paper says, so it stays compared."""
+    one, two = _variant(1), _variant(2, reported={"c": "c.998G>T", "p": "p.D111Y"})
+    noted = _variant(
+        7,
+        as_reported="variant 2",
+        reported={"c": "c.998G>T", "p": "p.D111Y"},
+        locator={"kind": "supplementary", "file": "s1.xlsx", "sheet": "S", "row": 3},
+        normalisation=4,
+        review_status="pending_review",
+        review_note="a curator's note",
+        **{"with": [8]},
+    )
+    result = _pair(
+        schema,
+        {"variants": [one, two]},
+        {"variants": [noted, _variant(8, as_reported="variant 1", normalisation=4)]},
+    )
+    assert result.agreed == ("CHDA:LIT:0000001",)
+    # ... and the same variants with a different name for one are a difference.
+    changed = _variant(2, as_reported="variant 2", reported={"c": "c.998G>T", "p": "p.D111H"})
+    assert _pair(schema, {"variants": [one, two]}, {"variants": [one, changed]}).fields

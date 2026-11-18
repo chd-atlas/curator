@@ -151,9 +151,12 @@ def _model_fields() -> set[str]:
         "SupplementaryLocator",
         "Synthesis",
         "SynthesisSentence",
+        "Variant",
+        "ReportedNames",
+        "Normalisation",
     ):
         fields |= set(defs[name]["properties"])
-    return fields | {"findings", "triage", "searches", "gene", "synthesis"}
+    return fields | {"findings", "triage", "searches", "gene", "synthesis", "normalisations"}
 
 
 def _option_names() -> set[str]:
@@ -244,7 +247,14 @@ def test_a_skill_has_its_frontmatter_its_sections_and_its_hand_offs(path: Path) 
 
 def test_every_curator_command_and_option_the_files_name_exists() -> None:
     commands = _commands()
-    assert set(commands) == {"search", "abstracts", "add-publication", "diff", "synthesis"}
+    assert set(commands) == {
+        "search",
+        "abstracts",
+        "add-publication",
+        "diff",
+        "normalise",
+        "synthesis",
+    }
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS
     named: set[str] = set()

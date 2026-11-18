@@ -28,9 +28,9 @@ measured here). On an older version, add the marketplace first:
 
 ## Run
 
-Run from the root of an atlas checkout. `search`, `abstracts`, `diff` and `synthesis` ask the atlas about the
+Run from the root of an atlas checkout. `search`, `abstracts`, `diff`, `normalise` and `synthesis` ask the atlas about the
 gene by running its CLI, `<root>/.venv/bin/chd-atlas` unless `--atlas-cli` or `CHD_ATLAS_CLI` names
-another; `add-publication` does not. `search`, `add-publication`, `diff` and `synthesis` read the JSON Schemas
+another; `add-publication` does not. `search`, `add-publication`, `diff`, `normalise` and `synthesis` read the JSON Schemas
 the atlas exports into `<root>/schemas/`, and every file curator writes is checked against them
 first. curator never imports the atlas. The skills read the atlas checkout's
 `curator/curator-rules.md`. Their hand-off commands, `.venv/bin/chd-atlas validate` and
@@ -60,6 +60,17 @@ never removes an approval. The atlas's own checks (`SYN001` to `SYN004`) run in
 `chd-atlas validate`. You then run `.venv/bin/chd-atlas literature review <SYMBOL>`, which lists each sentence
 beside what it cites and prints an `approve with:` line carrying the digest of what it listed;
 you run that line with your own name in `--by`.
+
+`chd-curator normalise <SYMBOL>` places each finding variant the paper named by its `c.` (placement
+`mane`, no normalisation yet) on the gene's pinned MANE Select transcript, using the public
+VariantValidator REST service (at most one request a second, the only network use besides PubMed). It
+fills `hgvs_c`, `hgvs_p` and `grch38` and records the run under `normalisations`. A variant
+VariantValidator refuses, or whose predicted `p.` disagrees with the paper's, becomes `unplaced` and
+`pending_review` with a note naming why; it never touches an approval or `verified_by`. A network
+failure writes nothing (exit 1); two variants that would share one `grch38` and the same `with`
+partners write nothing either (exit 2). Run `chd-atlas validate` after it: the atlas, not curator,
+checks a refused variant's kept residue. Editing a finding's variants changes its approval digest, so
+re-approve it afterwards.
 
 Run `.venv/bin/chd-atlas validate` after each step.
 
