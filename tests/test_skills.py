@@ -102,9 +102,11 @@ OTHER_OPTIONS = {"--plugin-dir", "--marketplace"}
 BURDEN_COUNT_UNITS = {"individuals", "alleles", "de_novo_mutations"}
 
 
-# A skill is one page an agent reads in full. Raised from 120 when extract gained the
-# variants and `unclear` steps (C0 task 16); it is a ceiling, not a target.
-LINE_LIMIT = 210
+# A skill is one page an agent reads in full. The ceiling is 120 lines (the atlas plan of
+# 2026-11-02); `literature-extract` measured 208 after the variants and `unclear` steps (C0 task
+# 16) and is held to its measured length rounded up to the next ten.
+LINE_LIMIT = {"literature-extract": 210}
+DEFAULT_LINE_LIMIT = 120
 
 
 def _text(path: Path) -> str:
@@ -247,7 +249,7 @@ def test_a_skill_has_its_frontmatter_its_sections_and_its_hand_offs(path: Path) 
     assert match.group(2).startswith("Use when ")
     for heading in ("## Inputs", "## Steps", "## Done when", "## Never"):
         assert len(re.findall(rf"^{heading}$", text, flags=re.M)) == 1, heading
-    assert len(text.splitlines()) <= LINE_LIMIT
+    assert len(text.splitlines()) <= LINE_LIMIT.get(path.parent.name, DEFAULT_LINE_LIMIT)
     assert "the atlas checkout's `curator/curator-rules.md`" in text
     # Every skill ends by validating and handing the work to the human, in the atlas.
     tail = text[text.rindex("## Done when") :]
@@ -438,14 +440,44 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
     flat_verify = " ".join(verify.split()).lower()
     assert "variants blind" in flat_verify
     assert "never copy a placement or a name from the first pass" in flat_verify
-    assert "leave `hgvs_c`, `hgvs_p`, `grch38` and `normalisation` unset" in flat_verify
+    assert (
+        "leave `hgvs_c`, `grch38` and `normalisation` unset, and `hgvs_p` on a `mane`"
+        in flat_verify
+    )
+    assert "`as_reported` (character for character)" in flat_verify
+    assert "only when the paper says something one value cannot hold" in flat_verify
     # The verifier writes `unknown`; the curator reads the field in the listing.
     # R-E1: both readings are compared before `normalise` places anything.
     assert "compared before `chd-curator normalise` places anything" in flat_verify
-    assert "a mane variant needs hgvs_c" in flat
-    assert "a mane variant needs grch38" in flat
-    assert "a mane variant needs normalisation" in flat
+    # (the executable guard is test_contract's test of step 12 against the real validator)
+    assert "approved content changed since approval" in flat
+    assert "only a named person clears: never run `--approve`" in flat
     assert "once `chd-curator diff <SYMBOL> --against ... --mark-verified ...` has marked" in flat
+    assert "the curator runs `chd-curator normalise <SYMBOL>`" in flat
+    assert "`hgvs_p` on a `mane` variant" in flat
+    assert "NP_852259.1:p.(Arg279Ter)" in flat
+    assert "`review_settled_by: atlas_model`" in flat
+    assert "`outside_region` for a `c.` with an intronic offset beyond 50" in flat
+    assert "`common_variant_association` names each variant it tested, with no `carriers`" in flat
+    assert "it takes no settler" in flat
+    # The rules a validator measures but no example here exercises: pinned as written.
+    for phrase in (
+        "`full_text`: only the abstract was read",
+        "`authors`: the paper contradicts itself, or disagrees with the reference sequence",
+        "`expert`: it needs a domain judgement the paper cannot supply",
+        "`atlas_model`: the paper is clear and the atlas's record cannot hold it",
+        "carries one identical `unclear.phase` entry on every member",
+        "links are mutual, each is `heterozygous`",
+        "is set exactly when `with` is",
+        "set `hgvs_p` to that change on the protein",
+        "`structural` for a CNV or chromosomal change, even written in `c.` notation",
+        "each among the finding's",
+    ):
+        assert phrase in flat, phrase
+    assert (
+        "the curator resolves the differences, runs `chd-curator normalise <SYMBOL>`"
+        in " ".join(verify.split())
+    )
     assert "always set `shares_probands_with: unknown`" in verify
     assert "field in the `review` listing" in extract
     for path in _all_files():

@@ -26,7 +26,7 @@ from chd_curator import cli
 from chd_curator import variantvalidator as vv
 from chd_curator.cli import app
 from fake_pubmed import FakePubMed, papers
-from test_skills import ATLAS_COMMANDS, skill_examples
+from test_skills import ATLAS_COMMANDS, REPO, skill_examples
 
 runner = CliRunner()
 # .git, .venv, local, dist, .superpowers, CLAUDE.md, .claude and superpowers are
@@ -427,3 +427,231 @@ def test_normalise_on_a_copy_of_the_atlas_validates_without_variant_issues(
     report = run.stdout + run.stderr
     assert run.returncode == 0, report
     assert not re.search(r"LIT0(1[6-9]|2[0-5])", report), report
+
+
+def _append_findings(atlas_copy: Path, make: Any) -> None:
+    """Append unapproved findings, built by ``make(source, new_id)``, to the copy's TBX5 file.
+
+    ``source`` is an approved finding to copy; ``new_id(i)`` is the i-th unused id, with the
+    registry counter moved past it, so validate sees a well-formed file and nothing else wrong.
+    """
+    file = atlas_copy / "curation" / "literature" / "TBX5.yaml"
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.width = 4096
+    registry = atlas_copy / "curation" / ".id_registry.yaml"
+    counter = re.search(r"^  LIT: (\d+)$", registry.read_text(), re.M)
+    assert counter is not None
+    start = int(counter[1])
+    data = yaml.load(file.read_text())
+    source = next(f for f in data["findings"] if f["id"] == "CHDA:LIT:0000027")
+    made = make(source, lambda i: f"CHDA:LIT:{start + i:07d}")
+    data["findings"].extend(made)
+    registry.write_text(registry.read_text().replace(counter[0], f"  LIT: {start + len(made)}"))
+    with file.open("w") as handle:
+        yaml.dump(data, handle)
+
+
+def _errors(atlas_copy: Path) -> list[tuple[str, str]]:
+    """``(code, message)`` of every error validate reports on the copy, with its place cut off."""
+    run = _atlas("validate", "--root", str(atlas_copy))
+    out = []
+    for line in (run.stdout + run.stderr).splitlines():
+        found = re.match(
+            r"ERROR \[(\w+)\] (?:\S+:finding CHDA:LIT:\d+(?::variant \d+)?: )?(.*)$", line
+        )
+        if found:
+            out.append((found[1], found[2]))
+    return sorted(out)
+
+
+def test_the_errors_validate_reports_before_normalise_are_those_extract_step_12_lists(
+    atlas_copy: Path,
+) -> None:
+    """The skills' own example findings, written as an agent would before `normalise`.
+
+    Measured against atlas 6bb9bee: every `mane` variant fails the three LIT022 messages, and
+    LIT025 as well when the paper's `p.` names a residue. The first draft of step 12 listed the
+    three and not LIT025, so an agent following it would have written an `hgvs_p` itself.
+    """
+    examples, _ = skill_examples()
+
+    def make(source: Any, new_id: Any) -> list[Any]:
+        out = []
+        for number, example in enumerate(examples, start=1):
+            finding = copy.deepcopy(example)
+            finding["id"] = new_id(number)
+            finding["publication"] = source["publication"]
+            out.append(finding)
+        return out
+
+    _append_findings(atlas_copy, make)
+    mane = [v for e in examples for v in e.get("variants", []) if v["placement"] == "mane"]
+    assert len(mane) >= 2 and any("p" in v["reported"] for v in mane)
+    expected = sorted(
+        [
+            ("LIT022", f"a mane variant needs {name}")
+            for v in mane
+            for name in ("grch38", "hgvs_c", "normalisation")
+        ]
+        + [
+            ("LIT025", f"the paper names {v['reported']['p']} but the variant has no hgvs_p")
+            for v in mane
+            if "p" in v["reported"]
+        ]
+    )
+    assert _errors(atlas_copy) == expected
+    # Step 12 states every one of them, with the paper's own `p.` written `<p.>`.
+    text = " ".join((REPO / "skills" / "literature-extract" / "SKILL.md").read_text().split())
+    step = text[text.index("12. Run") : text.index("13. After")]
+    for _code, message in sorted(set(expected)):
+        shown = re.sub(r"the paper names \S+ but", "the paper names <p.> but", message)
+        assert f'"{shown}"' in step, shown
+
+
+def _variant(number: int, as_reported: str, placement: str, **fields: Any) -> dict[str, Any]:
+    kind = fields.pop("kind", "snv_indel")
+    return {
+        "id": number,
+        "as_reported": as_reported,
+        "locator": {"kind": "in_text", "element": "Table 1"},
+        "kind": kind,
+        "placement": placement,
+        "reported": fields.pop("reported", {}),
+        "zygosity": "heterozygous",
+        **fields,
+    }
+
+
+def test_the_placement_rules_extract_step_5_states_validate_clean_and_the_carrier_rule_refuses(
+    atlas_copy: Path,
+) -> None:
+    """Each form step 5 teaches, written as it says, measured against atlas 6bb9bee.
+
+    One finding per rule, so a refusal names its own. The last finding breaks the carrier rule
+    step 5 states (two unlinked variants of one de novo carrier each, in a finding with one) and
+    is the only one validate may refuse.
+    """
+    one = {"de_novo": 0, "inherited": 0, "origin_unknown": 1}
+    de_novo = {"de_novo": 1, "inherited": 0, "origin_unknown": 0}
+    mark = {"review_status": "pending_review", "review_note": "stated mismatch"}
+    cases: list[tuple[list[dict[str, Any]], str, dict[str, Any]]] = [
+        # protein: the three-letter form on the MANE protein, in parentheses.
+        (
+            [
+                _variant(
+                    1,
+                    "p.R279X",
+                    "protein",
+                    reported={"p": "p.R279X"},
+                    hgvs_p="NP_852259.1:p.(Arg279Ter)",
+                    carriers=one,
+                )
+            ],
+            "case_report",
+            {"screened": 1, "carriers": one},
+        ),
+        # a protein variant whose residue fails: unplaced, no hgvs_p, settler authors.
+        (
+            [
+                _variant(
+                    1,
+                    "p.D111Y",
+                    "unplaced",
+                    reported={"p": "p.D111Y"},
+                    review_settled_by="authors",
+                    carriers=one,
+                    **mark,
+                )
+            ],
+            "case_report",
+            {"screened": 1, "carriers": one},
+        ),
+        # an rsID alone inside the exons, and a g. name alone: unplaced, settler atlas_model.
+        (
+            [
+                _variant(
+                    1,
+                    "rs3825214",
+                    "unplaced",
+                    reported={"rsid": "rs3825214"},
+                    review_settled_by="atlas_model",
+                    carriers=one,
+                    **mark,
+                ),
+                _variant(
+                    2,
+                    "g.114366312G>A",
+                    "unplaced",
+                    review_settled_by="atlas_model",
+                    carriers=one,
+                    **mark,
+                ),
+            ],
+            "cohort_screen",
+            {"screened": 10, "carriers": {"de_novo": 0, "inherited": 0, "origin_unknown": 2}},
+        ),
+        # a c. with an intronic offset beyond 50, and a CNV written in c. notation.
+        (
+            [
+                _variant(
+                    1,
+                    "c.1234+51A>G",
+                    "outside_region",
+                    reported={"c": "c.1234+51A>G"},
+                    carriers=one,
+                ),
+                _variant(
+                    2,
+                    "c.-200_*300del",
+                    "structural",
+                    kind="cnv",
+                    reported={"c": "c.-200_*300del"},
+                    carriers=one,
+                ),
+            ],
+            "cohort_screen",
+            {
+                "screened": 10,
+                "carriers": {"de_novo": 0, "inherited": 0, "origin_unknown": 2},
+                "variant_classes": ["snv_indel", "cnv"],
+            },
+        ),
+        # a common-variant finding names the variant it tested and carries no carriers.
+        (
+            [_variant(1, "rs3825214", "outside_region", reported={"rsid": "rs3825214"})],
+            "common_variant_association",
+            {"cases": 500, "controls": 5000, "p_value": 0.01, "odds_ratio": 1.3},
+        ),
+    ]
+    broken = (
+        [
+            _variant(1, "c.835C>T", "outside_region", reported={"c": "c.835C>T"}, carriers=de_novo),
+            _variant(2, "c.512A>G", "outside_region", reported={"c": "c.512A>G"}, carriers=de_novo),
+        ],
+        "cohort_screen",
+        {"screened": 10, "carriers": {"de_novo": 1, "inherited": 0, "origin_unknown": 1}},
+    )
+
+    def make(source: Any, new_id: Any) -> list[Any]:
+        out = []
+        for number, (variants, design, extra) in enumerate([*cases, broken], start=1):
+            finding = copy.deepcopy(source)
+            for name in ("approved_by", "approved_on", "approved_digest", "verified_by"):
+                finding.pop(name, None)
+            for name in ("count_unit", "screened", "carriers", "cases", "controls", "comparator"):
+                finding.pop(name, None)
+            fields: dict[str, Any] = {"variant_classes": ["snv_indel"]}
+            if design != "common_variant_association":
+                fields["count_unit"] = "probands"
+            fields.update(json.loads(json.dumps(extra)))
+            # A round trip, so no dict is shared: ruamel would dump a shared one as an alias.
+            variants = json.loads(json.dumps(variants))
+            finding.update(id=new_id(number), design=design, variants=variants, **fields)
+            out.append(finding)
+        return out
+
+    _append_findings(atlas_copy, make)
+    assert _errors(atlas_copy) == [
+        ("LIT023", "variants name at least 2 de_novo carrier(s), more than the finding's 1")
+    ]

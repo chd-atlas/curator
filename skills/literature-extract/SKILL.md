@@ -42,35 +42,52 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
 5. Record the variants the paper names under `variants:` on the finding. Run
    `chd-atlas literature frame <SYMBOL>` first: it prints the MANE Select transcript and
    protein a name is placed on.
-   - Write one entry per distinct variant per genotype context. A context is the partners'
-     row keys (their `as_reported` when unkeyed) plus `phase`: one variant in two contexts is
-     two entries, in one context one entry (validate refuses a repeat).
-   - `as_reported` is verbatim, the paper's own text, with a `locator`; `kind` is among the
-     finding's `variant_classes`. Put each name the paper gives into `reported` (`c`, `p`,
-     `rsid`, `transcript` only when the paper states one) as written, and never choose
+   - Write one entry per distinct variant per genotype context. The context is the partners
+     it is carried with (by their `as_reported`) and the `phase`: one variant in two contexts
+     is two entries, in one context one entry.
+   - `as_reported` is verbatim: the text at the locator; where the paper prints `c.` and
+     `p.` in separate columns, both in the order printed, joined by one space. `kind` is among
+     the finding's `variant_classes`. Put each name the paper gives into `reported` (`c`,
+     `p`, `rsid`, `transcript` only when the paper states one) as written, and never choose
      between the paper's own names, even when they disagree: `chd-curator normalise` checks
      them.
-   - `placement`: `mane` when the paper gives a `c.` name; `protein` for a `p.` name alone
-     (then set `hgvs_p`); `structural` for a CNV or chromosomal change; `outside_region` for
-     an rsID or a position beyond the exons +/-50 bp. Leave `hgvs_c`, `hgvs_p`, `grch38` and
-     `normalisation` of a `mane` variant to `normalise` (step 13).
-   - `carriers` per variant, in the finding's `count_unit` (refused on a
-     `common_variant_association`; the total may not exceed the finding's, a `with` group
-     counted once). Name no variant the paper gives no carrier for.
+   - `placement`:
+     - `mane` whenever the paper gives a `c.` name within the exons +/-50 bp, with or without
+       an rsID;
+     - `protein` for a `p.` name alone: set `hgvs_p` to that change on the protein
+       `literature frame` prints, in three-letter code in parentheses (the paper's `p.R279X`
+       is `NP_852259.1:p.(Arg279Ter)`);
+     - `structural` for a CNV or chromosomal change, even written in `c.` notation;
+     - `outside_region` for a `c.` with an intronic offset beyond 50 (`c.1234+51`), or a
+       variant named by rsID alone that the paper places outside the exons;
+     - `unplaced` for a variant named by rsID alone inside the exons, or only by a `g.` name:
+       set `review_status: pending_review`, a `review_note` stating what the paper gives and
+       `review_settled_by: atlas_model`. A `protein` variant whose residue validate refuses,
+       or whose `p.` names none, is `unplaced` too: remove `hgvs_p`, state only the mismatch
+       in the note and set `review_settled_by: authors`.
+   - `carriers` per variant, in the finding's `count_unit`. On a rare-variant design name no
+     variant the paper gives no carrier for; the variants' `de_novo` and `inherited` carriers
+     may not exceed the finding's, nor their total, a `with` group counted once. A
+     `common_variant_association` names each variant it tested, with no `carriers`.
    - `zygosity` as stated. A variant carried with another variant in this gene lists their
-     ids in `with`; links are mutual, each is `heterozygous`, and `phase` (`trans`, `cis`,
-     `not_stated`, `unclear`) is set exactly when `with` is. A `with` group whose phase is
-     `unclear` carries one identical `unclear.phase` entry on every member.
+     ids in `with`; links are mutual, each is `heterozygous`, every entry of a group carries
+     the same total, and `phase` (`trans`, `cis`, `not_stated`, `unclear`) is set exactly when
+     `with` is. A `with` group whose phase is `unclear` carries one identical `unclear.phase`
+     entry on every member.
    - `phenotypes` only where the paper ties a defect to these carriers, each among the
      finding's.
+   - Leave `hgvs_c`, `grch38` and `normalisation`, and `hgvs_p` of a `mane` variant, to
+     `normalise` (step 13).
 6. Choose among three ways to leave a value plain. `not_stated` only when the paper is
    silent about it. `unclear` with its reason when the paper says something one value
    cannot hold (heterozygous in 2 carriers, homozygous in 1) or two incompatible things:
-   set the field to `unclear` and give `unclear.<field>` a `reason` and a `settled_by`. A
-   review mark (step 9) is a question about the record as a whole; ask whether it would go
-   away if this one field had a value the atlas can hold, and if so use `unclear`. Name
-   what would settle it, in every `settled_by` and every `review_settled_by`:
-   - `full_text`: only the abstract was read;
+   only `zygosity` (`heterozygous`, `homozygous`, `hemizygous`, `not_stated`, `unclear`) and
+   `phase` take it. Set the field to `unclear` and give `unclear.<field>` a `reason` and a
+   `settled_by`. A review mark (step 9) is a question about the record as a whole; ask
+   whether it would go away if this one field had a value the atlas can hold, and if so use
+   `unclear`. Name what would settle it, in every `settled_by` and every
+   `review_settled_by`:
+   - `full_text`: only the abstract was read (never on a `not_accessible` mark);
    - `authors`: the paper contradicts itself, or disagrees with the reference sequence;
    - `expert`: it needs a domain judgement the paper cannot supply;
    - `atlas_model`: the paper is clear and the atlas's record cannot hold it.
@@ -83,8 +100,9 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
    field in the `review` listing.
 8. A paper you cannot read stays in: record what its abstract supports, with locator
    element `Abstract`, `review_status: not_accessible` and a `review_note` naming what was
-   not read. If it supports nothing, the curator excludes it as `full_text_not_accessible`.
-9. Where the paper disagrees with a source the finding rests on, set
+   not read; it takes no settler. If it supports nothing, the curator excludes it as
+   `full_text_not_accessible`.
+9. Where the paper disagrees with a source the finding rests on, or contradicts itself, set
    `review_status: pending_review`, state only the measured disagreement in
    `review_note` and name what would settle it. Write the mark on a finding already in
    the file with
@@ -117,28 +135,32 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
    `own_lab` (the default `false`; never guess it) in the `review` listing. Exit 1 means
    the PMID is already in `curation/publications.yaml` (nothing to add), PubMed failed or
    has no record of it, or the file is missing; exit 2, a bad argument or a schema refusal; the error says which.
-12. Run `.venv/bin/chd-atlas validate`. Before `normalise` the only errors allowed are "a mane
-    variant needs hgvs_c", "a mane variant needs grch38" and "a mane variant needs
-    normalisation"; fix every other error. Then hand off to verification.
+12. Run `.venv/bin/chd-atlas validate`. Before `normalise`, a `mane` variant is expected to
+    fail with "a mane variant needs hgvs_c", "a mane variant needs grch38", "a mane variant
+    needs normalisation" and, when `reported.p` names a residue, "the paper names <p.> but
+    the variant has no hgvs_p". A finding approved before you added its variants also fails
+    "approved content changed since approval", which only a named person clears: never run
+    `--approve`. Leave those; fix every other error, then hand off to verification.
 13. After verification, once `chd-curator diff <SYMBOL> --against ... --mark-verified ...` has
-    marked the agreeing findings, run `chd-curator normalise <SYMBOL>`, then validate again:
-    no error may remain. `normalise` places each `mane` variant and fills `hgvs_c`, `hgvs_p`,
-    `grch38` and `normalisation`; one it cannot place becomes `unplaced` with a
-    `pending_review` mark it writes, never edited by hand. Never write `hgvs_c` or `grch38`
-    yourself, nor `hgvs_p` on a `mane` variant; a `protein` variant holds its own `hgvs_p`.
+    marked the agreeing findings, the curator runs `chd-curator normalise <SYMBOL>`, validates
+    and fixes what remains. It fills `hgvs_c`, `hgvs_p`, `grch38` and `normalisation` of each
+    `mane` variant; one it cannot place becomes `unplaced` with its own `pending_review`
+    mark (`review_settled_by: expert`). Never write `hgvs_c` or `grch38` yourself, nor
+    `hgvs_p` on a `mane` variant.
 
 An illustrative finding (every value is made up), in the layout the tooling writes
-(entries at indent 2, fields at 4, nested lists at 6):
+(entries at indent 2, fields at 4, nested lists at 6). Its first variant is as extracted,
+before `normalise`; its second records carriers that differ in zygosity as `unclear`:
 
 ```yaml
 findings:
   - id: CHDA:LIT:0000001
     publication: PMID:10000001
-    design: case_report
+    design: cohort_screen
     methods: [targeted_sequencing]
     count_unit: probands
-    screened: 1
-    carriers: {de_novo: 1, inherited: 0, origin_unknown: 0}
+    screened: 40
+    carriers: {de_novo: 1, inherited: 0, origin_unknown: 3}
     variant_classes: [snv_indel]
     variants:
       - id: 1
@@ -150,30 +172,7 @@ findings:
         zygosity: heterozygous
         carriers: {de_novo: 1, inherited: 0, origin_unknown: 0}
         phenotypes: [HP:0001631]
-    phenotypes: [HP:0001631]
-    lesion_groups: [septal]
-    syndromic: isolated
-    shares_probands_with: unknown
-    locators: [{kind: in_text, element: Table 1}]
-    summary: One proband with an atrial septal defect carried a de novo nonsense variant.
-    extracted_by: agent:literature-extract/<model>
-```
-
-Before `normalise` runs a `mane` variant has no `hgvs_c`, `grch38` or `normalisation`, as
-above. Carriers differing in zygosity, recorded `unclear`:
-
-```yaml
-findings:
-  - id: CHDA:LIT:0000002
-    publication: PMID:10000002
-    design: cohort_screen
-    methods: [targeted_sequencing]
-    count_unit: probands
-    screened: 40
-    carriers: {de_novo: 0, inherited: 0, origin_unknown: 3}
-    variant_classes: [snv_indel]
-    variants:
-      - id: 1
+      - id: 2
         as_reported: c.512A>G (p.N171S)
         locator: {kind: in_text, element: Table 2}
         kind: snv_indel
@@ -189,22 +188,21 @@ findings:
     lesion_groups: [septal]
     syndromic: isolated
     shares_probands_with: unknown
-    locators: [{kind: in_text, element: Table 2}]
-    summary: Three of 40 probands carried one missense variant, two heterozygous and one homozygous.
+    locators: [{kind: in_text, element: Table 1}]
+    summary: One proband carried a de novo nonsense variant; three carried one missense variant, two heterozygous and one homozygous.
     extracted_by: agent:literature-extract/<model>
 ```
 
 ## Done when
 
-- Every included paper has a finding and a Publication record: validate reports no
-  `LIT003` or `LIT011`, and after verification `normalise` then validate report no variant issue.
-- `.venv/bin/chd-atlas validate` reports no error. Hand off to the `literature-verify`
-  skill, then the curator runs `.venv/bin/chd-atlas literature review <SYMBOL>`.
+- Every included paper has a finding and a Publication record: `.venv/bin/chd-atlas validate`
+  reports no `LIT003` or `LIT011`, and only the errors step 12 lists.
+- Hand off to the `literature-verify` skill, then the curator runs
+  `.venv/bin/chd-atlas literature review <SYMBOL>`.
 
 ## Never
 
 - Never state more than the paper does, or a number without its locator and unit.
 - Never re-classify a variant or call a gene definitive.
 - Never fill `verified_by` or `approved_by`, or run `literature review --approve`.
-- Never write `not_stated` for a value the paper states but one value cannot hold.
 - Never invent an id outside the counter, a PMID, a cohort or an HPO term.

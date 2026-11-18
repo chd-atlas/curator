@@ -33,11 +33,12 @@ first pass.
 3. Extract the variants blind, by `literature-extract` step 5 and its rules: one entry per
    distinct variant per genotype context, `as_reported` verbatim, each name in `reported`
    as written, and never choose between the paper's own names. Write `not_stated` only when
-   the paper is silent and `unclear` with its reason (step 6) otherwise; a `pending_review`
-   mark carries `review_settled_by`. Leave `hgvs_c`, `hgvs_p`, `grch38` and `normalisation`
-   unset: both passes are compared before `chd-curator normalise` places anything, so neither
-   carries them. Never copy a placement or a name from
-   the first pass.
+   the paper is silent and `unclear` with its reason only when the paper says something one
+   value cannot hold (`literature-extract` step 6); a `pending_review` mark carries
+   `review_settled_by`. Leave `hgvs_c`, `grch38` and `normalisation` unset, and `hgvs_p` on a
+   `mane` variant: both passes are compared before `chd-curator normalise` places anything.
+   A `protein` variant carries `hgvs_p` as `literature-extract` step 5 writes it. Never copy
+   a placement or a name from the first pass.
 4. Leave `verified_by`, `approved_by` and `approved_on` unset. Set
    `extracted_by: agent:literature-verify/<model>`.
 
@@ -60,6 +61,7 @@ first pass.
            placement: mane
            zygosity: heterozygous
            carriers: {de_novo: 1, inherited: 0, origin_unknown: 0}
+           phenotypes: [HP:0001631]
        phenotypes: [HP:0001631]
        lesion_groups: [septal]
        syndromic: isolated
@@ -79,9 +81,10 @@ first pass.
    It lists agreed findings, findings in one pass only, and each differing field with both
    values. Two findings pair when they share a PMID, a design and the same cohorts; a key
    carried twice in either pass is never paired and is listed as one-pass only. Summaries
-   and locators are not compared; a curator reads them. A variant is compared on the
-   paper's names, placement, kind, zygosity, phase, carriers and phenotypes, not on its
-   `id`, `with` links, locator, `unclear` entry or review mark.
+   and locators are not compared; a curator reads them. A variant is compared on `as_reported` (character for
+   character), `reported`, `placement`, `kind`, `hgvs_c`, `hgvs_p`, `grch38`, `zygosity`, `phase`, `carriers` and
+   `phenotypes`; not on its `id`, `with`, `normalisation`, `locator`, `unclear` entries or
+   review mark.
 6. Mark the agreed findings. This sets `verified_by` only where it is unset, and only on
    findings with no field difference:
 
@@ -91,13 +94,13 @@ first pass.
    ```
 7. Report every difference and every one-pass-only finding to the curator, with both
    values. Do not edit the first pass to settle one.
-8. Run `chd-curator normalise <SYMBOL>`, then `.venv/bin/chd-atlas validate`.
 
 ## Done when
 
-- The `diff` output is summarised for the curator: counts agreed, differing and one-pass.
-- `.venv/bin/chd-atlas validate` reports no error. Hand off: the curator resolves the
-  differences, then runs `.venv/bin/chd-atlas literature review <SYMBOL>`.
+- The verify file is written, `diff` has run, the agreeing findings are marked, and every
+  difference and one-pass-only finding is reported to the curator with both values.
+- Hand off: the curator resolves the differences, runs `chd-curator normalise <SYMBOL>` and
+  `.venv/bin/chd-atlas validate`, then `.venv/bin/chd-atlas literature review <SYMBOL>`.
 
 ## Never
 
