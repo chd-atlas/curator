@@ -472,6 +472,10 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
         "set `hgvs_p` to that change on the protein",
         "`structural` for a CNV or chromosomal change, even written in `c.` notation",
         "each among the finding's",
+        "within the exons +/-50 bp, with or without an rsID",
+        "`unplaced` for a variant named by rsID alone inside the exons, "
+        "or where the paper does not say",
+        "(`atlas_model` when its `p.` names no residue)",
     ):
         assert phrase in flat, phrase
     assert (

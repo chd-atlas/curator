@@ -473,6 +473,11 @@ def test_the_errors_validate_reports_before_normalise_are_those_extract_step_12_
     Measured against atlas 6bb9bee: every `mane` variant fails the three LIT022 messages, and
     LIT025 as well when the paper's `p.` names a residue. The first draft of step 12 listed the
     three and not LIT025, so an agent following it would have written an `hgvs_p` itself.
+
+    A Stage-F edit also appends a variant to an approved finding, which validate reports as
+    LIT015, and step 12 says only a named person clears it. That part depends on the atlas
+    corpus holding the approved CHDA:LIT:0000027 (`_append_findings` copies it), measured at
+    atlas 6bb9bee on 2026-11-18.
     """
     examples, _ = skill_examples()
 
@@ -483,6 +488,14 @@ def test_the_errors_validate_reports_before_normalise_are_those_extract_step_12_
             finding["id"] = new_id(number)
             finding["publication"] = source["publication"]
             out.append(finding)
+        source["variants"] = [
+            _variant(
+                1,
+                "rs3825214",
+                "outside_region",
+                carriers={"de_novo": 1, "inherited": 0, "origin_unknown": 0},
+            )
+        ]
         return out
 
     _append_findings(atlas_copy, make)
@@ -500,10 +513,15 @@ def test_the_errors_validate_reports_before_normalise_are_those_extract_step_12_
             if "p" in v["reported"]
         ]
     )
-    assert _errors(atlas_copy) == expected
+    errors = _errors(atlas_copy)
+    approved = [message for code, message in errors if code == "LIT015"]
+    assert [e for e in errors if e[0] != "LIT015"] == expected
+    assert len(approved) == 1
+    assert approved[0].startswith("approved content changed since approval")
     # Step 12 states every one of them, with the paper's own `p.` written `<p.>`.
     text = " ".join((REPO / "skills" / "literature-extract" / "SKILL.md").read_text().split())
     step = text[text.index("12. Run") : text.index("13. After")]
+    assert "approved content changed since approval" in step
     for _code, message in sorted(set(expected)):
         shown = re.sub(r"the paper names \S+ but", "the paper names <p.> but", message)
         assert f'"{shown}"' in step, shown
@@ -587,9 +605,19 @@ def test_the_placement_rules_extract_step_5_states_validate_clean_and_the_carrie
                     carriers=one,
                     **mark,
                 ),
+                # a p. naming no residue: unplaced, and the settler is atlas_model.
+                _variant(
+                    3,
+                    "p.(=)",
+                    "unplaced",
+                    reported={"p": "p.(=)"},
+                    review_settled_by="atlas_model",
+                    carriers=one,
+                    **mark,
+                ),
             ],
             "cohort_screen",
-            {"screened": 10, "carriers": {"de_novo": 0, "inherited": 0, "origin_unknown": 2}},
+            {"screened": 10, "carriers": {"de_novo": 0, "inherited": 0, "origin_unknown": 3}},
         ),
         # a c. with an intronic offset beyond 50, and a CNV written in c. notation.
         (

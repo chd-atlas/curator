@@ -60,11 +60,12 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
      - `structural` for a CNV or chromosomal change, even written in `c.` notation;
      - `outside_region` for a `c.` with an intronic offset beyond 50 (`c.1234+51`), or a
        variant named by rsID alone that the paper places outside the exons;
-     - `unplaced` for a variant named by rsID alone inside the exons, or only by a `g.` name:
-       set `review_status: pending_review`, a `review_note` stating what the paper gives and
-       `review_settled_by: atlas_model`. A `protein` variant whose residue validate refuses,
-       or whose `p.` names none, is `unplaced` too: remove `hgvs_p`, state only the mismatch
-       in the note and set `review_settled_by: authors`.
+     - `unplaced` for a variant named by rsID alone inside the exons, or where the paper does
+       not say, or only by a `g.` name: set `review_status: pending_review`, a `review_note`
+       stating what the paper gives and `review_settled_by: atlas_model`. A `protein` variant
+       whose residue validate refuses, or whose `p.` names none, is `unplaced` too: remove
+       `hgvs_p`, state only the mismatch in the note and set `review_settled_by: authors`
+       (`atlas_model` when its `p.` names no residue).
    - `carriers` per variant, in the finding's `count_unit`. On a rare-variant design name no
      variant the paper gives no carrier for; the variants' `de_novo` and `inherited` carriers
      may not exceed the finding's, nor their total, a `with` group counted once. A
@@ -188,7 +189,7 @@ findings:
     lesion_groups: [septal]
     syndromic: isolated
     shares_probands_with: unknown
-    locators: [{kind: in_text, element: Table 1}]
+    locators: [{kind: in_text, element: Table 1}, {kind: in_text, element: Table 2}]
     summary: One proband carried a de novo nonsense variant; three carried one missense variant, two heterozygous and one homozygous.
     extracted_by: agent:literature-extract/<model>
 ```
