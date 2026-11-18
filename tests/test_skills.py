@@ -103,8 +103,8 @@ BURDEN_COUNT_UNITS = {"individuals", "alleles", "de_novo_mutations"}
 
 
 # A skill is one page an agent reads in full. The ceiling is 120 lines (the atlas plan of
-# 2026-11-02); `literature-extract` measured 208 after the variants and `unclear` steps (C0 task
-# 16) and is held to its measured length rounded up to the next ten.
+# 2026-11-02); `literature-extract` measured 210 after the variants, `unclear` and
+# placement-ruling steps (C0 tasks 16-19) and is held to that length.
 LINE_LIMIT = {"literature-extract": 210}
 DEFAULT_LINE_LIMIT = 120
 
@@ -472,6 +472,11 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
         "place" in flat
     )
     assert "or only by a `g.` name" not in flat
+    assert (
+        "that the paper does not place outside the exons (inside them, or of unstated position)"
+        in flat
+    )
+    assert "Not a placement: if `validate` refuses a `reported.p` only for its notation" in flat
     # R-F3: a coding-DNA name printed without `c.` is a `c.` name.
     assert 'A name printed without `c.` ("456delC", "998G>T") is still a `c.` name' in flat
     assert "`normalise` decides; never mark it `unplaced`" in flat

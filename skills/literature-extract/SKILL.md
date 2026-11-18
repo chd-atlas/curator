@@ -62,15 +62,15 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
        `literature frame` prints, in three-letter code in parentheses (the paper's `p.R279X`
        is `NP_852259.1:p.(Arg279Ter)`);
      - `unplaced` for a variant named by an rsID or a `g.` name alone that the paper does not
-       place: set `review_status: pending_review`, a `review_note` stating what the paper gives
-       and `review_settled_by: atlas_model`. A `protein` variant whose residue validate
-       refuses, or whose `p.` names none, is `unplaced` too: remove `hgvs_p`, state only the
-       mismatch in the note and set `review_settled_by: authors` (`atlas_model` when its `p.`
-       names no residue).
-     - If `validate` refuses a `reported.p` only for its notation (LIT025, measured: a
-       lower-case `ter` or residue code, or `*` printed as the U+2217 asterisk), write the
-       minimal fix in `reported` (capital `Ter`, ASCII `*`) and keep the printed text in
-       `as_reported`. A missing `p.` is not refused. Never change a residue, position or base.
+       place outside the exons (inside them, or of unstated position): set `review_status:
+       pending_review`, a `review_note` stating what the paper gives and `review_settled_by:
+       atlas_model`. A `protein` variant whose residue validate refuses, or whose `p.` names
+       none, is `unplaced` too: remove `hgvs_p`, state only the mismatch in the note and set
+       `review_settled_by: authors` (`atlas_model` when its `p.` names no residue).
+   - Not a placement: if `validate` refuses a `reported.p` only for its notation (LIT025,
+     measured: a lower-case `ter` or residue code, or `*` printed as the U+2217 asterisk),
+     write the minimal fix in `reported` (capital `Ter`, ASCII `*`) and keep the printed text
+     in `as_reported`. A missing `p.` is not refused. Never change a residue, position or base.
    - `carriers` per variant, in the finding's `count_unit`. On a rare-variant design name no
      variant the paper gives no carrier for; the variants' `de_novo` and `inherited` carriers
      may not exceed the finding's, nor their total, a `with` group counted once. A

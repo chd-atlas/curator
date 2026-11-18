@@ -691,6 +691,36 @@ def test_the_placement_rules_extract_step_5_states_validate_clean_and_the_carrie
             "case_report",
             {"screened": 1, "carriers": one},
         ),
+        # R-F4 positive: a missing p. is not refused (this protein variant validates clean).
+        (
+            [
+                _variant(
+                    1,
+                    "R279*",
+                    "protein",
+                    reported={"p": "R279*"},
+                    hgvs_p="NP_852259.1:p.(Arg279Ter)",
+                    carriers=one,
+                )
+            ],
+            "case_report",
+            {"screened": 1, "carriers": one},
+        ),
+        # R-F4 negative: the unfixed lower-case ter is the one refusal asserted at the end.
+        (
+            [
+                _variant(
+                    1,
+                    "p.Arg279ter",
+                    "protein",
+                    reported={"p": "p.Arg279ter"},
+                    hgvs_p="NP_852259.1:p.(Arg279Ter)",
+                    carriers=one,
+                )
+            ],
+            "case_report",
+            {"screened": 1, "carriers": one},
+        ),
         # R-F3: a c. name printed without its prefix is a mane variant, reported.c as printed.
         # Before normalise it fails only the three LIT022 messages asserted at the end.
         (
@@ -744,4 +774,9 @@ def test_the_placement_rules_extract_step_5_states_validate_clean_and_the_carrie
         ("LIT022", "a mane variant needs normalisation"),
         ("LIT022", "a mane variant needs normalisation"),
         ("LIT023", "variants name at least 2 de_novo carrier(s), more than the finding's 1"),
+        (
+            "LIT025",
+            "the paper names p.Arg279ter but hgvs_p is NP_852259.1:p.(Arg279Ter); "
+            "a variant whose names disagree is unplaced",
+        ),
     ]
