@@ -212,8 +212,12 @@ def test_a_placed_variant_whose_p_disagrees_is_unplaced_naming_both_forms(
         # D6: a VariantValidator p. naming no residue has nothing to compare, so it is exempt ...
         ("p.R279X", {}, "NP_852259.1:p.?", "mane", "NP_852259.1:p.?"),
         ("p.R279X", {}, "NP_852259.1:p.(=)", "mane", "NP_852259.1:p.(=)"),
-        # ... but it is the paper's p. that names no residue that is not: LIT025 compares it.
-        ("p.?", {}, None, "unplaced", None),
+        # D6': the same on the paper's side: a p. naming no residue has nothing to compare.
+        ("p.?", {}, None, "mane", "NP_852259.1:p.(Arg279Ter)"),
+        ("p.=", {}, None, "mane", "NP_852259.1:p.(Arg279Ter)"),
+        ("p.0", {}, None, "mane", "NP_852259.1:p.(Arg279Ter)"),
+        ("p.(?)", {}, None, "mane", "NP_852259.1:p.(Arg279Ter)"),
+        ("p.R279Q", {}, None, "unplaced", None),
         # An absent VariantValidator p. is no exemption when the paper names a residue.
         ("p.R279X", {}, "", "unplaced", None),
         ("p.?", {}, "", "mane", None),
@@ -430,3 +434,30 @@ def test_a_second_run_appends_its_own_normalisation_and_keeps_the_first(
     assert [n["id"] for n in data["normalisations"]] == [4, 5]
     assert data["normalisations"][0]["version"] == "v0"
     assert _variants(path)[1]["normalisation"] == 5
+
+
+def test_an_approved_finding_it_changes_is_reported_void_in_one_literal_line(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(root, literature(variant(1, "c.835C>T", "p.R279X")))
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for({f"{TBX5}:c.835C>T": C835}))
+
+    # Typed as the gene's previous symbol, the command must still name the approved one.
+    result = runner.invoke(
+        app, ["normalise", "HOS", "--root", str(root), "--atlas-cli", str(stub_atlas)]
+    )
+
+    assert result.exit_code == 0
+    assert (
+        "CHDA:LIT:0000001: its approval is now void, because its variants changed; re-approve "
+        "it with: chd-atlas literature review TBX5 --approve CHDA:LIT:0000001 --by <name>\n"
+    ) in result.stdout
+    # An unapproved finding draws no such line.
+    path.write_text(
+        literature(variant(1, "c.835C>T", "p.R279X"))
+        .replace("    approved_by: E.A.M\n", "")
+        .replace("    approved_on: 2026-11-03\n", "")
+        .replace("    approved_digest: sha256:" + "0" * 64 + "\n", "")
+    )
+    again = _normalise(stub_atlas, root)
+    assert again.exit_code == 0 and "approval is now void" not in again.stdout

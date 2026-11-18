@@ -357,12 +357,16 @@ def test_normalise_on_a_copy_of_the_atlas_validates_without_variant_issues(
     yaml.indent(mapping=2, sequence=4, offset=2)
     yaml.width = 4096
     registry = atlas_copy / "curation" / ".id_registry.yaml"
-    assert "  LIT: 108\n" in registry.read_text(), "the counter moved: allocate the next id"
-    registry.write_text(registry.read_text().replace("  LIT: 108\n", "  LIT: 109\n"))
+    counter = re.search(r"^  LIT: (\d+)$", registry.read_text(), re.M)
+    assert counter is not None
+    next_number = int(counter[1]) + 1
+    registry.write_text(registry.read_text().replace(counter[0], f"  LIT: {next_number}"))
+    new_id = f"CHDA:LIT:{next_number:07d}"
+    assert new_id not in "".join(p.read_text() for p in file.parent.glob("*.yaml"))
     data = yaml.load(file.read_text())
     source = next(f for f in data["findings"] if f["id"] == "CHDA:LIT:0000027")
     new = copy.deepcopy(source)
-    new["id"] = "CHDA:LIT:0000109"
+    new["id"] = new_id
     for name in ("approved_by", "approved_on", "approved_digest"):
         del new[name]
     new["design"] = "cohort_screen"

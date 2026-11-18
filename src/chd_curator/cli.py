@@ -347,7 +347,10 @@ def _agrees(reported: dict[str, Any], hgvs_p: str | None, mane: Frame) -> bool:
         return True
     if hgvs_p is None:
         return not names_a_residue(paper)
-    return not names_a_residue(hgvs_p) or same_protein_change(paper, hgvs_p)
+    # D6': with a residue named on only one side there is nothing to compare.
+    if not names_a_residue(paper) or not names_a_residue(hgvs_p):
+        return True
+    return same_protein_change(paper, hgvs_p)
 
 
 def _note(variant: dict[str, Any], new: str) -> str:
@@ -502,6 +505,13 @@ def normalise(
         raise _fail(str(exc), 2) from None
     for line in lines:
         typer.echo(line)
+    approved = {str(f["id"]) for f in findings if f.get("approved_by") is not None}
+    for finding_id in sorted({f for f, _ in changes} & approved):
+        typer.echo(
+            f"{finding_id}: its approval is now void, because its variants changed; re-approve "
+            f"it with: chd-atlas literature review {mane.symbol} --approve {finding_id} "
+            "--by <name>"
+        )
     typer.echo(
         f"normalised {len(lines)} variant(s) in {path} as run {run_id}; run chd-atlas validate"
     )
