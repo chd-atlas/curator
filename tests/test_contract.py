@@ -7,6 +7,7 @@ what the atlas accepts. These tests run the atlas's own ``literature target`` an
 
 from __future__ import annotations
 
+import copy
 import csv
 import json
 import os
@@ -22,6 +23,7 @@ from ruamel.yaml import YAML
 from typer.testing import CliRunner
 
 from chd_curator import cli
+from chd_curator import variantvalidator as vv
 from chd_curator.cli import app
 from fake_pubmed import FakePubMed, papers
 from test_skills import ATLAS_COMMANDS, skill_examples
@@ -339,3 +341,81 @@ def test_the_atlas_commands_the_skills_name_exist() -> None:
     assert target.returncode == 0, target.stdout + target.stderr
     validate = _atlas("validate", "--help")
     assert validate.returncode == 0, validate.stdout + validate.stderr
+
+
+def test_normalise_on_a_copy_of_the_atlas_validates_without_variant_issues(
+    atlas_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A placed variant, a refused one keeping the paper's residue (D18) and one whose names
+    disagree, written by ``normalise`` into the real TBX5 file, raise no LIT016-LIT025.
+
+    VariantValidator answers from two real fixtures; the atlas is the real atlas. The new
+    finding is a copy of an existing one with its approval removed and three variants added.
+    """
+    file = atlas_copy / "curation" / "literature" / "TBX5.yaml"
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.width = 4096
+    registry = atlas_copy / "curation" / ".id_registry.yaml"
+    counter = re.search(r"^  LIT: (\d+)$", registry.read_text(), re.M)
+    assert counter is not None
+    next_number = int(counter[1]) + 1
+    registry.write_text(registry.read_text().replace(counter[0], f"  LIT: {next_number}"))
+    new_id = f"CHDA:LIT:{next_number:07d}"
+    assert new_id not in "".join(p.read_text() for p in file.parent.glob("*.yaml"))
+    data = yaml.load(file.read_text())
+    source = next(f for f in data["findings"] if f["id"] == "CHDA:LIT:0000027")
+    new = copy.deepcopy(source)
+    new["id"] = new_id
+    for name in ("approved_by", "approved_on", "approved_digest"):
+        del new[name]
+    new["design"] = "cohort_screen"
+    new["screened"] = 3
+    new["carriers"] = {"de_novo": 3, "inherited": 0, "origin_unknown": 0}
+
+    def named(number: int, c: str, p: str) -> dict[str, Any]:
+        return {
+            "id": number,
+            "as_reported": f"{c} ({p})",
+            "locator": {"kind": "in_text", "element": "Table 2"},
+            "kind": "snv_indel",
+            "placement": "mane",
+            "reported": {"c": c, "p": p},
+            "carriers": {"de_novo": 1, "inherited": 0, "origin_unknown": 0},
+        }
+
+    new["variants"] = [
+        named(1, "c.835C>T", "p.R279X"),
+        named(2, "c.998G>T", "p.D111Y"),
+        named(3, "c.835C>T", "p.R279Q"),
+    ]
+    data["findings"].append(new)
+    with file.open("w") as handle:
+        yaml.dump(data, handle)
+
+    fixtures = Path(__file__).parent / "fixtures" / "variantvalidator"
+    answers = {
+        vv.url("NM_181486.4:c.835C>T", "NM_181486.4"): (fixtures / "tbx5_c835.json").read_bytes(),
+        vv.url("NM_181486.4:c.998G>T", "NM_181486.4"): (
+            fixtures / "tbx5_c998_warning.json"
+        ).read_bytes(),
+    }
+    monkeypatch.setattr(cli, "_vv_fetch", lambda u: answers[u])
+
+    result = runner.invoke(
+        app,
+        [
+            "normalise",
+            "TBX5",
+            "--root",
+            str(atlas_copy),
+            "--atlas-cli",
+            os.environ["CHD_ATLAS_CLI"],
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    run = _atlas("validate", "--root", str(atlas_copy))
+    report = run.stdout + run.stderr
+    assert run.returncode == 0, report
+    assert not re.search(r"LIT0(1[6-9]|2[0-5])", report), report

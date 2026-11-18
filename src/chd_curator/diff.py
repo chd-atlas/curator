@@ -26,12 +26,23 @@ as sets, because their order carries no meaning: ``methods``, ``variant_classes`
 ``phenotypes``, ``lesion_groups`` and ``cohorts``. ``carriers`` is a mapping and is
 compared by value. Reported values have the set-like lists sorted.
 
+``variants`` is compared as a set of what the paper says about each variant, as in the atlas:
+every default of the exported schema's ``Variant`` and ``ReportedNames`` (and of any nested
+object) is filled first, because the atlas compares after a pydantic dump with every default
+written and curator compares plain YAML; then each variant loses ``id``, ``with``,
+``normalisation``, ``locator``, ``review_status`` and ``review_note`` and the dicts are sorted
+by canonical JSON. String leaves are stripped, as the atlas's models strip them.
+Without the fill, a pass that writes ``zygosity: not_stated`` and one that
+omits it would agree in ``chd-atlas literature review --against`` and differ here.
+
 The atlas keeps its own copy of the compared set in ``tests/unit/test_gene_literature_diff.py``
-and curator pins the same 17 in ``tests/test_diff.py``; the two change together.
+and curator pins the same 18 in ``tests/test_diff.py``; the two change together.
 """
 
 from __future__ import annotations
 
+import copy
+import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -65,6 +76,15 @@ _SET_LIKE: Final = frozenset(
         "lesion_groups",
         "cohorts",
     }
+)
+
+_VARIANT_BOOKKEEPING: Final = (
+    "id",
+    "with",
+    "normalisation",
+    "locator",
+    "review_status",
+    "review_note",
 )
 
 FieldDifference = tuple[str, Any, Any]
@@ -150,11 +170,75 @@ def _filled(finding: Mapping[str, Any], name: str, prop: Mapping[str, Any]) -> A
     return [] if prop.get("type") == "array" else None
 
 
+def _referenced(prop: Mapping[str, Any], defs: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The ``$defs`` entry a property refers to, directly or as one arm of an ``anyOf``."""
+    for candidate in [prop, *prop.get("anyOf", [])]:
+        ref = candidate.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            found = defs.get(ref.removeprefix("#/$defs/"))
+            if isinstance(found, Mapping):
+                return found
+    return None
+
+
+def _fill_object(
+    value: Mapping[str, Any], schema: Mapping[str, Any], defs: Mapping[str, Any]
+) -> dict[str, Any]:
+    """`value` with every property of `schema` present: the schema's default, else ``[]`` for
+    an array, else None; a nested object is filled the same way, from its own ``$defs`` entry."""
+    out: dict[str, Any] = {k: v for k, v in value.items() if k not in schema["properties"]}
+    for name, prop in schema["properties"].items():
+        if name in value:
+            item = value[name]
+        elif "default" in prop:
+            item = copy.deepcopy(prop["default"])
+        else:
+            item = [] if prop.get("type") == "array" else None
+        nested = _referenced(prop, defs)
+        if isinstance(item, Mapping) and nested is not None and "properties" in nested:
+            item = _fill_object(item, nested, defs)
+        out[name] = item
+    return out
+
+
+def stripped(value: Any) -> Any:
+    """`value` with every string leaf stripped, as the atlas's ``_NonBlankStr`` does on load."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return [stripped(item) for item in value]
+    if isinstance(value, dict):
+        return {k: stripped(v) for k, v in value.items()}
+    return value
+
+
+def _variants(
+    finding: Mapping[str, Any], properties: Mapping[str, Any], defs: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    try:
+        variant_schema = defs["Variant"]
+        variant_schema["properties"]
+    except (KeyError, TypeError) as exc:
+        raise DiffError("the atlas's gene_literature_file schema has no $defs.Variant") from exc
+    listed = _filled(finding, "variants", properties["variants"])
+    filled = (stripped(_fill_object(v, variant_schema, defs)) for v in listed)
+    return sorted(
+        ({k: v for k, v in item.items() if k not in _VARIANT_BOOKKEEPING} for item in filled),
+        key=lambda item: json.dumps(item, sort_keys=True),
+    )
+
+
 def _values(
-    finding: Mapping[str, Any], names: Sequence[str], properties: Mapping[str, Any]
+    finding: Mapping[str, Any],
+    names: Sequence[str],
+    properties: Mapping[str, Any],
+    defs: Mapping[str, Any],
 ) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for name in names:
+        if name == "variants":
+            out[name] = _variants(finding, properties, defs)
+            continue
         value = _filled(finding, name, properties[name])
         out[name] = sorted(value) if name in _SET_LIKE and isinstance(value, list) else value
     return out
@@ -167,6 +251,7 @@ def diff_findings(
 ) -> FindingDiff:
     names = compared_fields(literature_schema)
     properties = _finding_schema(literature_schema)["properties"]
+    defs = literature_schema["$defs"]
 
     def key(finding: Mapping[str, Any]) -> _Key:
         cohorts = _filled(finding, "cohorts", properties["cohorts"])
@@ -185,8 +270,8 @@ def diff_findings(
         if k not in pairable:
             only_first.append(str(finding["id"]))
             continue
-        mine = _values(finding, names, properties)
-        theirs = _values(partner[k], names, properties)
+        mine = _values(finding, names, properties, defs)
+        theirs = _values(partner[k], names, properties, defs)
         differences = [(n, mine[n], theirs[n]) for n in names if mine[n] != theirs[n]]
         if differences:
             fields[str(finding["id"])] = differences

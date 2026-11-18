@@ -54,11 +54,25 @@ REFUSALS = {
     "NOPE": "'NOPE' is not a known gene symbol",
     "MADH7": "'MADH7' is claimed by HGNC:6772, HGNC:6773",
 }
-symbol = sys.argv[3]
+FRAMES = {
+    "TBX5": ("NM_181486.4", "NP_852259.1", "12", "-"),
+    "GATA4": ("NM_002052.5", "NP_002043.2", "8", "+"),
+}
+subcommand, symbol = sys.argv[2], sys.argv[3]
 if symbol in REFUSALS:
     print("error: " + REFUSALS[symbol])
     sys.exit(2)
 gene, approved, published = ANSWERS[symbol]
+if subcommand == "frame":
+    if approved not in FRAMES:
+        print("error: " + approved + " has no MANE Select in the pinned frame")
+        sys.exit(2)
+    transcript, protein, chrom, strand = FRAMES[approved]
+    print(json.dumps({
+        "format": 1, "gene": gene, "symbol": approved, "transcript": transcript,
+        "protein": protein, "chrom": chrom, "strand": strand,
+    }, sort_keys=True))
+    sys.exit(0)
 print(json.dumps({
     "format": 1,
     "gene": gene,
@@ -73,7 +87,8 @@ STUB_QUERIES = {"TBX5": '("TBX5"[tiab]) AND stub-query', "GATA4": '("GATA4"[tiab
 
 @pytest.fixture
 def stub_atlas(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """An executable standing in for ``chd-atlas``, answering ``literature target`` only.
+    """An executable standing in for ``chd-atlas``, answering ``literature target`` and
+    ``literature frame``.
 
     TBX5 (also typed as its previous symbol HOS) and GATA4 are published, BRCA1 is
     not, and NOPE and MADH7 are refused with the atlas's real messages.

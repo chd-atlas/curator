@@ -31,15 +31,26 @@ import typer
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from chd_curator import pubmed
-from chd_curator.atlas import AtlasError, default_atlas_cli, plain, schema_validator, target
-from chd_curator.diff import DiffError, diff_findings, parse_findings_file
+from chd_curator import pubmed, variantvalidator
+from chd_curator.atlas import (
+    AtlasError,
+    Frame,
+    default_atlas_cli,
+    frame,
+    plain,
+    schema_validator,
+    target,
+)
+from chd_curator.diff import DiffError, diff_findings, parse_findings_file, stripped
+from chd_curator.hgvs import names_a_residue, protein_key, same_protein_change, three_letter
 from chd_curator.pubmed import Fetch, PubMedError, urllib_fetch
 from chd_curator.records import (
     ApprovedSynthesis,
     RecordError,
+    VariantChange,
     literature_path,
     load_round_trip,
+    with_normalised,
     with_publication,
     with_search,
     with_synthesis,
@@ -55,8 +66,9 @@ from chd_curator.write import (
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="CHD atlas curator tools.")
 
-# The one network hook: tests replace it, nothing else reaches PubMed.
+# The network hooks: tests replace them, nothing else reaches PubMed or VariantValidator.
 _fetch: Fetch = urllib_fetch
+_vv_fetch: variantvalidator.Fetch = variantvalidator.urllib_fetch
 
 _DECISIONS = ("pending", "included", "excluded")
 
@@ -314,6 +326,300 @@ def diff(
         except WriteRefused as exc:
             raise _fail(str(exc), 2) from None
     typer.echo(f"marked verified ({len(marked)}): {_ids(marked)}")
+
+
+def _unversioned(accession: str) -> str:
+    return accession.split(".", 1)[0]
+
+
+def _on_mane(reported_transcript: str | None, mane: Frame) -> bool:
+    """Whether the paper's own `p.` is numbered on MANE: no transcript named, or MANE's."""
+    return reported_transcript is None or _unversioned(reported_transcript) in {
+        _unversioned(mane.transcript),
+        _unversioned(mane.protein),
+    }
+
+
+def _agrees(reported: dict[str, Any], hgvs_p: str | None, mane: Frame) -> bool:
+    """Whether `hgvs_p` may be written beside the paper's `p.` (the atlas's LIT025 with D6').
+
+    The comparison is the atlas's, and so is an absent `hgvs_p` beside a paper residue (a
+    disagreement). curator is stricter only where the atlas skips LIT025 for a `hgvs_p` it
+    cannot use and reports that itself: `_decide` unplaces one on another protein accession
+    (the atlas: LIT016), and this unplaces an on-MANE one the atlas cannot read, such as
+    `p.(Met1ext-5)` or `p.(Gln70[3])` (the atlas: LIT021).
+    """
+    paper, transcript = reported.get("p"), reported.get("transcript")
+    if paper is None or not _on_mane(transcript.strip() if transcript else None, mane):
+        return True
+    paper = paper.strip()  # the atlas's models strip every string
+    hgvs_p = hgvs_p.strip() if hgvs_p else None
+    if hgvs_p is None:
+        return not names_a_residue(paper)
+    # D6': with a residue named on only one side there is nothing to compare.
+    if not names_a_residue(paper) or not names_a_residue(hgvs_p):
+        return True
+    return same_protein_change(paper, hgvs_p)
+
+
+def _note(variant: dict[str, Any], new: str) -> str:
+    old = variant.get("review_note")
+    return f"{old}; {new}" if old else new
+
+
+def _decide(
+    variant: dict[str, Any],
+    result: variantvalidator.Placed | variantvalidator.Refused,
+    description: str,
+    mane: Frame,
+) -> tuple[dict[str, Any], str]:
+    """The fields to write for one variant, and the line to print about it."""
+    reported: dict[str, Any] = variant.get("reported") or {}
+    if isinstance(result, variantvalidator.Placed):
+        accession = (
+            result.hgvs_p.split(":", 1)[0] if result.hgvs_p and ":" in result.hgvs_p else None
+        )
+        if accession is not None and accession != mane.protein:
+            note = (
+                f"VariantValidator places {description} on protein {accession}, not the pinned "
+                f"{mane.protein}; the variant is unplaced"
+            )
+            message = f"unplaced: VariantValidator's protein is {accession}, not {mane.protein}"
+        elif _agrees(reported, result.hgvs_p, mane):
+            fields = {"hgvs_c": result.hgvs_c, "hgvs_p": result.hgvs_p, "grch38": result.grch38}
+            return fields, f"placed {result.hgvs_c} at {result.grch38} ({result.hgvs_p or 'no p.'})"
+        else:
+            shown = result.hgvs_p or "no protein change"
+            note = (
+                f"the paper names {reported['p']} but VariantValidator places {description} as "
+                f"{shown}; the two disagree, so the variant is unplaced"
+            )
+            message = f"unplaced: the paper names {reported['p']}, VariantValidator gives {shown}"
+    else:
+        note = f"VariantValidator refused {description}: {result.warnings[0]}"
+        message = f"unplaced: {result.warnings[0]}"
+    kept = None
+    paper = reported.get("p")
+    if (
+        isinstance(result, variantvalidator.Refused)
+        and paper is not None
+        and _on_mane(reported.get("transcript"), mane)
+        and names_a_residue(paper)
+    ):
+        kept = f"{mane.protein}:p.({three_letter(paper)})"
+        message += f"; kept the paper's {kept}, run chd-atlas validate to check its residue"
+    fields = {
+        "placement": "unplaced",
+        "hgvs_c": None,
+        "grch38": None,
+        "hgvs_p": kept,
+        "review_status": "pending_review",
+        "review_note": _note(variant, note),
+    }
+    return fields, message
+
+
+def _row_key(variant: dict[str, Any]) -> str | None:
+    """The key the atlas groups a variant's page row under, or None (`_row_key` there)."""
+    if variant.get("placement") == "mane" and variant.get("grch38") is not None:
+        return "g:" + str(variant["grch38"])
+    if variant.get("placement") == "protein" and variant.get("hgvs_p") is not None:
+        return "p:" + protein_key(str(variant["hgvs_p"]))
+    return None
+
+
+def _groups(variants: list[dict[str, Any]]) -> dict[int, int]:
+    """Variant id -> its `with` group number: connected components of the links that resolve,
+    read undirected, of size two or more. Empty when two variants share an id."""
+    ids = [v["id"] for v in variants]
+    if len(set(ids)) != len(ids):
+        return {}
+    parent = {i: i for i in ids}
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for v in variants:
+        for other in v.get("with") or []:
+            if other in parent and other != v["id"]:
+                parent[find(v["id"])] = find(other)
+    members: dict[int, list[int]] = {}
+    for i in ids:
+        members.setdefault(find(i), []).append(i)
+    sized = [g for g in members.values() if len(g) > 1]
+    return {i: n for n, group in enumerate(sized) for i in group}
+
+
+def _context(variant: dict[str, Any], by_id: dict[int, dict[str, Any]]) -> tuple[Any, Any]:
+    """The genotype context (ruling D16'): the partners' names and the phase.
+
+    A partner is named by its row key, or by `as_reported` when it has none, so the same
+    pair written under different ids is one context.
+    """
+    names = set()
+    for other in variant.get("with") or []:
+        partner = by_id.get(other)
+        names.add(f"#{other}" if partner is None else _row_key(partner) or partner["as_reported"])
+    return frozenset(names), variant.get("phase")
+
+
+def _duplicate_keys(
+    findings: list[dict[str, Any]], changes: dict[tuple[str, int], dict[str, Any]]
+) -> list[str]:
+    """Pairs of variants the atlas would refuse as one name repeated (LIT022, ruling D16').
+
+    Computed on the state after normalisation. Two variants with one row key clash when their
+    genotype contexts are equal, or when both sit in one `with` group (one change twice in a
+    group is in effect homozygous).
+    """
+    problems: list[str] = []
+    for finding in findings:
+        merged = [
+            {**stripped(v), **changes.get((str(finding["id"]), v["id"]), {})}
+            for v in finding.get("variants") or []
+        ]
+        by_id = {v["id"]: v for v in merged}
+        group_of = _groups(merged)
+        seen: dict[str, list[dict[str, Any]]] = {}
+        for variant in merged:
+            key = _row_key(variant)
+            if key is None:
+                continue
+            twin = next(
+                (
+                    w
+                    for w in seen.get(key, [])
+                    if w["id"] != variant["id"]
+                    and (
+                        _context(w, by_id) == _context(variant, by_id)
+                        or (
+                            variant["id"] in group_of
+                            and group_of.get(w["id"]) == group_of[variant["id"]]
+                        )
+                    )
+                ),
+                None,
+            )
+            if twin is not None:
+                problems.append(
+                    f"{finding['id']}: variants {twin['id']} and {variant['id']} both name "
+                    f"{key[2:]} in one genotype context (or one `with` group); the atlas would "
+                    "refuse the file (LIT022), so fix their names or links first"
+                )
+            seen.setdefault(key, []).append(variant)
+    return problems
+
+
+@app.command("normalise")
+def normalise(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Place each `mane` variant the paper named by its c. on the MANE frame, with VariantValidator.
+
+    Fills hgvs_c, hgvs_p and grch38, or marks the variant unplaced and pending review, and
+    records the run. Never touches an approval or verified_by.
+    """
+    _require_root(root)
+    try:
+        mane = frame(root, symbol, _atlas_cli(root, atlas_cli))
+        validator = schema_validator(root, "gene_literature_file")
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    path = literature_path(root, mane.symbol)
+    if not path.is_file():
+        raise _fail(f"{path} does not exist", 2)
+    try:
+        raw = path.read_bytes()
+        curated = plain(YAML(typ="safe").load(raw))
+        broken = schema_error_lines(curated, validator)
+        if broken:
+            raise DiffError(f"{path} does not satisfy its schema:\n" + "\n".join(broken))
+    except (DiffError, YAMLError, ValueError, OSError) as exc:
+        raise _fail(str(exc), 1) from None
+    findings: list[dict[str, Any]] = list(curated.get("findings") or [])
+
+    changes: dict[tuple[str, int], dict[str, Any]] = {}
+    lines: list[str] = []
+    skipped: list[str] = []
+    metadata: variantvalidator.Metadata | None = None
+    for finding in findings:
+        for raw_variant in finding.get("variants") or []:
+            # The atlas's models strip every string; the decisions read the stripped view.
+            variant = stripped(raw_variant)
+            reported = variant.get("reported") or {}
+            if (
+                variant.get("placement") != "mane"
+                or reported.get("c") is None
+                or variant.get("normalisation") is not None
+            ):
+                continue
+            if variant.get("kind") != "snv_indel":
+                skipped.append(
+                    f"{finding['id']} variant {variant['id']} ({variant['as_reported']}): skipped, "
+                    f"kind {variant.get('kind')} is not snv_indel (the atlas refuses a mane "
+                    "variant of that kind, LIT022)"
+                )
+                continue
+            description = f"{reported.get('transcript') or mane.transcript}:{reported['c']}"
+            try:
+                result, seen = variantvalidator.place(description, mane.transcript, _vv_fetch)
+            except variantvalidator.VariantValidatorError as exc:
+                raise _fail(f"{exc}; nothing was written", 1) from None
+            if metadata is not None and seen != metadata:
+                raise _fail(
+                    "VariantValidator's versions changed during the run; nothing was written", 1
+                )
+            metadata = seen
+            fields, message = _decide(variant, result, description, mane)
+            changes[(str(finding["id"]), variant["id"])] = fields
+            lines.append(
+                f"{finding['id']} variant {variant['id']} ({variant['as_reported']}): {message}"
+            )
+    if metadata is None:
+        for line in skipped:
+            typer.echo(line)
+        typer.echo(
+            "no variant was asked about: none is a snv_indel placed `mane` with a reported c. "
+            "and no normalisation"
+        )
+        return
+    problems = _duplicate_keys(findings, changes)
+    if problems:
+        raise _fail("\n".join(problems) + "\nnothing was written", 2)
+    run = {
+        "version": metadata.version,
+        "hgvs_version": metadata.hgvs_version,
+        "vvta": metadata.vvta,
+        "vvdb": metadata.vvdb,
+        "seqrepo": metadata.seqrepo,
+        "run_on": date.today(),
+    }
+    try:
+        content, run_id = with_normalised(
+            raw, [VariantChange(f, v, fields) for (f, v), fields in changes.items()], run
+        )
+        write_literature(path, content, validator, expected=raw)
+    except RecordError as exc:
+        raise _fail(str(exc), 1) from None
+    except WriteRefused as exc:
+        raise _fail(str(exc), 2) from None
+    for line in [*lines, *skipped]:
+        typer.echo(line)
+    approved = {str(f["id"]) for f in findings if f.get("approved_by") is not None}
+    for finding_id in sorted({f for f, _ in changes} & approved):
+        typer.echo(
+            f"{finding_id}: its approval is now void, because its variants changed; re-approve "
+            f"it with: chd-atlas literature review {mane.symbol} --approve {finding_id} "
+            "--by <name>"
+        )
+    typer.echo(
+        f"asked about {len(lines)} variant(s) in {path} as run {run_id}; run chd-atlas validate"
+    )
 
 
 _DRAFT_KEYS = ("sentences", "drafted_by")

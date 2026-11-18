@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -374,3 +375,106 @@ def with_publication(existing: bytes, record: Mapping[str, Any], reading: str) -
     if len(after) != len(before_ids) + 1 or after[-1] != appended:
         raise RecordError("the appended record did not land as the last publication")
     return content
+
+
+# The model's field order for a variant; a key a command adds goes after the nearest earlier
+# key the entry already holds, so a file reads as the atlas would write it.
+_VARIANT_ORDER = (
+    "id",
+    "as_reported",
+    "locator",
+    "kind",
+    "placement",
+    "reported",
+    "hgvs_c",
+    "hgvs_p",
+    "grch38",
+    "normalisation",
+    "zygosity",
+    "with",
+    "phase",
+    "carriers",
+    "phenotypes",
+    "review_status",
+    "review_note",
+)
+_NORMALISATION_ORDER = (
+    "id",
+    "tool",
+    "version",
+    "hgvs_version",
+    "vvta",
+    "vvdb",
+    "seqrepo",
+    "run_on",
+)
+
+
+@dataclass(frozen=True)
+class VariantChange:
+    """The fields ``normalise`` sets on one variant; None removes the key (null is the default)."""
+
+    finding_id: str
+    variant_id: int
+    fields: Mapping[str, Any]
+
+
+def _set_variant_key(entry: CommentedMap, key: str, value: Any) -> None:
+    if value is None:
+        if key in entry:
+            del entry[key]
+        return
+    if key in entry:
+        entry[key] = value
+        return
+    before = _VARIANT_ORDER[: _VARIANT_ORDER.index(key)]
+    held = [list(entry).index(name) for name in before if name in entry]
+    position = max(held) + 1 if held else len(entry)
+    at_end = position == len(entry)
+    entry.insert(position, key, value)
+    if at_end and len(entry) > 1:
+        _carry_trailing_comment(entry, key)
+
+
+def with_normalised(
+    existing: bytes, changes: Sequence[VariantChange], run: Mapping[str, Any]
+) -> tuple[bytes, int]:
+    """The file's new content after one ``normalise`` run: `(bytes, normalisation id)`.
+
+    `run` carries ``version``, ``hgvs_version``, ``vvta``, ``vvdb``, ``seqrepo`` and ``run_on``
+    (a date); the run is appended to ``normalisations`` (created after ``searches`` when
+    absent) under the next free id, and every changed variant gets ``normalisation`` set to
+    it. Each change's `fields` are written to its variant; nothing else in the file moves, and
+    no approval field or ``verified_by`` is read or written. An unknown finding or variant is
+    refused. Not validated here: the caller's write is.
+    """
+    data = load_round_trip(existing)
+    findings = {str(f.get("id")): f for f in data.get("findings") or []}
+    normalisations = data.get("normalisations")
+    used = [int(n["id"]) for n in normalisations or []]
+    run_id = max(used, default=0) + 1
+    for change in changes:
+        finding = findings.get(change.finding_id)
+        if finding is None:
+            raise RecordError(f"no such finding: {change.finding_id}")
+        entry = next(
+            (v for v in finding.get("variants") or [] if v.get("id") == change.variant_id), None
+        )
+        if entry is None:
+            raise RecordError(f"{change.finding_id} has no variant {change.variant_id}")
+        for key, value in change.fields.items():
+            _set_variant_key(entry, key, value)
+        _set_variant_key(entry, "normalisation", run_id)
+    record = CommentedMap()
+    values = {"id": run_id, "tool": "variantvalidator", **run}
+    for key in _NORMALISATION_ORDER:
+        record[key] = values[key]
+    if normalisations is None:
+        block = CommentedSeq()
+        block.fa.set_block_style()
+        block.append(record)
+        position = list(data).index("searches") + 1 if "searches" in data else len(data)
+        data.insert(position, "normalisations", block)
+    else:
+        normalisations.append(record)
+    return dump_bytes(data), run_id
