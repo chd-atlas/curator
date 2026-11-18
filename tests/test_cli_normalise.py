@@ -503,10 +503,18 @@ BOTH = {f"{TBX5}:c.835C>T": C835, f"{TBX5}:c.998G>T": C998}
             linked(1, "c.835C>T", as_reported="a", with_=[2]),
             linked(2, "c.835C>T", as_reported="b", with_=[1]),
         ],
+        # One change twice in one group whose contexts differ (a chain): only the group rule
+        # catches it, because 1's partners are {x} and 3's are {x, y}.
+        [
+            linked(1, "c.835C>T", as_reported="a", with_=[2]),
+            linked(2, "c.998G>T", as_reported="x", with_=[1, 3]),
+            linked(3, "c.835C>T", as_reported="b", with_=[2, 4]),
+            linked(4, "c.998G>T", as_reported="y", with_=[3]),
+        ],
         # The same key twice with no partner at all.
         [linked(1, "c.835C>T", as_reported="a"), linked(2, "c.835C>T", as_reported="b")],
     ],
-    ids=["same-pair-twice", "one-change-twice-in-a-pair", "plain-twice"],
+    ids=["same-pair-twice", "one-change-twice-in-a-pair", "chain-in-one-group", "plain-twice"],
 )
 def test_the_atlas_d16_prime_duplicates_write_nothing_and_exit_2(
     stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch, variants: list[str]
