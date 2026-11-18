@@ -339,6 +339,10 @@ def test_the_atlas_commands_the_skills_name_exist() -> None:
         assert _names_option(review.stdout, option), option
     target = _atlas("literature", "target", "--help")
     assert target.returncode == 0, target.stdout + target.stderr
+    questions = _atlas("literature", "questions", "--help")
+    assert questions.returncode == 0, questions.stdout + questions.stderr
+    for option in sorted(ATLAS_COMMANDS["literature questions"]):
+        assert _names_option(questions.stdout, option), option
     validate = _atlas("validate", "--help")
     assert validate.returncode == 0, validate.stdout + validate.stderr
 

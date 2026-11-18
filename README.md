@@ -49,8 +49,10 @@ For one published gene:
    `--mark-verified`, records agreement.
 5. You review in the atlas: `.venv/bin/chd-atlas literature review <SYMBOL>` lists the unapproved
    findings. Approve with `--approve <id> --by "<your name>"`, or mark one with
-   `--pending-review <id> --note "<what differs>"`. Add `--against <the verifier's file>` to see
-   where the blind pass read a finding differently.
+   `--pending-review <id> --note "<what differs>" --settled-by <who>`, where `<who>` is what would
+   settle it: `full_text`, `authors`, `expert` or `atlas_model`. `chd-atlas literature questions`
+   lists the open ones. Add `--against <the verifier's file>` to see where the blind pass read a
+   finding differently.
 
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
