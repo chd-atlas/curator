@@ -415,6 +415,9 @@ def _decide(
         "hgvs_p": kept,
         "review_status": "pending_review",
         "review_note": _note(variant, note),
+        # R-U6: the tool cannot tell a paper error from a tool or frame limit, so it names the one
+        # settler that is always true; a settler a curator already wrote is kept.
+        "review_settled_by": variant.get("review_settled_by") or "expert",
     }
     return fields, message
 

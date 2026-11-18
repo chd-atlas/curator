@@ -187,6 +187,77 @@ def test_normalise_places_one_variant_and_marks_another_unplaced_with_the_measur
     assert len(fetch.asked) == 2  # type: ignore[attr-defined]
 
 
+def _other_accession() -> Callable[[str], bytes]:
+    answer = json.loads((FIXTURES / C835).read_text())
+    entry = answer[f"{TBX5}:c.835C>T"]["hgvs_predicted_protein_consequence"]
+    entry["tlr"] = "NP_852259.2:p.(Arg279Ter)"
+    return lambda u: json.dumps(answer).encode()
+
+
+@pytest.mark.parametrize(
+    ("c", "p", "fetch"),
+    [
+        # Refused by VariantValidator.
+        ("c.998G>T", "p.D111Y", fixture_for({f"{TBX5}:c.998G>T": C998})),
+        # Placed, but the predicted p. disagrees with the paper's.
+        ("c.835C>T", "p.R279Q", fixture_for({f"{TBX5}:c.835C>T": C835})),
+        # Placed, but on another protein accession than the pinned MANE one.
+        ("c.835C>T", "p.R279X", _other_accession()),
+    ],
+    ids=["refused", "p_disagrees", "other_accession"],
+)
+def test_normalise_names_an_expert_as_the_settler_of_every_mark_it_writes(
+    stub_atlas: Path,
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    c: str,
+    p: str,
+    fetch: Callable[[str], bytes],
+) -> None:
+    """R-U6: the tool cannot tell a paper error from a tool or frame limit, so it names the
+    one settler that is always true. The atlas refuses a pending_review without one; these are
+    the three places `_decide` writes a mark. A placed variant carries no mark and no settler."""
+    path = _write(root, literature(variant(1, c, p)))
+    monkeypatch.setattr(cli, "_vv_fetch", fetch)
+
+    assert _normalise(stub_atlas, root).exit_code == 0
+
+    one = _variants(path)[1]
+    assert one["review_status"] == "pending_review"
+    assert one["review_settled_by"] == "expert"
+
+
+def test_a_placed_variant_carries_no_settler(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(root, literature(variant(1, "c.835C>T", "p.R279X")))
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for({f"{TBX5}:c.835C>T": C835}))
+
+    assert _normalise(stub_atlas, root).exit_code == 0
+
+    assert "review_settled_by" not in _variants(path)[1]
+
+
+def test_normalise_keeps_a_settler_a_curator_already_wrote(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = literature(variant(1, "c.998G>T", "p.D111Y")).replace(
+        "        placement: mane\n",
+        "        placement: mane\n"
+        "        review_status: pending_review\n"
+        "        review_note: the curator's own question\n"
+        "        review_settled_by: authors\n",
+    )
+    path = _write(root, text)
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for({f"{TBX5}:c.998G>T": C998}))
+
+    assert _normalise(stub_atlas, root).exit_code == 0
+
+    one = _variants(path)[1]
+    assert one["review_status"] == "pending_review"
+    assert one["review_settled_by"] == "authors"
+
+
 def test_a_placed_variant_whose_p_disagrees_is_unplaced_naming_both_forms(
     stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

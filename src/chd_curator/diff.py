@@ -30,8 +30,10 @@ compared by value. Reported values have the set-like lists sorted.
 every default of the exported schema's ``Variant`` and ``ReportedNames`` (and of any nested
 object) is filled first, because the atlas compares after a pydantic dump with every default
 written and curator compares plain YAML; then each variant loses ``id``, ``with``,
-``normalisation``, ``locator``, ``review_status`` and ``review_note`` and the dicts are sorted
-by canonical JSON. String leaves are stripped, as the atlas's models strip them.
+``normalisation``, ``locator``, ``review_status``, ``review_note``, ``review_settled_by`` and
+``unclear`` (the reasons and settlers say what a curator needs, not what the paper says; the
+atlas drops the same eight) and the dicts are sorted by canonical JSON. String leaves are
+stripped, as the atlas's models strip them.
 Without the fill, a pass that writes ``zygosity: not_stated`` and one that
 omits it would agree in ``chd-atlas literature review --against`` and differ here.
 
@@ -65,6 +67,7 @@ EXCLUDED_FIELDS: Final = (
     "approved_digest",
     "review_status",
     "review_note",
+    "review_settled_by",
     "locators",
     "shares_probands_with",
 )
@@ -85,6 +88,8 @@ _VARIANT_BOOKKEEPING: Final = (
     "locator",
     "review_status",
     "review_note",
+    "review_settled_by",
+    "unclear",
 )
 
 FieldDifference = tuple[str, Any, Any]

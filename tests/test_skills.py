@@ -60,6 +60,7 @@ def _rules() -> Path:
 ATLAS_COMMANDS: dict[str, set[str]] = {
     "validate": set(),
     "literature target": set(),
+    "literature questions": {"--root"},
     "literature review": {
         "--approve",
         "--approve-synthesis",
@@ -70,6 +71,7 @@ ATLAS_COMMANDS: dict[str, set[str]] = {
         "--against",
         "--pending-review",
         "--note",
+        "--settled-by",
         "--root",
     },
 }

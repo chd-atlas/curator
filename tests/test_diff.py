@@ -106,6 +106,7 @@ def test_the_compared_set_is_pinned(schema: dict[str, Any]) -> None:
         "review_note",
         "locators",
         "shares_probands_with",
+        "review_settled_by",
     }
 
 
@@ -164,6 +165,7 @@ def test_fields_the_curator_reads_are_not_compared(schema: dict[str, Any]) -> No
             "verified_by": "agent:verify/other",
             "review_status": "pending_review",
             "review_note": "a note",
+            "review_settled_by": "authors",
         },
     )
     assert diff.fields == {} and diff.agreed == ("CHDA:LIT:0000001",)
@@ -418,9 +420,9 @@ def test_a_non_default_variant_field_is_a_difference(schema: dict[str, Any]) -> 
 
 
 def test_variants_ignore_bookkeeping_and_order(schema: dict[str, Any]) -> None:
-    """`id`, `with`, `normalisation`, `locator`, `review_status` and `review_note` are not what
-    the paper says; the order variants are listed in carries no meaning either. `as_reported`
-    is what the paper says, so it stays compared."""
+    """`id`, `with`, `normalisation`, `locator`, `review_status`, `review_note`,
+    `review_settled_by` and `unclear` are not what the paper says; the order variants are listed
+    in carries no meaning either. `as_reported` is what the paper says, so it stays compared."""
     one, two = _variant(1), _variant(2, reported={"c": "c.998G>T", "p": "p.D111Y"})
     noted = _variant(
         7,
@@ -438,6 +440,27 @@ def test_variants_ignore_bookkeeping_and_order(schema: dict[str, Any]) -> None:
         {"variants": [noted, _variant(8, as_reported="variant 1", normalisation=4)]},
     )
     assert result.agreed == ("CHDA:LIT:0000001",)
+    # Neither is a settler or an unclear reason: they say what a curator needs, not what the
+    # paper says, so two passes differing only in them agree (the atlas's Task 1 test).
+    first = _variant(
+        1,
+        review_status="pending_review",
+        review_note="a note",
+        review_settled_by="authors",
+        unclear={
+            "zygosity": {"reason": "the paper reports mixed zygosity", "settled_by": "authors"}
+        },
+    )
+    second = _variant(
+        1,
+        review_status="pending_review",
+        review_note="another note",
+        review_settled_by="expert",
+        unclear={"zygosity": {"reason": "stated otherwise", "settled_by": "atlas_model"}},
+    )
+    assert _pair(schema, {"variants": [first]}, {"variants": [second]}).agreed == (
+        "CHDA:LIT:0000001",
+    )
     # ... and the same variants with a different name for one are a difference.
     changed = _variant(2, as_reported="variant 2", reported={"c": "c.998G>T", "p": "p.D111H"})
     assert _pair(schema, {"variants": [one, two]}, {"variants": [one, changed]}).fields
