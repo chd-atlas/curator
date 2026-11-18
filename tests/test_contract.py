@@ -546,6 +546,9 @@ def test_the_placement_rules_extract_step_5_states_validate_clean_and_the_carrie
 ) -> None:
     """Each form step 5 teaches, written as it says, measured against atlas 6bb9bee.
 
+    The R-F2 (g. position outside the exons), R-F3 (prefixless `c.`) and R-F4 (notation-only fix)
+    cases were measured against atlas 61c18ec.
+
     One finding per rule, so a refusal names its own. The last finding breaks the carrier rule
     step 5 states (two unlinked variants of one de novo carrier each, in a finding with one) and
     is the only one validate may refuse.
@@ -645,6 +648,59 @@ def test_the_placement_rules_extract_step_5_states_validate_clean_and_the_carrie
                 "variant_classes": ["snv_indel", "cnv"],
             },
         ),
+        # R-F2: a g. position the paper places outside the exons is outside_region, not unplaced.
+        (
+            [
+                _variant(
+                    1,
+                    "g.114366312G>A (an enhancer)",
+                    "outside_region",
+                    reported={},
+                    carriers=one,
+                )
+            ],
+            "case_report",
+            {"screened": 1, "carriers": one},
+        ),
+        # R-F4: a notation-only fix in `reported` (capital Ter; ASCII *), as_reported as printed.
+        (
+            [
+                _variant(
+                    1,
+                    "p.Arg279ter",
+                    "protein",
+                    reported={"p": "p.Arg279Ter"},
+                    hgvs_p="NP_852259.1:p.(Arg279Ter)",
+                    carriers=one,
+                )
+            ],
+            "case_report",
+            {"screened": 1, "carriers": one},
+        ),
+        (
+            [
+                _variant(
+                    1,
+                    "p.R279\u2217",
+                    "protein",
+                    reported={"p": "p.R279*"},
+                    hgvs_p="NP_852259.1:p.(Arg279Ter)",
+                    carriers=one,
+                )
+            ],
+            "case_report",
+            {"screened": 1, "carriers": one},
+        ),
+        # R-F3: a c. name printed without its prefix is a mane variant, reported.c as printed.
+        # Before normalise it fails only the three LIT022 messages asserted at the end.
+        (
+            [
+                _variant(1, "456delC", "mane", reported={"c": "456delC"}, carriers=one),
+                _variant(2, "998G>T", "mane", reported={"c": "998G>T"}, carriers=one),
+            ],
+            "cohort_screen",
+            {"screened": 10, "carriers": {"de_novo": 0, "inherited": 0, "origin_unknown": 2}},
+        ),
         # a common-variant finding names the variant it tested and carries no carriers.
         (
             [_variant(1, "rs3825214", "outside_region", reported={"rsid": "rs3825214"})],
@@ -681,5 +737,11 @@ def test_the_placement_rules_extract_step_5_states_validate_clean_and_the_carrie
 
     _append_findings(atlas_copy, make)
     assert _errors(atlas_copy) == [
-        ("LIT023", "variants name at least 2 de_novo carrier(s), more than the finding's 1")
+        ("LIT022", "a mane variant needs grch38"),
+        ("LIT022", "a mane variant needs grch38"),
+        ("LIT022", "a mane variant needs hgvs_c"),
+        ("LIT022", "a mane variant needs hgvs_c"),
+        ("LIT022", "a mane variant needs normalisation"),
+        ("LIT022", "a mane variant needs normalisation"),
+        ("LIT023", "variants name at least 2 de_novo carrier(s), more than the finding's 1"),
     ]

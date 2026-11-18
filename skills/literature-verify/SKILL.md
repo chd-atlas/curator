@@ -37,8 +37,11 @@ first pass.
    value cannot hold (`literature-extract` step 6); a `pending_review` mark carries
    `review_settled_by`. Leave `hgvs_c`, `grch38` and `normalisation` unset, and `hgvs_p` on a
    `mane` variant: both passes are compared before `chd-curator normalise` places anything.
-   A `protein` variant carries `hgvs_p` as `literature-extract` step 5 writes it. Never copy
-   a placement or a name from the first pass.
+   A `protein` variant carries `hgvs_p` as `literature-extract` step 5 writes it. Place each
+   variant by where the paper puts it, as step 5 rules: position beats naming (a variant the
+   paper places outside the exons is `outside_region` whatever names it), a `c.` name printed
+   without `c.` is `mane`, and a notation-only fix goes in `reported` with `as_reported` kept
+   as printed. Never copy a placement or a name from the first pass.
 4. Leave `verified_by`, `approved_by` and `approved_on` unset. Set
    `extracted_by: agent:literature-verify/<model>`.
 
