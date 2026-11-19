@@ -4,8 +4,9 @@ A quote is compared with the text of its own finding's paper (full text, abstrac
 supplement), after both sides are normalised over typography: case, whitespace, curly
 quotes, dashes (U+2010 included), ligatures, and the ``|`` and ``---row`` marks a flattened
 table leaves behind. A quote that does not match is reported ``found: False`` and the page
-says "not found in text"; nothing here ever reports a check that did not run. A finding whose
-paper has no readable source has all its quotes ``found: False``.
+says "not found in text". A quote whose finding has no source text (no paper in texts.json, or
+a paper with no text, abstract or supplement) was not checked: it carries ``checked: False`` and
+``found: False``, and the page must not present it as a miss.
 
 Adapted from the pilot's ``quotecheck.py`` (19 lines). Differences: U+2010 is mapped, and the
 word count is kept for the page's long-quote flag. Whether the normalisation is complete is
@@ -86,6 +87,8 @@ class QuoteCheck:
     quote: str
     where: str
     found: bool
+    checked: bool
+    paper: str
     words: int
 
 
@@ -148,6 +151,8 @@ def check_quotes(run: RunPaths) -> tuple[QuoteCheck, ...]:
                     quote,
                     where,
                     quote_found(quote, known),
+                    bool(known),
+                    paper_of.get(finding, finding),
                     len(quote.split()),
                 )
             )

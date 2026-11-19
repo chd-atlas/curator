@@ -78,7 +78,7 @@ def test_check_quotes_on_the_fixture_run(run_copy: RunPaths) -> None:
     assert all(isinstance(c, QuoteCheck) for c in checks)
 
 
-def test_a_finding_with_no_source_has_every_quote_not_found(run_copy: RunPaths) -> None:
+def test_a_finding_with_no_source_text_is_unchecked_not_a_miss(run_copy: RunPaths) -> None:
     lit = run_copy.root / "curation/literature/TBX5.yaml"
     lit.write_text(
         lit.read_text(encoding="utf-8").replace(
@@ -87,13 +87,15 @@ def test_a_finding_with_no_source_has_every_quote_not_found(run_copy: RunPaths) 
         encoding="utf-8",
     )
     checks = [c for c in check_quotes(run_copy) if c.finding.endswith("0902")]
-    assert len(checks) == 6 and not any(c.found for c in checks)
+    assert len(checks) == 6 and not any(c.found or c.checked for c in checks)
+    assert {c.paper for c in checks} == {"PMID:90000099"}
 
     texts = run_copy.texts
     data = json.loads(texts.read_text(encoding="utf-8"))
     data["papers"][0].update(source="none", text=None, abstract=None, supplements=[])
     texts.write_text(json.dumps(data), encoding="utf-8")
-    assert not any(c.found for c in check_quotes(run_copy) if c.finding.endswith("0901"))
+    no_text = [c for c in check_quotes(run_copy) if c.finding.endswith("0901")]
+    assert len(no_text) == 5 and not any(c.found or c.checked for c in no_text)
 
 
 def test_a_listed_source_that_cannot_be_read_is_an_error(run_copy: RunPaths) -> None:
@@ -116,11 +118,31 @@ def test_the_command_writes_quotes_json_and_names_what_it_found(run_copy: RunPat
     payload = json.loads(first)
     assert payload["format"] == 1 and len(payload["checks"]) == 11
     assert set(payload["checks"][0]) == {
-        "finding", "origin", "field", "quote", "where", "found", "words"
+        "finding", "origin", "field", "quote", "where", "found", "checked", "paper", "words"
     }  # fmt: skip
+    assert all(c["checked"] is True for c in payload["checks"])
     assert [c["found"] for c in payload["checks"]].count(False) == 1
     assert runner.invoke(app, args).exit_code == 0
     assert run_copy.quotes.read_bytes() == first  # identical bytes on a second run
+
+
+def test_the_command_counts_only_checked_quotes_and_names_the_unchecked(
+    run_copy: RunPaths,
+) -> None:
+    lit = run_copy.root / "curation/literature/TBX5.yaml"
+    lit.write_text(
+        lit.read_text(encoding="utf-8").replace(
+            "publication: PMID:90000002", "publication: PMID:90000099"
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["quotes", "TBX5", "--run", "r1", "--root", str(run_copy.root)])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0] == "5 quotes checked, 1 not found, 1 over 30 words"
+    assert "6 quotes not checked: no text (PMID:90000099)" in lines
+    payload = json.loads(run_copy.quotes.read_bytes())
+    assert [c["checked"] for c in payload["checks"]].count(False) == 6
 
 
 def test_a_malformed_run_exits_2_and_writes_nothing(run_copy: RunPaths) -> None:

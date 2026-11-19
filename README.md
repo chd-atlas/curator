@@ -54,6 +54,13 @@ For one published gene:
    lists the open ones. Add `--against <the verifier's file>` to see where the blind pass read a
    finding differently.
 
+### Review a run
+
+`chd-curator quotes <SYMBOL> --run <run id>` checks every quote in a run's `evidence/` and
+`judge/` files against the text of the finding's paper and writes
+`local/literature/runs/<SYMBOL>/<run id>/quotes.json`. A quote whose paper has no text is
+recorded as not checked, never as not found.
+
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and

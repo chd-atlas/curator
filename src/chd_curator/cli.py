@@ -766,12 +766,17 @@ def quotes(
         raise _fail(str(exc), 2) from None
     except OSError as exc:
         raise _fail(f"{paths.quotes}: cannot be written: {exc}", 1) from None
-    missing = [c for c in checks if not c.found]
+    done = [c for c in checks if c.checked]
+    missing = [c for c in done if not c.found]
+    unchecked = [c for c in checks if not c.checked]
     long = [c for c in checks if c.words > LONG_QUOTE_WORDS]
     typer.echo(
-        f"{len(checks)} quotes checked, {len(missing)} not found, "
+        f"{len(done)} quotes checked, {len(missing)} not found, "
         f"{len(long)} over {LONG_QUOTE_WORDS} words"
     )
+    if unchecked:
+        papers = ", ".join(sorted({c.paper for c in unchecked}))
+        typer.echo(f"{len(unchecked)} quotes not checked: no text ({papers})")
     for c in missing:
         typer.echo(f"not found: {c.finding} {c.origin} {c.field}: {c.quote}")
     for c in long:
