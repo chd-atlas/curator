@@ -201,18 +201,29 @@ def _read(
     transcript: str,
     asked: str,
     tolerate_version: bool = False,
+    tolerate_automap: bool = False,
 ) -> Placed | Refused:
     """The entry as `Placed` on `transcript`, or `Refused`.
 
     A TranscriptVersionWarning is tolerated only when `tolerate_version`. The redundant-bases
-    syntax warning is tolerated only when `asked` lists bases that match the returned VCF.
+    syntax warning is tolerated only when `asked` lists bases that match the returned VCF. With
+    `tolerate_automap` (R-F11), so is exactly ``<asked, listed bases dropped> automapped to
+    <the entry's own hgvs_transcript_variant>``: VariantValidator's 3' shift of the same variant.
     """
     if entry is None:
         return Refused(("VariantValidator returned no description (empty_result)",), asked)
     vcf = _vcf(entry)
+    own = entry.get("hgvs_transcript_variant")
+    automapped = (
+        f"{_LISTED_BASES.sub('del', asked)} automapped to {own}"
+        if tolerate_automap and isinstance(own, str) and own
+        else None
+    )
     blocking = []
     for warning in _strings(entry.get("validation_warnings")):
         if tolerate_version and warning.startswith(_VERSION_WARNING):
+            continue
+        if warning == automapped:
             continue
         if warning == _REDUNDANT_BASES and _listed_bases_match(asked, vcf):
             continue
@@ -236,8 +247,9 @@ def place(description: str, transcript: str, fetch: Fetch) -> tuple[Placed | Ref
     A description on the MANE transcript is one request. A description on another transcript
     (the paper's own, ruling R-F9) is asked twice: on that transcript, where VariantValidator
     reads it and gives the GRCh38 position; then the genomic variant, as the answer's own
-    ``hgvs_genomic_description``, on MANE, which gives the MANE `c.` and `p.`. (The VCF form
-    would do for a substitution, but VariantValidator warns "automapped" on every indel's.)
+    ``hgvs_genomic_description``, on MANE, which gives the MANE `c.` and `p.`. (The VCF key
+    would do for a substitution, but measured on one deletion and one duplication, VariantValidator
+    answered it with an "automapped" warning.)
     The two positions must agree and the two answers must come from the same VariantValidator
     and databases. A refusal names the description it was asked, so a reader can tell the steps
     apart.
@@ -245,9 +257,11 @@ def place(description: str, transcript: str, fetch: Fetch) -> tuple[Placed | Ref
     accession = description.split(":", 1)[0]
     if accession == transcript:
         answer, entry, metadata = _ask(description, transcript, fetch)
-        return _read(answer, entry, transcript, description), metadata
+        return _read(answer, entry, transcript, description, tolerate_automap=True), metadata
     answer, entry, metadata = _ask(description, accession, fetch)
-    first = _read(answer, entry, accession, description, tolerate_version=True)
+    first = _read(
+        answer, entry, accession, description, tolerate_version=True, tolerate_automap=True
+    )
     if not isinstance(first, Placed):
         return first, metadata
     locus = _locus(entry or {})

@@ -233,7 +233,8 @@ def test_the_protein_written_is_the_mane_answers_not_the_papers_transcripts() ->
 
 
 def test_an_indel_on_an_older_version_is_placed_through_its_genomic_description() -> None:
-    """VariantValidator warns "automapped" on an indel asked as a VCF key, never as NC_ g.."""
+    """Measured on one deletion: asked as a VCF key it drew an "automapped" warning; asked as
+    the NC_ g. description it did not."""
     fake = _del_fake()
 
     placed, _ = place(DEL, NR2F2, fake)
@@ -393,3 +394,68 @@ def test_vv_checks_listed_bases_itself_and_that_refuses_the_variant() -> None:
     )
     assert isinstance(refused, Refused)
     assert any(w.startswith("ReferenceMismatchError:") for w in refused.warnings)
+
+
+DUP = f"{OLDER}:c.220_222dup"
+DUP_TARGET = f"{OLDER}:c.222_224dup"
+AUTOMAP = f"{DUP} automapped to {DUP_TARGET}"
+
+
+def _dup_fake() -> _Fake:
+    """Step one is the real answer; step two is derived from it (re-keyed onto MANE, no warning)."""
+    step1 = _answer("nr2f2_v3_dup_c220_222.json")
+    step2 = json.loads(json.dumps(step1).replace(OLDER, NR2F2))
+    step2[f"{NR2F2}:c.222_224dup"]["validation_warnings"] = []
+    return _Fake(DUP, step1, "NC_000015.10:g.96332327_96332329dup", step2)
+
+
+def test_vvs_3_prime_shift_of_the_same_variant_is_tolerated_at_step_one() -> None:
+    """R-F11: measured 2026-11-19 on NM_021005.3:c.220_222dup."""
+    placed, _ = place(DUP, NR2F2, _dup_fake())
+
+    assert isinstance(placed, Placed) and placed.hgvs_c == "NM_021005.4:c.222_224dup"
+
+
+def test_an_automap_to_another_variant_or_an_other_warning_still_refuses() -> None:
+    other = _dup_fake()
+    entry = other.by_url[url(DUP, OLDER)][DUP_TARGET]
+    entry["validation_warnings"][0] = f"{DUP} automapped to {OLDER}:c.999_1001dup"
+    refused, _ = place(DUP, NR2F2, other)
+    assert isinstance(refused, Refused) and "c.999_1001dup" in refused.warnings[0]
+
+    echo = _dup_fake()
+    echo.by_url[url(DUP, OLDER)][DUP_TARGET]["validation_warnings"][0] = AUTOMAP.replace(
+        "220", "221"
+    )
+    assert isinstance(place(DUP, NR2F2, echo)[0], Refused)
+
+    loose = _dup_fake()
+    loose.by_url[url(DUP, OLDER)][DUP_TARGET]["validation_warnings"][0] = "A new warning"
+    assert isinstance(place(DUP, NR2F2, loose)[0], Refused)
+
+    # Tolerated at step one only: the same warning on the MANE answer refuses.
+    late = _dup_fake()
+    late.by_url[url("NC_000015.10:g.96332327_96332329dup", NR2F2)][f"{NR2F2}:c.222_224dup"][
+        "validation_warnings"
+    ] = [f"NC_000015.10:g.96332327_96332329dup automapped to {NR2F2}:c.222_224dup"]
+    assert isinstance(place(DUP, NR2F2, late)[0], Refused)
+
+
+def test_the_automap_tolerance_ignores_listed_deleted_bases_in_the_echo() -> None:
+    """The log's NM_021005.3:c.92_98delGCCCGCC was echoed as c.92_98del."""
+    fake = _del_fake(f"{OLDER}:c.92_98delGCCCGCC")
+    entry = fake.by_url[url(f"{OLDER}:c.92_98delGCCCGCC", OLDER)][DEL_ENTRY]
+    entry["validation_warnings"][0:0] = [f"{OLDER}:c.92_98del automapped to {DEL_ENTRY}"]
+
+    placed, _ = place(f"{OLDER}:c.92_98delGCCCGCC", NR2F2, fake)
+
+    assert isinstance(placed, Placed)
+
+
+def test_an_answer_with_no_entries_and_no_empty_result_flag_raises() -> None:
+    """Only a flagged empty_result is a per-variant refusal; any other empty answer is a failure
+    of the run, because it is not VariantValidator's stated answer for this variant."""
+    answer = {"flag": "gene_variant", "metadata": _answer("tbx5_c835.json")["metadata"]}
+
+    with pytest.raises(VariantValidatorError, match="holds 0 descriptions"):
+        place("NM_181486.4:c.835C>T", TBX5, _fetch(answer))

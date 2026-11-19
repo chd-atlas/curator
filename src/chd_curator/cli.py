@@ -344,7 +344,7 @@ def _agrees(reported: dict[str, Any], hgvs_p: str | None, mane: Frame) -> bool:
     """Whether `hgvs_p` may be written beside the paper's `p.` (the atlas's LIT025 with D6').
 
     The comparison is the atlas's, and so is an absent `hgvs_p` beside a paper residue (a
-    disagreement). Two differences are curator's: `_decide` unplaces a `hgvs_p` on another
+    disagreement). Three differences are curator's: `_decide` unplaces a `hgvs_p` on another
     protein accession (the atlas: LIT016), and this unplaces an on-MANE one the atlas cannot
     read, such as `p.(Met1ext-5)` (LIT021). And it compares the paper's `p.` even where the paper
     named another transcript, which the atlas skips: `place` puts that variant on MANE through
