@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from chd_curator.hgvs import names_a_residue, same_protein_change, three_letter
+from chd_curator.hgvs import names_a_residue, protein_key, same_protein_change, three_letter
 
 
 @pytest.mark.parametrize(
@@ -27,6 +27,12 @@ from chd_curator.hgvs import names_a_residue, same_protein_change, three_letter
         ("p.V205A", "p.(Val205=)", False),
         ("p.V206V", "p.(Val205=)", False),
         ("p.V205V", "p.(Val205Ala)", False),
+        # A stop retained is the same change: the class covers `*`, `X` and `Ter`.
+        ("p.Ter100Ter", "p.(Ter100=)", True),
+        ("p.X100X", "p.(Ter100=)", True),
+        ("p.*100*", "p.(Ter100=)", True),
+        ("p.*100X", "p.(Ter100=)", True),
+        ("p.*100Q", "p.(Ter100=)", False),
         ("p.R279X", "p.(Arg280Ter)", False),
         # D5: a short frameshift equals any frameshift at its residue and position.
         ("p.R279fs", "p.(Arg279GlyfsTer5)", True),
@@ -92,3 +98,19 @@ def test_a_p_naming_no_residue_is_recognised_as_d6_does(text: str, names: bool) 
 )
 def test_three_letter_form_for_the_paper_kept_hgvs_p(text: str, expected: str) -> None:
     assert three_letter(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        ("p.V205V", "V205V"),
+        ("p.Val205Val", "V205V"),
+        ("p.(Val205=)", "V205="),
+        ("p.*100*", "*100*"),
+    ],
+)
+def test_protein_key_keeps_a_same_residue_change_as_written_like_the_atlas(
+    text: str, key: str
+) -> None:
+    """The reading X#X -> X#= belongs to the comparison only: keys group as the atlas's do."""
+    assert protein_key(text) == key
