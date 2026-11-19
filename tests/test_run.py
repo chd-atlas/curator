@@ -185,6 +185,20 @@ def test_the_fixture_carries_what_tasks_5_and_6_need() -> None:
     assert [q.field for q in absent] == ["design", "carriers", "variant 1 carriers"]
     assert [q.field for q in long] == ["summary"] and long[0].quote in full
     assert "‐" in full and "ﬁ" in full
+    assert_a_judged_variant_is_absent_from_its_finding(FIXTURE)
+
+
+def assert_a_judged_variant_is_absent_from_its_finding(root: Path) -> None:
+    """The judge names variant c.999A>G on 0000902, which has no such variant."""
+    judged = load_judge(paths(root))
+    (named,) = [d for d in judged["CHDA:LIT:0000902"] if d.field.startswith("variant c.999A>G")]
+    assert "carriers" in named.field and not any(
+        "c.999A>G" in d.field for fid, ds in judged.items() if fid != "CHDA:LIT:0000902" for d in ds
+    )
+    data = plain(YAML(typ="safe").load((root / "curation/literature/TBX5.yaml").read_text("utf-8")))
+    (finding,) = [f for f in data["findings"] if f["id"] == "CHDA:LIT:0000902"]
+    assert [v["as_reported"] for v in finding["variants"] if "c.999A>G" in v["as_reported"]] == []
+    assert len(finding["variants"]) == 2
 
 
 @pytest.mark.parametrize(
