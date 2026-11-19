@@ -14,6 +14,8 @@ parentheses stripped, three-letter codes mapped to one-letter, and ``Ter``, ``*`
 equal. A frameshift naming no new residue (``R279fs``, ``H445fsX136``) equals any frameshift
 at the same residue and position (owner rulings D5, D5'). A ``p.`` naming no residue
 (``p.?``, ``p.=``, ``p.0``) has nothing to compare on either side (D6, D6').
+A substitution to its own residue (``V205V``, ``Val205Val``) is read as ``Val205=``, inside the
+comparison only.
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ _NO_RESIDUE: Final = frozenset({"?", "=", "0", "0?"})
 # Reference residue, position, the new residue (empty when none is named), the rest.
 _P_DESCRIPTION: Final = re.compile(r"(?:[^:\s]+:)?p\.(\S+)")
 _FRAMESHIFT: Final = re.compile(r"([A-Z*])(\d+)([A-Z*]?)fs(.*)")
+_SYNONYMOUS: Final = re.compile(r"([A-Z*])(\d+)\1")
 
 
 def _after_p(text: str) -> str:
@@ -61,7 +64,11 @@ def _after_p(text: str) -> str:
 def _protein_change(text: str) -> str:
     body = _after_p(text).replace("(", "").replace(")", "")
     body = re.sub(_THREE, lambda m: THREE_LETTER[m.group(0)], body)
-    return body.replace("X", "*")
+    body = body.replace("X", "*")
+    # A substitution to its own residue (V205V) is the synonymous change VariantValidator
+    # writes V205=; read in the comparison only, never written back.
+    same = _SYNONYMOUS.fullmatch(body)
+    return f"{same[1]}{same[2]}=" if same else body
 
 
 def protein_key(text: str) -> str:

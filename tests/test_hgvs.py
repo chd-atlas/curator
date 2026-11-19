@@ -18,6 +18,15 @@ from chd_curator.hgvs import names_a_residue, same_protein_change, three_letter
         ("p.R279X", "p.(Arg279Ter)", True),
         ("p.R279X", "NP_852259.1:p.Arg279*", True),
         ("p.R279Q", "p.(Arg279Ter)", False),
+        # A synonymous change written X#X is X#=; a different residue stays different.
+        ("V205V", "NP_852259.1:p.(Val205=)", True),
+        ("p.V205V", "NP_852259.1:p.(Val205=)", True),
+        ("p.Val205Val", "NP_852259.1:p.(Val205=)", True),
+        ("p.(Val205Val)", "p.Val205=", True),
+        ("p.Val205=", "p.Val205=", True),
+        ("p.V205A", "p.(Val205=)", False),
+        ("p.V206V", "p.(Val205=)", False),
+        ("p.V205V", "p.(Val205Ala)", False),
         ("p.R279X", "p.(Arg280Ter)", False),
         # D5: a short frameshift equals any frameshift at its residue and position.
         ("p.R279fs", "p.(Arg279GlyfsTer5)", True),
