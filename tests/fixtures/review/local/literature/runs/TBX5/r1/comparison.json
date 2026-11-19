@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "pairs": {
+    "CHDA:LIT:0000901": "CHDA:LIT:0000001",
+    "CHDA:LIT:0000902": "CHDA:LIT:0000002",
+    "CHDA:LIT:0000903": "CHDA:LIT:0000003"
+  },
+  "agreed": ["CHDA:LIT:0000901"],
+  "span_only": ["CHDA:LIT:0000903"],
+  "differs": {
+    "CHDA:LIT:0000902": ["phenotypes", "variants"]
+  }
+}

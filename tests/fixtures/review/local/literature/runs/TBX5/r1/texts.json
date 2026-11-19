@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "papers": [
+    {
+      "pmid": "PMID:90000001",
+      "source": "full_text",
+      "text": "local/literature/fulltext/90000001.txt",
+      "abstract": "local/literature/fulltext/90000001.abstract.txt",
+      "supplements": ["local/literature/fulltext/90000001.s1.txt"],
+      "needed": false,
+      "why": ""
+    },
+    {
+      "pmid": "PMID:90000002",
+      "source": "abstract",
+      "text": null,
+      "abstract": "local/literature/abstracts/90000002.txt",
+      "supplements": [],
+      "needed": true,
+      "why": "the proband's table is in the full text, which is not open access"
+    },
+    {
+      "pmid": "PMID:90000003",
+      "source": "abstract",
+      "text": null,
+      "abstract": "local/literature/abstracts/90000003.txt",
+      "supplements": [],
+      "needed": false,
+      "why": ""
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+CHDA:LIT:0000902:
+  - field: phenotypes
+    first: "HP:0001629 Ventricular septal defect"
+    second: "HP:0001629 Ventricular septal defect, HP:0001631 Atrial septal defect"
+    decision: first
+    value: "HP:0001629 Ventricular septal defect"
+    quote: "a proband with a ventricular septal defect"
+    where: "Abstract"
+    rule: "Phenotypes are the carrier's own lesions; the paper names only the ventricular septal defect."
+  - field: "variant c.100C>T, p.(Arg34Ter) phase"
+    first: "trans"
+    second: "not stated"
+    decision: first
+    value: "trans"
+    quote: "the variants lying in trans"
+    where: "Abstract"
+    rule: "A phase the paper states is kept."
+  - field: "variant c.999A>G, p.(Lys333Glu) carriers"
+    first: "1 inherited"
+    second: "1 origin unknown"
+    decision: second
+    value: "1 origin unknown"
+    quote: "compound heterozygous for c.100C>T, p.(Arg34Ter) and c.250G>A, p.(Gly84Arg) in TBX5"
+    where: "Abstract"
+    rule: "The paper does not give a parent."
+  - field: "variant c.100C>T, p.(Arg34Ter) as_reported"
+    first: "c.100C>T, p.(Arg34Ter)"
+    second: "c.100C>T, p.(Arg34Ter) in TBX5"
+    decision: first
+    value: "c.100C>T, p.(Arg34Ter)"
+    quote: "c.100C>T, p.(Arg34Ter) and c.250G>A, p.(Gly84Arg) in TBX5"
+    where: "Abstract"
+    rule: "as_reported keeps the first pass's span when it is verbatim."
+  - field: "variant c.250G>A, p.(Gly84Arg) reported.p"
+    first: "p.(Gly84Arg)"
+    second: "p. (Gly84Arg)"
+    decision: first
+    value: "p.(Gly84Arg)"
+    quote: "c.250G>A, p.(Gly84Arg)"
+    where: "Abstract"
+    rule: "Whitespace inside a name in reported is removed by the controller by rule and is not judged."
