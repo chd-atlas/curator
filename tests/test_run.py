@@ -307,6 +307,7 @@ GOOD_DIGESTS = {
             "shown_digest": "sha256:" + "2" * 64,
             "approved": True,
             "verified": False,
+            "approval_void": False,
         }
     ],
 }
@@ -322,9 +323,14 @@ def test_digests_parse_the_stubs_line(stub_atlas: Path, tmp_path: Path) -> None:
         "CHDA:LIT:0000903",
     ]
     assert result.findings[0] == FindingDigests(
-        "CHDA:LIT:0000901", "sha256:" + "1" * 64, "sha256:" + "2" * 64, True, True
+        "CHDA:LIT:0000901", "sha256:" + "1" * 64, "sha256:" + "2" * 64, True, True, False
     )
-    assert result.findings[1].approved is False and result.findings[1].verified is False
+    assert result.findings[1] == FindingDigests(
+        "CHDA:LIT:0000902", "sha256:" + "3" * 64, "sha256:" + "4" * 64, False, False, False
+    )
+    assert result.findings[2] == FindingDigests(
+        "CHDA:LIT:0000903", "sha256:" + "5" * 64, "sha256:" + "6" * 64, True, False, True
+    )
 
 
 def test_digests_of_a_gene_without_a_literature_file_are_refused(
@@ -361,6 +367,8 @@ def _without_finding_key(key: str) -> dict[str, Any]:
         ),
         (_with_finding(approved=1), "approved is not a boolean"),
         (_with_finding(verified="no"), "verified is not a boolean"),
+        (_with_finding(approval_void=0), "approval_void is not a boolean"),
+        (_without_finding_key("approval_void"), r"missing \['approval_void'\]"),
         (_with_finding(shown_digest=None), "shown_digest is not a non-empty string"),
     ],
 )
@@ -376,7 +384,7 @@ def test_a_malformed_digests_answer_is_refused(
         "sha256:" + "a" * 64,
         (
             FindingDigests(
-                "CHDA:LIT:0000901", "sha256:" + "1" * 64, "sha256:" + "2" * 64, True, False
+                "CHDA:LIT:0000901", "sha256:" + "1" * 64, "sha256:" + "2" * 64, True, False, False
             ),
         ),
     )

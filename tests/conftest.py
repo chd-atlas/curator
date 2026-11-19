@@ -78,11 +78,14 @@ if subcommand == "digests":
         "literature_sha256": "sha256:" + "a" * 64,
         "findings": [
             {"id": "CHDA:LIT:0000901", "finding_digest": "sha256:" + "1" * 64,
-             "shown_digest": "sha256:" + "2" * 64, "approved": True, "verified": True},
+             "shown_digest": "sha256:" + "2" * 64, "approved": True, "verified": True,
+             "approval_void": False},
             {"id": "CHDA:LIT:0000902", "finding_digest": "sha256:" + "3" * 64,
-             "shown_digest": "sha256:" + "4" * 64, "approved": False, "verified": False},
+             "shown_digest": "sha256:" + "4" * 64, "approved": False, "verified": False,
+             "approval_void": False},
             {"id": "CHDA:LIT:0000903", "finding_digest": "sha256:" + "5" * 64,
-             "shown_digest": "sha256:" + "6" * 64, "approved": False, "verified": False},
+             "shown_digest": "sha256:" + "6" * 64, "approved": True, "verified": False,
+             "approval_void": True},
         ],
     }, sort_keys=True))
     sys.exit(0)

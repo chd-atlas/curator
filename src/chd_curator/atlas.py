@@ -26,7 +26,7 @@ _FRAME_KEYS: Final = frozenset(
 DIGESTS_FORMAT: Final = 1
 _DIGESTS_KEYS: Final = frozenset({"format", "gene", "symbol", "literature_sha256", "findings"})
 _FINDING_DIGESTS_KEYS: Final = frozenset(
-    {"id", "finding_digest", "shown_digest", "approved", "verified"}
+    {"id", "finding_digest", "shown_digest", "approved", "verified", "approval_void"}
 )
 _TIMEOUT_SECONDS: Final = 300
 _FORMAT_CHECKER: Final[FormatChecker] = Draft202012Validator.FORMAT_CHECKER
@@ -64,6 +64,7 @@ class FindingDigests:
     shown_digest: str
     approved: bool
     verified: bool
+    approval_void: bool  # approved, and its approved_digest no longer matches (LIT015)
 
 
 @dataclass(frozen=True)
@@ -178,7 +179,7 @@ def digests(root: Path, symbol: str, atlas_cli: Path) -> Digests:
                 raise AtlasError(
                     f"the atlas's finding {key} is not a non-empty string: {row[key]!r}"
                 )
-        for key in ("approved", "verified"):
+        for key in ("approved", "verified", "approval_void"):
             if type(row[key]) is not bool:
                 raise AtlasError(f"the atlas's finding {key} is not a boolean: {row[key]!r}")
         findings.append(
@@ -188,6 +189,7 @@ def digests(root: Path, symbol: str, atlas_cli: Path) -> Digests:
                 row["shown_digest"],
                 row["approved"],
                 row["verified"],
+                row["approval_void"],
             )
         )
     return Digests(answer["gene"], answer["symbol"], answer["literature_sha256"], tuple(findings))
