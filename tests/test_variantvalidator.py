@@ -1,5 +1,7 @@
-"""The VariantValidator client, with no network: ``fetch`` is a function over the two real
-responses copied into ``tests/fixtures/variantvalidator`` (taken 2026-11-17)."""
+"""The VariantValidator client, with no network: ``fetch`` is a function over the real
+responses copied into ``tests/fixtures/variantvalidator`` (taken 2026-11-17 and 2026-11-19), or
+over a copy of one with a field changed. ``nr2f2_*`` are the paper-on-another-transcript
+answers: step one on NM_021005.3, step two on MANE NM_021005.4."""
 
 from __future__ import annotations
 
@@ -172,17 +174,21 @@ NR2F2 = "NM_021005.4"
 OLDER = "NM_021005.3"
 STEP1 = "nr2f2_v3_c288.json"
 STEP2 = "nr2f2_genomic_on_mane.json"
-GENOMIC = "15-96332393-C-A"
+GENOMIC = "NC_000015.10:g.96332393C>A"
+SNV = f"{OLDER}:c.288C>A"
+DEL_GENOMIC = "NC_000015.10:g.96332202_96332208del"
+DEL = f"{OLDER}:c.97_103delCCGCCCG"
+DEL_ENTRY = f"{OLDER}:c.97_103del"
+REDUNDANT = "VariantSyntaxError: Removing redundant reference bases from variant description"
 
 
 class _Fake:
     """A fetch answering by URL from named answers, counting every request."""
 
-    def __init__(self, step1: dict[str, Any], step2: dict[str, Any]) -> None:
-        self.by_url = {
-            url(f"{OLDER}:c.288C>A", OLDER): step1,
-            url(GENOMIC, NR2F2): step2,
-        }
+    def __init__(
+        self, description: str, step1: dict[str, Any], genomic: str, step2: dict[str, Any]
+    ):
+        self.by_url = {url(description, OLDER): step1, url(genomic, NR2F2): step2}
         self.asked: list[str] = []
 
     def __call__(self, request_url: str) -> bytes:
@@ -193,17 +199,49 @@ class _Fake:
 
 
 def _fake() -> _Fake:
-    return _Fake(_answer(STEP1), _answer(STEP2))
+    return _Fake(SNV, _answer(STEP1), GENOMIC, _answer(STEP2))
+
+
+def _del_fake(description: str = DEL) -> _Fake:
+    return _Fake(
+        description,
+        _answer("nr2f2_v3_del_c97_103.json"),
+        DEL_GENOMIC,
+        _answer("nr2f2_genomic_del_on_mane.json"),
+    )
 
 
 def test_an_older_version_is_placed_on_mane_through_its_genomic_position() -> None:
     fake = _fake()
 
-    placed, metadata = place(f"{OLDER}:c.288C>A", NR2F2, fake)
+    placed, metadata = place(SNV, NR2F2, fake)
 
     assert placed == Placed("NM_021005.4:c.288C>A", "NP_066285.1:p.(Cys96Ter)", "15:96332393:C:A")
     assert metadata == METADATA
-    assert fake.asked == [url(f"{OLDER}:c.288C>A", OLDER), url(GENOMIC, NR2F2)]  # two requests
+    assert fake.asked == [url(SNV, OLDER), url(GENOMIC, NR2F2)]  # two requests
+
+
+def test_the_protein_written_is_the_mane_answers_not_the_papers_transcripts() -> None:
+    fake = _fake()
+    step1 = fake.by_url[url(SNV, OLDER)][SNV]
+    step1["hgvs_predicted_protein_consequence"]["tlr"] = "NP_066285.0:p.(Cys96Tyr)"
+
+    placed, _ = place(SNV, NR2F2, fake)
+
+    assert isinstance(placed, Placed)
+    assert placed.hgvs_p == "NP_066285.1:p.(Cys96Ter)"
+
+
+def test_an_indel_on_an_older_version_is_placed_through_its_genomic_description() -> None:
+    """VariantValidator warns "automapped" on an indel asked as a VCF key, never as NC_ g.."""
+    fake = _del_fake()
+
+    placed, _ = place(DEL, NR2F2, fake)
+
+    assert placed == Placed(
+        "NM_021005.4:c.97_103del", "NP_066285.1:p.(Pro33AlafsTer77)", "15:96332196:GGCCCGCC:G"
+    )
+    assert fake.asked == [url(DEL, OLDER), url(DEL_GENOMIC, NR2F2)]
 
 
 def test_the_mane_path_is_one_request() -> None:
@@ -229,37 +267,47 @@ def test_a_reference_mismatch_on_the_papers_transcript_is_refused_after_one_requ
 
     assert isinstance(refused, Refused)
     assert refused.warnings[0].startswith("ReferenceMismatchError:")
+    assert refused.asked == "NM_000192.3:c.998G>T"
     assert len(asked) == 1
+
+
+def test_an_unversioned_accession_is_refused_for_that_variant() -> None:
+    """Measured 2026-11-19: VariantValidator answers a warning entry, not an empty result."""
+    refused, _ = place(
+        "NM_000192:c.510+1G>A", TBX5, lambda _u: (FIXTURES / "tbx5_unversioned.json").read_bytes()
+    )
+
+    assert isinstance(refused, Refused)
+    assert refused.warnings[0] == "RefSeq variant accession numbers MUST include a version number"
 
 
 def test_only_a_transcript_version_warning_is_tolerated_and_only_at_step_one() -> None:
     only = _fake()
-    assert only.by_url[url(f"{OLDER}:c.288C>A", OLDER)]["NM_021005.3:c.288C>A"][
-        "validation_warnings"
-    ] == [
+    assert only.by_url[url(SNV, OLDER)][SNV]["validation_warnings"] == [
         "TranscriptVersionWarning: A more recent version of the selected reference sequence "
         "NM_021005.3 is available for genome build GRCh38 (NM_021005.4)"
     ]
-    assert isinstance(place(f"{OLDER}:c.288C>A", NR2F2, only)[0], Placed)
+    assert isinstance(place(SNV, NR2F2, only)[0], Placed)
 
     extra = _fake()
-    entry = extra.by_url[url(f"{OLDER}:c.288C>A", OLDER)]["NM_021005.3:c.288C>A"]
-    entry["validation_warnings"].append("SomethingElse: a second warning")
-    refused, _ = place(f"{OLDER}:c.288C>A", NR2F2, extra)
-    assert refused == Refused(("SomethingElse: a second warning",))
+    extra.by_url[url(SNV, OLDER)][SNV]["validation_warnings"].append("SomethingElse: a warning")
+    refused, _ = place(SNV, NR2F2, extra)
+    assert refused == Refused(("SomethingElse: a warning",))
     assert len(extra.asked) == 1
 
     late = _fake()
     late.by_url[url(GENOMIC, NR2F2)]["NM_021005.4:c.288C>A"]["validation_warnings"] = [
         "TranscriptVersionWarning: tolerated only at step one"
     ]
-    refused, _ = place(f"{OLDER}:c.288C>A", NR2F2, late)
+    refused, _ = place(SNV, NR2F2, late)
     assert refused == Refused(("TranscriptVersionWarning: tolerated only at step one",))
+    assert refused.asked == GENOMIC  # the note can say which step refused
 
     prefixed = _fake()
-    entry = prefixed.by_url[url(f"{OLDER}:c.288C>A", OLDER)]["NM_021005.3:c.288C>A"]
-    entry["validation_warnings"] = ["Not a TranscriptVersionWarning: only a prefix counts"]
-    assert isinstance(place(f"{OLDER}:c.288C>A", NR2F2, prefixed)[0], Refused)
+    prefixed.by_url[url(SNV, OLDER)][SNV]["validation_warnings"] = [
+        "Not a TranscriptVersionWarning: only a prefix counts"
+    ]
+    assert isinstance(place(SNV, NR2F2, prefixed)[0], Refused)
 
 
 def test_metadata_that_differs_between_the_steps_raises() -> None:
@@ -267,7 +315,7 @@ def test_metadata_that_differs_between_the_steps_raises() -> None:
     fake.by_url[url(GENOMIC, NR2F2)]["metadata"]["vvta_version"] = "vvta_2099_01"
 
     with pytest.raises(VariantValidatorError, match="versions changed"):
-        place(f"{OLDER}:c.288C>A", NR2F2, fake)
+        place(SNV, NR2F2, fake)
 
 
 def test_a_step_two_answer_off_mane_or_at_another_position_is_refused() -> None:
@@ -275,14 +323,73 @@ def test_a_step_two_answer_off_mane_or_at_another_position_is_refused() -> None:
     off.by_url[url(GENOMIC, NR2F2)]["NM_021005.4:c.288C>A"]["hgvs_transcript_variant"] = (
         "NM_021005.3:c.288C>A"
     )
-    refused, _ = place(f"{OLDER}:c.288C>A", NR2F2, off)
+    refused, _ = place(SNV, NR2F2, off)
     assert isinstance(refused, Refused) and "not on NM_021005.4" in refused.warnings[0]
 
     moved = _fake()
-    vcf = moved.by_url[url(GENOMIC, NR2F2)]["NM_021005.4:c.288C>A"]["primary_assembly_loci"][
-        "grch38"
-    ]["vcf"]
-    vcf["pos"] = "96332394"
-    refused, _ = place(f"{OLDER}:c.288C>A", NR2F2, moved)
+    entry = moved.by_url[url(GENOMIC, NR2F2)]["NM_021005.4:c.288C>A"]
+    entry["primary_assembly_loci"]["grch38"]["vcf"]["pos"] = "96332394"
+    refused, _ = place(SNV, NR2F2, moved)
     assert isinstance(refused, Refused)
     assert "15:96332393:C:A" in refused.warnings[0] and "15:96332394:C:A" in refused.warnings[0]
+
+
+def test_an_empty_result_or_a_missing_genomic_description_refuses_that_variant_only() -> None:
+    empty = _fake()
+    empty.by_url[url(GENOMIC, NR2F2)] = {
+        "flag": "empty_result",
+        "metadata": _answer(STEP2)["metadata"],
+    }
+    refused, _ = place(SNV, NR2F2, empty)
+    assert isinstance(refused, Refused) and "empty_result" in refused.warnings[0]
+    assert refused.asked == GENOMIC
+
+    first = _fake()
+    first.by_url[url(SNV, OLDER)] = {"flag": "empty_result", "metadata": _answer(STEP1)["metadata"]}
+    refused, _ = place(SNV, NR2F2, first)
+    assert isinstance(refused, Refused) and refused.asked == SNV
+
+    bare = _fake()
+    del bare.by_url[url(SNV, OLDER)][SNV]["primary_assembly_loci"]["grch38"][
+        "hgvs_genomic_description"
+    ]
+    refused, _ = place(SNV, NR2F2, bare)
+    assert refused == Refused(("VariantValidator gave no genomic description",))
+
+
+def test_listed_deleted_bases_are_tolerated_only_when_they_are_the_vcf_deletion() -> None:
+    """The real indel: REF GGCCCGCC minus its anchor is GCCCGCC; the paper lists CCGCCCG, a
+    rotation (VariantValidator shifted the deletion within the repeat)."""
+    assert isinstance(place(DEL, NR2F2, _del_fake())[0], Placed)  # rotation
+    same = f"{OLDER}:c.97_103delGCCCGCC"  # equal to REF minus the anchor
+    assert isinstance(place(same, NR2F2, _del_fake(same))[0], Placed)
+
+    wrong = f"{OLDER}:c.97_103delTTTTTTT"
+    refused, _ = place(wrong, NR2F2, _del_fake(wrong))
+    assert isinstance(refused, Refused) and refused.warnings == (REDUNDANT,)
+    short = f"{OLDER}:c.97_103delCCGCCC"
+    assert isinstance(place(short, NR2F2, _del_fake(short))[0], Refused)
+
+
+def test_the_redundant_bases_warning_is_matched_exactly_and_on_the_mane_path_too() -> None:
+    other = _del_fake()
+    entry = other.by_url[url(DEL, OLDER)][DEL_ENTRY]
+    entry["validation_warnings"][0] = REDUNDANT + " (changed)"
+    assert isinstance(place(DEL, NR2F2, other)[0], Refused)
+
+    single = _answer("tbx5_c835.json")
+    single["NM_181486.4:c.835C>T"]["validation_warnings"] = [REDUNDANT]
+    # c.835C>T lists no deleted bases, so the warning has nothing to be checked against.
+    refused, _ = place("NM_181486.4:c.835C>T", TBX5, _fetch(single))
+    assert refused == Refused((REDUNDANT,))
+
+
+def test_vv_checks_listed_bases_itself_and_that_refuses_the_variant() -> None:
+    """Measured 2026-11-19: a wrong listing comes back with a ReferenceMismatchError."""
+    refused, _ = place(
+        f"{OLDER}:c.97_103delTTTTTTT",
+        NR2F2,
+        lambda _u: (FIXTURES / "nr2f2_c97_103_wrong_bases.json").read_bytes(),
+    )
+    assert isinstance(refused, Refused)
+    assert any(w.startswith("ReferenceMismatchError:") for w in refused.warnings)
