@@ -12,6 +12,14 @@ Adapted from the pilot's ``quotecheck.py`` (19 lines). Differences: U+2010 is ma
 word count is kept for the page's long-quote flag. Whether the normalisation is complete is
 not measured beyond the fixture and the parametrised test: a typographic variant outside the
 list shows as "not found", which fails safe.
+
+What "found" guarantees (R-P1-27): every part of the quote, split at ``...`` or the ellipsis
+character, occurs in ONE source, in the quote's order, each part starting at a word boundary
+(the characters either side of the match are not letters or digits) and at least
+``MIN_PART_CHARS`` normalised characters long. What it does not guarantee: that the quote is
+a sentence, that the text between two parts is what the quote implies, or that the source
+says it of this finding's carrier. The pilot's version accepted any substring in any order,
+so ``a ... b`` and ``he`` were found in almost any text.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ from chd_curator.run import (
 
 QUOTES_FORMAT: Final = 1
 LONG_QUOTE_WORDS: Final = 30
+MIN_PART_CHARS: Final = 3
 
 _TRANSLATION: Final = str.maketrans(
     {
@@ -67,16 +76,36 @@ def normalise_text(text: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
+def _occurs_in_order(parts: Sequence[str], source: str) -> bool:
+    position = 0
+    for part in parts:
+        while True:
+            at = source.find(part, position)
+            if at < 0:
+                return False
+            end = at + len(part)
+            before_ok = at == 0 or not source[at - 1].isalnum()
+            after_ok = end == len(source) or not source[end].isalnum()
+            if before_ok and after_ok:
+                position = end
+                break
+            position = at + 1
+    return True
+
+
 def quote_found(quote: str, normalised_sources: Sequence[str]) -> bool:
     """True when ``quote`` occurs in one of the (already normalised) sources.
 
-    ``...`` or ``…`` split the quote into parts; every part must occur in the same source.
-    A quote with no text left after stripping is never found.
+    ``...`` or ``…`` split the quote into parts that must occur in one source, in order, at
+    word boundaries; a part under ``MIN_PART_CHARS`` characters makes the quote not found, as
+    does a quote with no text left after stripping.
     """
     q = normalise_text(quote).strip(" .\"'…")
     q = q.replace("...", _ELLIPSIS_MARK).replace("…", _ELLIPSIS_MARK)
     parts = [p.strip() for p in q.split(_ELLIPSIS_MARK) if p.strip()]
-    return bool(parts) and any(all(p in s for p in parts) for s in normalised_sources)
+    if not parts or any(len(p) < MIN_PART_CHARS for p in parts):
+        return False
+    return any(_occurs_in_order(parts, s) for s in normalised_sources)
 
 
 @dataclass(frozen=True)

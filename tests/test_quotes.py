@@ -64,6 +64,31 @@ def test_an_ellipsis_needs_every_part_in_one_source() -> None:
     assert not quote_found("alpha one ... beta two", [b, c])  # parts in different sources
 
 
+SOURCE = normalise_text("the proband had beta and then alpha. row 3 a")
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        "a ... b",  # parts under 3 characters
+        "he",  # inside "the"
+        "a",
+        "alpha ... beta",  # parts out of order
+        "roband had",  # starts inside "proband"
+        "proban",  # ends inside "proband"
+    ],
+)
+def test_a_fragment_or_out_of_order_quote_is_not_found(quote: str) -> None:
+    assert not quote_found(quote, [SOURCE])
+
+
+def test_parts_in_order_at_word_boundaries_are_found() -> None:
+    assert quote_found("the proband ... beta ... alpha", [SOURCE])
+    assert quote_found("beta and then alpha", [normalise_text("beta, beta and then alpha")])
+    # the first occurrence of a part fails the boundary; a later one is still found
+    assert quote_found("cat sat", [normalise_text("concat sat ... cat sat")])
+
+
 def test_check_quotes_on_the_fixture_run(run_copy: RunPaths) -> None:
     checks = check_quotes(run_copy)
     assert [(c.finding[-4:], c.origin) for c in checks] == [("0901", "evidence")] * 5 + [
