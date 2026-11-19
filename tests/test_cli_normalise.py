@@ -752,7 +752,7 @@ def test_a_padded_reported_c_is_asked_stripped_and_the_agree_rule_strips_both_si
 ) -> None:
     from chd_curator.atlas import Frame
 
-    mane = Frame("HGNC:11604", "TBX5", TBX5, "NP_852259.1")
+    mane = Frame("HGNC:11604", "TBX5", TBX5, "NP_852259.1", "-")
     assert cli._agrees({"p": " p.? "}, "NP_852259.1:p.(Arg279Ter)", mane)
     assert cli._agrees({"p": "p.R279X"}, " NP_852259.1:p.(Arg279Ter) ", mane)
     assert not cli._agrees({"p": " p.R279Q"}, "NP_852259.1:p.(Arg279Ter)", mane)
@@ -763,7 +763,7 @@ def test_a_padded_reported_c_is_asked_stripped_and_the_agree_rule_strips_both_si
     assert _variants(path)[1]["grch38"] == "12:114366312:G:A"
 
 
-NR2F2_FRAME = Frame("HGNC:7976", "NR2F2", "NM_021005.4", "NP_066285.1")
+NR2F2_FRAME = Frame("HGNC:7976", "NR2F2", "NM_021005.4", "NP_066285.1", "+")
 
 
 def _two_step_fetch(step1: str = "nr2f2_v3_c288.json", step2: str = "nr2f2_genomic_on_mane.json"):  # type: ignore[no-untyped-def]
@@ -836,7 +836,7 @@ def test_the_papers_p_is_compared_even_when_the_paper_named_another_transcript()
 
     The atlas skips LIT025 there; curator must not (it would place a wrong residue silently).
     """
-    mane = Frame("HGNC:11604", "TBX5", TBX5, "NP_852259.1")
+    mane = Frame("HGNC:11604", "TBX5", TBX5, "NP_852259.1", "-")
     paper = {"p": "p.R279Q", "transcript": " NM_000192.3 "}
     assert not cli._agrees(paper, "NP_852259.1:p.(Arg279Ter)", mane)
     assert cli._agrees({**paper, "p": "p.R279X"}, "NP_852259.1:p.(Arg279Ter)", mane)
@@ -904,3 +904,19 @@ def test_a_step_two_refusal_names_the_genomic_request_in_the_note(
     note = _first_variant(path)["review_note"]
     assert "refused NC_000015.10:g.96332393C>A, the genomic form of NM_021005.3:c.288C>A" in note
     assert "on NM_021005.4: SomethingElse: a warning" in note
+
+
+def test_a_listed_deletion_is_read_on_the_frames_strand_through_normalise(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stub's TBX5 frame is minus strand: c.905delA (forward REF CT) must place."""
+    path = _write(root, literature(variant(1, "c.905delA", None)))
+    fetch = fixture_for({f"{TBX5}:c.905delA": "tbx5_c905delA.json"})
+    monkeypatch.setattr(cli, "_vv_fetch", fetch)
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 0, result.stdout
+    one = _variants(path)[1]
+    assert one["placement"] == "mane" and one["hgvs_c"] == f"{TBX5}:c.905del"
+    assert one["grch38"] == "12:114366241:CT:C"

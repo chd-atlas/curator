@@ -47,6 +47,7 @@ class Frame:
     symbol: str
     transcript: str
     protein: str
+    strand: str  # "+" or "-": the gene's, which a listed `del<bases>` is read on
 
 
 def default_atlas_cli(root: Path) -> Path:
@@ -121,7 +122,11 @@ def frame(root: Path, symbol: str, atlas_cli: Path) -> Frame:
     for key in sorted(_FRAME_KEYS - {"format"}):
         if not isinstance(answer[key], str) or not answer[key]:
             raise AtlasError(f"the atlas's {key} is not a non-empty string: {answer[key]!r}")
-    return Frame(answer["gene"], answer["symbol"], answer["transcript"], answer["protein"])
+    if answer["strand"] not in ("+", "-"):
+        raise AtlasError(f"the atlas's strand is not + or -: {answer['strand']!r}")
+    return Frame(
+        answer["gene"], answer["symbol"], answer["transcript"], answer["protein"], answer["strand"]
+    )
 
 
 def schema_validator(root: Path, name: str) -> Draft202012Validator:

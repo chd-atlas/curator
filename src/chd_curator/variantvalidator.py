@@ -133,6 +133,7 @@ _REDUNDANT_BASES: Final = (
     "VariantSyntaxError: Removing redundant reference bases from variant description"
 )
 _LISTED_BASES: Final = re.compile(r"del([ACGTacgt]+)")
+_COMPLEMENT: Final = str.maketrans("ACGT", "TGCA")
 
 
 def _ask(
@@ -176,7 +177,7 @@ def _vcf(entry: dict[str, Any]) -> str | None:
         return None
 
 
-def _listed_bases_match(description: str, vcf: str | None) -> bool:
+def _listed_bases_match(description: str, vcf: str | None, strand: str) -> bool:
     """Whether the bases a ``c.…del<bases>`` lists are the ones the VCF deletes.
 
     VariantValidator itself checks listed bases against the reference (a wrong listing comes
@@ -184,6 +185,10 @@ def _listed_bases_match(description: str, vcf: str | None) -> bool:
     deleted bases are the VCF's REF without its anchor base, or a rotation of them, because
     VariantValidator shifts a deletion within a repeat and the paper may have shifted it the
     other way. A VCF that is not a pure deletion cannot be checked, so it is not a match.
+
+    The VCF is on the forward strand and a ``c.`` is on the transcript's: on a minus-strand gene
+    the listed bases are the reverse complement of the VCF's (measured 2026-11-19: TBX5
+    ``c.905delA`` came back as REF ``CT``, ALT ``C``). `strand` is the gene's, ``+`` or ``-``.
     """
     listed = _LISTED_BASES.search(description.split(":", 1)[-1])
     if listed is None or vcf is None:
@@ -192,6 +197,8 @@ def _listed_bases_match(description: str, vcf: str | None) -> bool:
     if len(alt) != 1 or not ref.startswith(alt) or len(ref) < 2:
         return False
     deleted, bases = ref[1:].upper(), listed[1].upper()
+    if strand == "-":
+        deleted = deleted.translate(_COMPLEMENT)[::-1]
     return len(bases) == len(deleted) and bases in deleted + deleted
 
 
@@ -200,6 +207,7 @@ def _read(
     entry: dict[str, Any] | None,
     transcript: str,
     asked: str,
+    strand: str,
     tolerate_version: bool = False,
     tolerate_automap: bool = False,
 ) -> Placed | Refused:
@@ -225,7 +233,7 @@ def _read(
             continue
         if warning == automapped:
             continue
-        if warning == _REDUNDANT_BASES and _listed_bases_match(asked, vcf):
+        if warning == _REDUNDANT_BASES and _listed_bases_match(asked, vcf, strand):
             continue
         blocking.append(warning)
     flag = answer.get("flag")
@@ -241,7 +249,9 @@ def _read(
     return Placed(hgvs_c, tlr if isinstance(tlr, str) and tlr else None, vcf)
 
 
-def place(description: str, transcript: str, fetch: Fetch) -> tuple[Placed | Refused, Metadata]:
+def place(
+    description: str, transcript: str, fetch: Fetch, strand: str
+) -> tuple[Placed | Refused, Metadata]:
     """Place `description` on `transcript`, the MANE Select (versioned accession).
 
     A description on the MANE transcript is one request. A description on another transcript
@@ -252,15 +262,20 @@ def place(description: str, transcript: str, fetch: Fetch) -> tuple[Placed | Ref
     answered it with an "automapped" warning.)
     The two positions must agree and the two answers must come from the same VariantValidator
     and databases. A refusal names the description it was asked, so a reader can tell the steps
-    apart.
+    apart. `strand` is the gene's (``+`` or ``-``, from the atlas's frame), the strand a listed
+    ``del<bases>`` is read on; a paper transcript of the same gene has the same one.
     """
+    if strand not in ("+", "-"):
+        raise VariantValidatorError(f"the gene's strand is {strand!r}, not + or -")
     accession = description.split(":", 1)[0]
     if accession == transcript:
         answer, entry, metadata = _ask(description, transcript, fetch)
-        return _read(answer, entry, transcript, description, tolerate_automap=True), metadata
+        return _read(
+            answer, entry, transcript, description, strand, tolerate_automap=True
+        ), metadata
     answer, entry, metadata = _ask(description, accession, fetch)
     first = _read(
-        answer, entry, accession, description, tolerate_version=True, tolerate_automap=True
+        answer, entry, accession, description, strand, tolerate_version=True, tolerate_automap=True
     )
     if not isinstance(first, Placed):
         return first, metadata
@@ -273,7 +288,7 @@ def place(description: str, transcript: str, fetch: Fetch) -> tuple[Placed | Ref
         raise VariantValidatorError(
             "VariantValidator's versions changed between the two requests for one variant"
         )
-    second = _read(answer2, entry2, transcript, genomic)
+    second = _read(answer2, entry2, transcript, genomic, strand)
     if isinstance(second, Placed) and second.grch38 != first.grch38:
         return Refused(
             (

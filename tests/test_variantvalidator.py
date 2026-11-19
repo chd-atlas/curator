@@ -17,9 +17,9 @@ from chd_curator.variantvalidator import (
     Placed,
     Refused,
     VariantValidatorError,
-    place,
     url,
 )
+from chd_curator.variantvalidator import place as _place
 
 FIXTURES = Path(__file__).parent / "fixtures" / "variantvalidator"
 TBX5 = "NM_181486.4"
@@ -30,6 +30,11 @@ METADATA = Metadata(
     vvdb="vvdb_2025_3",
     seqrepo="VV_SR_2025_02/master",
 )
+
+
+def place(description: str, transcript: str, fetch: Any, strand: str | None = None) -> Any:
+    """`variantvalidator.place` on the gene's real strand: TBX5 is minus, NR2F2 plus."""
+    return _place(description, transcript, fetch, strand or ("-" if transcript == TBX5 else "+"))
 
 
 def _answer(name: str) -> dict[str, Any]:
@@ -459,3 +464,33 @@ def test_an_answer_with_no_entries_and_no_empty_result_flag_raises() -> None:
 
     with pytest.raises(VariantValidatorError, match="holds 0 descriptions"):
         place("NM_181486.4:c.835C>T", TBX5, _fetch(answer))
+
+
+def _tbx5_del(listed: str = "A", strand: str | None = None) -> Any:
+    answer = _answer("tbx5_c905delA.json")
+    return place(f"NM_181486.4:c.905del{listed}", TBX5, _fetch(answer), strand)
+
+
+def test_a_minus_strand_deletion_is_read_on_the_transcripts_strand() -> None:
+    """Measured 2026-11-19: TBX5 c.905delA is REF CT, ALT C on the forward strand; the listed A
+    is the reverse complement of the deleted T."""
+    placed, _ = _tbx5_del()
+
+    assert placed == Placed(
+        "NM_181486.4:c.905del", "NP_852259.1:p.(Gln302ArgfsTer92)", "12:114366241:CT:C"
+    )
+
+
+def test_a_wrong_listed_base_on_the_minus_strand_is_refused_by_curators_check() -> None:
+    # T is the forward-strand base: read on the minus strand it is the wrong one.
+    refused, _ = _tbx5_del("T")
+
+    assert refused == Refused((REDUNDANT,))
+
+
+def test_the_plus_strand_check_is_unchanged_and_the_strand_must_be_one_of_two() -> None:
+    assert isinstance(place(DEL, NR2F2, _del_fake(), "+")[0], Placed)
+    refused, _ = place(DEL, NR2F2, _del_fake(), "-")  # the same listing read on the wrong strand
+    assert isinstance(refused, Refused)
+    with pytest.raises(VariantValidatorError, match="strand"):
+        place(DEL, NR2F2, _del_fake(), "?")

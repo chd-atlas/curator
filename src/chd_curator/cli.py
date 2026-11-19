@@ -578,7 +578,9 @@ def normalise(
                 continue
             description = f"{reported.get('transcript') or mane.transcript}:{reported['c']}"
             try:
-                result, seen = variantvalidator.place(description, mane.transcript, _vv_fetch)
+                result, seen = variantvalidator.place(
+                    description, mane.transcript, _vv_fetch, mane.strand
+                )
             except variantvalidator.VariantValidatorError as exc:
                 raise _fail(f"{exc}; nothing was written", 1) from None
             if metadata is not None and seen != metadata:
