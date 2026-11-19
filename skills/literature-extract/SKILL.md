@@ -40,32 +40,37 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
    `odds_ratio` when reported, and has no carrier counts. If the study's rows are already
    in `mirrors/burden.tsv`, set `burden_study` to its PMID.
 5. Record the variants the paper names under `variants:` on the finding. Run
-   `chd-atlas literature frame <SYMBOL>` first: it prints the MANE Select transcript and
-   protein a name is placed on.
-   - Write one entry per distinct variant per genotype context. The context is the partners
-     it is carried with (by their `as_reported`) and the `phase`: one variant in two contexts
-     is two entries, in one context one entry.
-   - `as_reported` is verbatim: the text at the locator; where the paper prints `c.` and
-     `p.` in separate columns, both in the order printed, joined by one space. `kind` is among
-     the finding's `variant_classes`. Put each name the paper gives into `reported` (`c`,
-     `p`, `rsid`, `transcript` only when the paper states one) as written, and never choose
-     between the paper's own names, even when they disagree: `chd-curator normalise` checks
-     them.
-   - `placement`:
+   `chd-atlas literature frame <SYMBOL>` first: it prints the MANE Select transcript and protein.
+   - Write one entry per distinct variant per genotype context (the partners it is carried
+     with, by their `as_reported`, and the `phase`): one variant in two contexts is two entries.
+   - `as_reported` is verbatim: the text at the locator; where the paper prints `c.` and `p.`
+     in separate columns, both in the order printed, joined by one space. `kind` is among the
+     finding's `variant_classes`. Put each name the paper gives into `reported` (`c`, `p`,
+     `rsid`, `transcript` only when the paper states one) as written, and never choose
+     between the paper's own names, even when they disagree: `chd-curator normalise` checks them.
+   - `placement`, by the first rule that fits:
+     - `structural` for a CNV or chromosomal change, even written in `c.` notation;
      - `mane` whenever the paper gives a `c.` name within the exons +/-50 bp, with or without
-       an rsID;
+       an rsID. A name printed without `c.` ("456delC", "998G>T") is still a `c.` name:
+       `mane`, `reported.c` as printed, and `normalise` decides; never mark it `unplaced`;
+     - `outside_region` for a variant the paper places outside the exons +/-50 bp (an intron
+       beyond 50, `c.1234+51`; upstream or promoter; downstream; an enhancer), whatever names
+       it: a `c.`, an rsID, a `g.` position or a description. Position beats naming, and a
+       position is never looked up (dbSNP, a genome browser and your own knowledge are not
+       sources);
      - `protein` for a `p.` name alone: set `hgvs_p` to that change on the protein
        `literature frame` prints, in three-letter code in parentheses (the paper's `p.R279X`
        is `NP_852259.1:p.(Arg279Ter)`);
-     - `structural` for a CNV or chromosomal change, even written in `c.` notation;
-     - `outside_region` for a `c.` with an intronic offset beyond 50 (`c.1234+51`), or a
-       variant named by rsID alone that the paper places outside the exons;
-     - `unplaced` for a variant named by rsID alone inside the exons, or where the paper does
-       not say, or only by a `g.` name: set `review_status: pending_review`, a `review_note`
-       stating what the paper gives and `review_settled_by: atlas_model`. A `protein` variant
-       whose residue validate refuses, or whose `p.` names none, is `unplaced` too: remove
-       `hgvs_p`, state only the mismatch in the note and set `review_settled_by: authors`
-       (`atlas_model` when its `p.` names no residue).
+     - `unplaced` for a variant named by an rsID or a `g.` name alone that the paper does not
+       place outside the exons (inside them, or of unstated position): set `review_status:
+       pending_review`, a `review_note` stating what the paper gives and `review_settled_by:
+       atlas_model`. A `protein` variant whose residue validate refuses, or whose `p.` names
+       none, is `unplaced` too: remove `hgvs_p`, state only the mismatch in the note and set
+       `review_settled_by: authors` (`atlas_model` when its `p.` names no residue).
+   - Not a placement: if `validate` refuses a `reported.p` only for its notation (measured:
+     a lower-case `ter` or residue code, or `*` printed as the U+2217 asterisk),
+     write the minimal fix in `reported` (capital `Ter`, ASCII `*`) and keep the printed text
+     in `as_reported`. A missing `p.` is not refused. Never change a residue, position or base.
    - `carriers` per variant, in the finding's `count_unit`. On a rare-variant design name no
      variant the paper gives no carrier for; the variants' `de_novo` and `inherited` carriers
      may not exceed the finding's, nor their total, a `with` group counted once. A
@@ -75,10 +80,7 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
      the same total, and `phase` (`trans`, `cis`, `not_stated`, `unclear`) is set exactly when
      `with` is. A `with` group whose phase is `unclear` carries one identical `unclear.phase`
      entry on every member.
-   - `phenotypes` only where the paper ties a defect to these carriers, each among the
-     finding's.
-   - Leave `hgvs_c`, `grch38` and `normalisation`, and `hgvs_p` of a `mane` variant, to
-     `normalise` (step 13).
+   - `phenotypes` only where the paper ties a defect to these carriers, each among the finding's.
 6. Choose among three ways to leave a value plain. `not_stated` only when the paper is
    silent about it. `unclear` with its reason when the paper says something one value
    cannot hold (heterozygous in 2 carriers, homozygous in 1) or two incompatible things:
@@ -95,22 +97,20 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
 7. Add a `locators` entry for every number (`kind: in_text` with `element`, or
    `kind: supplementary` with `file`, `sheet`, `row`). Set `cohorts` from
    `curation/cohorts.yaml`, and `shares_probands_with` to the ids of findings that share
-   probands with this one. `[]` asserts that no proband is shared with any other
-   finding; write it only where the paper states its cohort is new. Otherwise write
-   `unknown`. The curator checks independence by reading this
-   field in the `review` listing.
+   probands with this one. `[]` asserts that no proband is shared with any other finding;
+   write it only where the paper states its cohort is new. Otherwise write `unknown`. The
+   curator checks independence by reading this field in the `review` listing.
 8. A paper you cannot read stays in: record what its abstract supports, with locator
    element `Abstract`, `review_status: not_accessible` and a `review_note` naming what was
-   not read; it takes no settler. If it supports nothing, the curator excludes it as
-   `full_text_not_accessible`.
+   not read; it takes no settler. If it supports nothing, the curator excludes it as `full_text_not_accessible`.
 9. Where the paper disagrees with a source the finding rests on, or contradicts itself, set
    `review_status: pending_review`, state only the measured disagreement in
    `review_note` and name what would settle it. Write the mark on a finding already in
    the file with
    `chd-atlas literature review <SYMBOL> --pending-review <id> --note "<...>" --settled-by <full_text|authors|expert|atlas_model>`;
    `--settled-by` is required. `not_accessible` takes no settler.
-10. Set `extracted_by: agent:literature-extract/<model>`. Leave `verified_by`,
-   `approved_by` and `approved_on` unset.
+10. Set `extracted_by: agent:literature-extract/<model>`; leave `verified_by`, `approved_by`
+   and `approved_on` unset.
 11. Add each paper's record the first time it gets a finding, reading the study type from
    the paper's first finding and the paper itself:
 
@@ -131,11 +131,12 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
    ```
 
    `--reading` is required and is written as a comment beside the record. The record
-   stays out of `publications.json` while findings cite it and none is approved
-   (a record no finding cites publishes), so say in your hand-off which `study_type` you chose and why: the curator checks it and
-   `own_lab` (the default `false`; never guess it) in the `review` listing. Exit 1 means
-   the PMID is already in `curation/publications.yaml` (nothing to add), PubMed failed or
-   has no record of it, or the file is missing; exit 2, a bad argument or a schema refusal; the error says which.
+   stays out of `publications.json` while findings cite it and none is approved (a record
+   no finding cites publishes), so say in your hand-off which `study_type` you chose and
+   why: the curator checks it and `own_lab` (the default `false`; never guess it) in the
+   `review` listing. Exit 1 means the PMID is already in `curation/publications.yaml`
+   (nothing to add), PubMed failed or has no record of it, or the file is missing;
+   exit 2, a bad argument or a schema refusal; the error says which.
 12. Run `.venv/bin/chd-atlas validate`. Before `normalise`, a `mane` variant is expected to
     fail with "a mane variant needs hgvs_c", "a mane variant needs grch38", "a mane variant
     needs normalisation" and, when `reported.p` names a residue, "the paper names <p.> but

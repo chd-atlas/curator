@@ -103,8 +103,8 @@ BURDEN_COUNT_UNITS = {"individuals", "alleles", "de_novo_mutations"}
 
 
 # A skill is one page an agent reads in full. The ceiling is 120 lines (the atlas plan of
-# 2026-11-02); `literature-extract` measured 208 after the variants and `unclear` steps (C0 task
-# 16) and is held to its measured length rounded up to the next ten.
+# 2026-11-02); `literature-extract` measured 210 after the variants, `unclear` and
+# placement-ruling steps (C0 tasks 16-19) and is held to that length.
 LINE_LIMIT = {"literature-extract": 210}
 DEFAULT_LINE_LIMIT = 120
 
@@ -445,6 +445,13 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
         in flat_verify
     )
     assert "`as_reported` (character for character)" in flat_verify
+    # R-F2/F3/F4 restated: the second pass places by the paper's own position.
+    assert "place each variant by where the paper puts it" in flat_verify
+    assert "position beats naming" in flat_verify
+    assert "a `c.` name printed without `c.` is `mane`" in flat_verify
+    assert (
+        "a notation-only fix goes in `reported` with `as_reported` kept as printed" in flat_verify
+    )
     assert "only when the paper says something one value cannot hold" in flat_verify
     # The verifier writes `unknown`; the curator reads the field in the listing.
     # R-E1: both readings are compared before `normalise` places anything.
@@ -457,7 +464,26 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
     assert "`hgvs_p` on a `mane` variant" in flat
     assert "NP_852259.1:p.(Arg279Ter)" in flat
     assert "`review_settled_by: atlas_model`" in flat
-    assert "`outside_region` for a `c.` with an intronic offset beyond 50" in flat
+    # R-F2: position beats naming; a position is never looked up.
+    assert "whatever names it: a `c.`, an rsID, a `g.` position or a description" in flat
+    assert "Position beats naming, and a position is never looked up" in flat
+    assert (
+        "`unplaced` for a variant named by an rsID or a `g.` name alone that the paper does not "
+        "place" in flat
+    )
+    assert "or only by a `g.` name" not in flat
+    assert (
+        "that the paper does not place outside the exons (inside them, or of unstated position)"
+        in flat
+    )
+    assert "Not a placement: if `validate` refuses a `reported.p` only for its notation" in flat
+    # R-F3: a coding-DNA name printed without `c.` is a `c.` name.
+    assert 'A name printed without `c.` ("456delC", "998G>T") is still a `c.` name' in flat
+    assert "`normalise` decides; never mark it `unplaced`" in flat
+    # R-F4: a notation-only refusal is fixed in `reported`, never a residue, position or base.
+    assert "write the minimal fix in `reported` (capital `Ter`, ASCII `*`)" in flat
+    assert "keep the printed text in `as_reported`" in flat
+    assert "Never change a residue, position or base." in flat
     assert "`common_variant_association` names each variant it tested, with no `carriers`" in flat
     assert "it takes no settler" in flat
     # The rules a validator measures but no example here exercises: pinned as written.
@@ -473,8 +499,6 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
         "`structural` for a CNV or chromosomal change, even written in `c.` notation",
         "each among the finding's",
         "within the exons +/-50 bp, with or without an rsID",
-        "`unplaced` for a variant named by rsID alone inside the exons, "
-        "or where the paper does not say",
         "(`atlas_model` when its `p.` names no residue)",
     ):
         assert phrase in flat, phrase
