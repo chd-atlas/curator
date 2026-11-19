@@ -344,13 +344,16 @@ def _agrees(reported: dict[str, Any], hgvs_p: str | None, mane: Frame) -> bool:
     """Whether `hgvs_p` may be written beside the paper's `p.` (the atlas's LIT025 with D6').
 
     The comparison is the atlas's, and so is an absent `hgvs_p` beside a paper residue (a
-    disagreement). curator is stricter only where the atlas skips LIT025 for a `hgvs_p` it
-    cannot use and reports that itself: `_decide` unplaces one on another protein accession
-    (the atlas: LIT016), and this unplaces an on-MANE one the atlas cannot read, such as
-    `p.(Met1ext-5)` or `p.(Gln70[3])` (the atlas: LIT021).
+    disagreement). Three differences are curator's: `_decide` unplaces a `hgvs_p` on another
+    protein accession (the atlas: LIT016), and this unplaces an on-MANE one the atlas cannot
+    read, such as `p.(Met1ext-5)` (LIT021). And it compares the paper's `p.` even where the paper
+    named another transcript, which the atlas skips: `place` puts that variant on MANE through
+    its genomic position (R-F9). That catches a paper `c.` naming the wrong residue only if the
+    paper names a residue, MANE's `p.` names one (an intronic or UTR position gives `p.?` or
+    `p.(=)` and passes unchecked), and the paper numbers residues as MANE does.
     """
-    paper, transcript = reported.get("p"), reported.get("transcript")
-    if paper is None or not _on_mane(transcript.strip() if transcript else None, mane):
+    paper = reported.get("p")
+    if paper is None:
         return True
     paper = paper.strip()  # the atlas's models strip every string
     hgvs_p = hgvs_p.strip() if hgvs_p else None
@@ -396,7 +399,12 @@ def _decide(
             )
             message = f"unplaced: the paper names {reported['p']}, VariantValidator gives {shown}"
     else:
-        note = f"VariantValidator refused {description}: {result.warnings[0]}"
+        what = (
+            description
+            if result.asked in (None, description)
+            else f"{result.asked}, the genomic form of {description}, on {mane.transcript}"
+        )
+        note = f"VariantValidator refused {what}: {result.warnings[0]}"
         message = f"unplaced: {result.warnings[0]}"
     kept = None
     paper = reported.get("p")
@@ -570,7 +578,9 @@ def normalise(
                 continue
             description = f"{reported.get('transcript') or mane.transcript}:{reported['c']}"
             try:
-                result, seen = variantvalidator.place(description, mane.transcript, _vv_fetch)
+                result, seen = variantvalidator.place(
+                    description, mane.transcript, _vv_fetch, mane.strand
+                )
             except variantvalidator.VariantValidatorError as exc:
                 raise _fail(f"{exc}; nothing was written", 1) from None
             if metadata is not None and seen != metadata:

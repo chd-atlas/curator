@@ -1,19 +1,22 @@
 """Whether two ``p.`` descriptions state the same change.
 
 Reimplemented from the atlas's ``hgvs.py`` (``same_protein_change``) and
-``validate/finding_variants.py`` (``_lit025``, ``_names_a_residue``) at 9594d10, without
-importing ``chd_atlas``. The comparison and the residue test are the atlas's. ``normalise`` is
-stricter than LIT025 where the atlas would skip it for a ``hgvs_p`` it cannot use, and reports
-that ``hgvs_p`` itself instead: curator unplaces a ``hgvs_p`` on another protein accession
-(the atlas: LIT016) and an on-MANE ``hgvs_p`` the atlas cannot read, such as ``p.(Met1ext-5)``
-or ``p.(Gln70[3])`` (the atlas: LIT021). An absent ``hgvs_p`` beside a paper residue is not
-stricter: LIT025 fires there too.
+``validate/finding_variants.py`` (``_lit025``, ``_names_a_residue``) at 9594d10, plus the
+same-residue reading (``_comparable``) of atlas commits 16e4703 and 2541735, without importing
+``chd_atlas``. The comparison and the residue test are the atlas's. ``normalise`` is stricter
+than LIT025 in three places, and reports the difference itself: it unplaces a ``hgvs_p`` on
+another protein accession (the atlas: LIT016), an on-MANE ``hgvs_p`` the atlas cannot read,
+such as ``p.(Met1ext-5)`` or ``p.(Gln70[3])`` (the atlas: LIT021), and it compares the paper's
+``p.`` even where the paper named another transcript (the atlas skips LIT025 there). An
+absent ``hgvs_p`` beside a paper residue is not stricter: LIT025 fires there too.
 
 The rules, in the atlas's words: parts after ``p.`` (any accession dropped) are compared with
 parentheses stripped, three-letter codes mapped to one-letter, and ``Ter``, ``*`` and ``X``
 equal. A frameshift naming no new residue (``R279fs``, ``H445fsX136``) equals any frameshift
 at the same residue and position (owner rulings D5, D5'). A ``p.`` naming no residue
 (``p.?``, ``p.=``, ``p.0``) has nothing to compare on either side (D6, D6').
+A substitution to its own residue (``V205V``, ``Val205Val``, ``*100*``) is read as ``Val205=``
+in ``same_protein_change`` only; ``protein_key`` keeps it as written, as the atlas's does.
 """
 
 from __future__ import annotations
@@ -52,6 +55,7 @@ _NO_RESIDUE: Final = frozenset({"?", "=", "0", "0?"})
 # Reference residue, position, the new residue (empty when none is named), the rest.
 _P_DESCRIPTION: Final = re.compile(r"(?:[^:\s]+:)?p\.(\S+)")
 _FRAMESHIFT: Final = re.compile(r"([A-Z*])(\d+)([A-Z*]?)fs(.*)")
+_SYNONYMOUS: Final = re.compile(r"([A-Z*])(\d+)\1")
 
 
 def _after_p(text: str) -> str:
@@ -69,8 +73,19 @@ def protein_key(text: str) -> str:
     return _protein_change(text)
 
 
+def _comparable(text: str) -> str:
+    """`_protein_change`, with a same-residue substitution (`V205V`, `*100*`) written `X#=`.
+
+    The atlas's `_comparable`: used by `same_protein_change` only. `protein_key` keeps `V205V`
+    as written, so grouping keys match the atlas's.
+    """
+    change = _protein_change(text)
+    same = _SYNONYMOUS.fullmatch(change)
+    return f"{same[1]}{same[2]}=" if same else change
+
+
 def same_protein_change(a: str, b: str) -> bool:
-    first, second = _protein_change(a), _protein_change(b)
+    first, second = _comparable(a), _comparable(b)
     one, two = _FRAMESHIFT.fullmatch(first), _FRAMESHIFT.fullmatch(second)
     if one and two and (not one[3] or not two[3]):
         return one.group(1, 2) == two.group(1, 2)
