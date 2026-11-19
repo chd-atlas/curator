@@ -120,9 +120,12 @@ def _strings(value: Any) -> tuple[str, ...]:
     return tuple(str(item) for item in value) if isinstance(value, list) else ()
 
 
-def place(description: str, transcript: str, fetch: Fetch) -> tuple[Placed | Refused, Metadata]:
-    """Ask VariantValidator for `description` on `transcript` (versioned accession)."""
-    raw = fetch(url(description, transcript))
+_VERSION_WARNING: Final = "TranscriptVersionWarning:"
+
+
+def _ask(description: str, select: str, fetch: Fetch) -> tuple[dict[str, Any], Any, Metadata]:
+    """One request: VariantValidator's answer, its single description entry and its metadata."""
+    raw = fetch(url(description, select))
     try:
         answer = json.loads(raw)
     except ValueError as exc:
@@ -137,19 +140,70 @@ def place(description: str, transcript: str, fetch: Fetch) -> tuple[Placed | Ref
         raise VariantValidatorError(
             f"VariantValidator's answer holds {len(entries)} descriptions, not one"
         )
-    entry = entries[0]
-    warnings = _strings(entry.get("validation_warnings"))
-    flag = answer.get("flag")
-    if flag != "gene_variant" or warnings:
-        return Refused(warnings or (f"VariantValidator flagged this {flag!r}",)), metadata
-    hgvs_c = entry.get("hgvs_transcript_variant")
-    if not isinstance(hgvs_c, str) or hgvs_c.split(":", 1)[0] != transcript:
-        return Refused((f"VariantValidator answered {hgvs_c!r}, not on {transcript}",)), metadata
+    return answer, entries[0], metadata
+
+
+def _vcf(entry: dict[str, Any]) -> str | None:
     try:
         vcf = entry["primary_assembly_loci"]["grch38"]["vcf"]
-        grch38 = f"{vcf['chr']}:{vcf['pos']}:{vcf['ref']}:{vcf['alt']}"
+        return f"{vcf['chr']}:{vcf['pos']}:{vcf['ref']}:{vcf['alt']}"
     except (KeyError, TypeError):
-        return Refused(("VariantValidator gave no GRCh38 position",)), metadata
+        return None
+
+
+def _read(
+    answer: dict[str, Any], entry: dict[str, Any], transcript: str, tolerate_version: bool
+) -> Placed | Refused:
+    """The entry as `Placed` on `transcript`, or `Refused`; with a TranscriptVersionWarning
+    tolerated only when `tolerate_version`."""
+    warnings = _strings(entry.get("validation_warnings"))
+    blocking = tuple(
+        w for w in warnings if not (tolerate_version and w.startswith(_VERSION_WARNING))
+    )
+    flag = answer.get("flag")
+    if flag != "gene_variant" or blocking:
+        return Refused(blocking or (f"VariantValidator flagged this {flag!r}",))
+    hgvs_c = entry.get("hgvs_transcript_variant")
+    if not isinstance(hgvs_c, str) or hgvs_c.split(":", 1)[0] != transcript:
+        return Refused((f"VariantValidator answered {hgvs_c!r}, not on {transcript}",))
+    grch38 = _vcf(entry)
+    if grch38 is None:
+        return Refused(("VariantValidator gave no GRCh38 position",))
     protein = entry.get("hgvs_predicted_protein_consequence")
     tlr = protein.get("tlr") if isinstance(protein, dict) else None
-    return Placed(hgvs_c, tlr if isinstance(tlr, str) and tlr else None, grch38), metadata
+    return Placed(hgvs_c, tlr if isinstance(tlr, str) and tlr else None, grch38)
+
+
+def place(description: str, transcript: str, fetch: Fetch) -> tuple[Placed | Refused, Metadata]:
+    """Place `description` on `transcript`, the MANE Select (versioned accession).
+
+    A description on the MANE transcript is one request. A description on another transcript
+    (the paper's own, ruling R-F9) is asked twice: on that transcript, where VariantValidator
+    reads it and gives the GRCh38 position; then the genomic variant on MANE, which gives the
+    MANE `c.` and `p.`. The two positions must agree and the two answers must come from the
+    same VariantValidator and databases.
+    """
+    accession = description.split(":", 1)[0]
+    if accession == transcript:
+        answer, entry, metadata = _ask(description, transcript, fetch)
+        return _read(answer, entry, transcript, False), metadata
+    answer, entry, metadata = _ask(description, accession, fetch)
+    first = _read(answer, entry, accession, True)
+    if not isinstance(first, Placed):
+        return first, metadata
+    chrom, pos, ref, alt = first.grch38.split(":")
+    genomic = f"{chrom.removeprefix('chr')}-{pos}-{ref}-{alt}"
+    answer2, entry2, metadata2 = _ask(genomic, transcript, fetch)
+    if metadata2 != metadata:
+        raise VariantValidatorError(
+            "VariantValidator's versions changed between the two requests for one variant"
+        )
+    second = _read(answer2, entry2, transcript, False)
+    if isinstance(second, Placed) and second.grch38 != first.grch38:
+        return Refused(
+            (
+                f"VariantValidator placed {description} at {first.grch38} but the genomic "
+                f"variant on {transcript} at {second.grch38}",
+            )
+        ), metadata
+    return second, metadata

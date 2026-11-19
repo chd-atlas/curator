@@ -166,3 +166,123 @@ def test_every_real_request_waits_on_the_throttle_and_failures_name_no_url(
     with pytest.raises(VariantValidatorError, match="could not reach VariantValidator: URLError"):
         vv.urllib_fetch("https://example.invalid/x")
     assert waits == ["wait", "wait"]
+
+
+NR2F2 = "NM_021005.4"
+OLDER = "NM_021005.3"
+STEP1 = "nr2f2_v3_c288.json"
+STEP2 = "nr2f2_genomic_on_mane.json"
+GENOMIC = "15-96332393-C-A"
+
+
+class _Fake:
+    """A fetch answering by URL from named answers, counting every request."""
+
+    def __init__(self, step1: dict[str, Any], step2: dict[str, Any]) -> None:
+        self.by_url = {
+            url(f"{OLDER}:c.288C>A", OLDER): step1,
+            url(GENOMIC, NR2F2): step2,
+        }
+        self.asked: list[str] = []
+
+    def __call__(self, request_url: str) -> bytes:
+        self.asked.append(request_url)
+        if request_url not in self.by_url:
+            raise AssertionError(f"unexpected request {request_url}")
+        return json.dumps(self.by_url[request_url]).encode()
+
+
+def _fake() -> _Fake:
+    return _Fake(_answer(STEP1), _answer(STEP2))
+
+
+def test_an_older_version_is_placed_on_mane_through_its_genomic_position() -> None:
+    fake = _fake()
+
+    placed, metadata = place(f"{OLDER}:c.288C>A", NR2F2, fake)
+
+    assert placed == Placed("NM_021005.4:c.288C>A", "NP_066285.1:p.(Cys96Ter)", "15:96332393:C:A")
+    assert metadata == METADATA
+    assert fake.asked == [url(f"{OLDER}:c.288C>A", OLDER), url(GENOMIC, NR2F2)]  # two requests
+
+
+def test_the_mane_path_is_one_request() -> None:
+    asked: list[str] = []
+
+    def fetch(request_url: str) -> bytes:
+        asked.append(request_url)
+        return (FIXTURES / "tbx5_c835.json").read_bytes()
+
+    place("NM_181486.4:c.835C>T", TBX5, fetch)
+
+    assert len(asked) == 1
+
+
+def test_a_reference_mismatch_on_the_papers_transcript_is_refused_after_one_request() -> None:
+    asked: list[str] = []
+
+    def fetch(request_url: str) -> bytes:
+        asked.append(request_url)
+        return (FIXTURES / "tbx5_v3_c998_warning.json").read_bytes()
+
+    refused, _ = place("NM_000192.3:c.998G>T", TBX5, fetch)
+
+    assert isinstance(refused, Refused)
+    assert refused.warnings[0].startswith("ReferenceMismatchError:")
+    assert len(asked) == 1
+
+
+def test_only_a_transcript_version_warning_is_tolerated_and_only_at_step_one() -> None:
+    only = _fake()
+    assert only.by_url[url(f"{OLDER}:c.288C>A", OLDER)]["NM_021005.3:c.288C>A"][
+        "validation_warnings"
+    ] == [
+        "TranscriptVersionWarning: A more recent version of the selected reference sequence "
+        "NM_021005.3 is available for genome build GRCh38 (NM_021005.4)"
+    ]
+    assert isinstance(place(f"{OLDER}:c.288C>A", NR2F2, only)[0], Placed)
+
+    extra = _fake()
+    entry = extra.by_url[url(f"{OLDER}:c.288C>A", OLDER)]["NM_021005.3:c.288C>A"]
+    entry["validation_warnings"].append("SomethingElse: a second warning")
+    refused, _ = place(f"{OLDER}:c.288C>A", NR2F2, extra)
+    assert refused == Refused(("SomethingElse: a second warning",))
+    assert len(extra.asked) == 1
+
+    late = _fake()
+    late.by_url[url(GENOMIC, NR2F2)]["NM_021005.4:c.288C>A"]["validation_warnings"] = [
+        "TranscriptVersionWarning: tolerated only at step one"
+    ]
+    refused, _ = place(f"{OLDER}:c.288C>A", NR2F2, late)
+    assert refused == Refused(("TranscriptVersionWarning: tolerated only at step one",))
+
+    prefixed = _fake()
+    entry = prefixed.by_url[url(f"{OLDER}:c.288C>A", OLDER)]["NM_021005.3:c.288C>A"]
+    entry["validation_warnings"] = ["Not a TranscriptVersionWarning: only a prefix counts"]
+    assert isinstance(place(f"{OLDER}:c.288C>A", NR2F2, prefixed)[0], Refused)
+
+
+def test_metadata_that_differs_between_the_steps_raises() -> None:
+    fake = _fake()
+    fake.by_url[url(GENOMIC, NR2F2)]["metadata"]["vvta_version"] = "vvta_2099_01"
+
+    with pytest.raises(VariantValidatorError, match="versions changed"):
+        place(f"{OLDER}:c.288C>A", NR2F2, fake)
+
+
+def test_a_step_two_answer_off_mane_or_at_another_position_is_refused() -> None:
+    off = _fake()
+    off.by_url[url(GENOMIC, NR2F2)]["NM_021005.4:c.288C>A"]["hgvs_transcript_variant"] = (
+        "NM_021005.3:c.288C>A"
+    )
+    refused, _ = place(f"{OLDER}:c.288C>A", NR2F2, off)
+    assert isinstance(refused, Refused) and "not on NM_021005.4" in refused.warnings[0]
+
+    moved = _fake()
+    vcf = moved.by_url[url(GENOMIC, NR2F2)]["NM_021005.4:c.288C>A"]["primary_assembly_loci"][
+        "grch38"
+    ]["vcf"]
+    vcf["pos"] = "96332394"
+    refused, _ = place(f"{OLDER}:c.288C>A", NR2F2, moved)
+    assert isinstance(refused, Refused)
+    assert "15:96332393:C:A" in refused.warnings[0] and "15:96332394:C:A" in refused.warnings[0]

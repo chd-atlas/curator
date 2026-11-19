@@ -344,13 +344,16 @@ def _agrees(reported: dict[str, Any], hgvs_p: str | None, mane: Frame) -> bool:
     """Whether `hgvs_p` may be written beside the paper's `p.` (the atlas's LIT025 with D6').
 
     The comparison is the atlas's, and so is an absent `hgvs_p` beside a paper residue (a
-    disagreement). curator is stricter only where the atlas skips LIT025 for a `hgvs_p` it
+    disagreement). curator compares the paper's `p.` even where the paper named another
+    transcript (the atlas skips LIT025 there): `place` puts that variant on MANE through its
+    genomic position (R-F9), so a paper `c.` naming the wrong residue is unplaced, not placed.
+    curator is also stricter where the atlas skips LIT025 for a `hgvs_p` it
     cannot use and reports that itself: `_decide` unplaces one on another protein accession
     (the atlas: LIT016), and this unplaces an on-MANE one the atlas cannot read, such as
     `p.(Met1ext-5)` or `p.(Gln70[3])` (the atlas: LIT021).
     """
-    paper, transcript = reported.get("p"), reported.get("transcript")
-    if paper is None or not _on_mane(transcript.strip() if transcript else None, mane):
+    paper = reported.get("p")
+    if paper is None:
         return True
     paper = paper.strip()  # the atlas's models strip every string
     hgvs_p = hgvs_p.strip() if hgvs_p else None

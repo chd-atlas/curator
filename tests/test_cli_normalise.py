@@ -16,6 +16,7 @@ from ruamel.yaml import YAML
 from typer.testing import CliRunner, Result
 
 from chd_curator import cli
+from chd_curator.atlas import Frame
 from chd_curator.cli import app
 from chd_curator.variantvalidator import VariantValidatorError, url
 
@@ -292,10 +293,6 @@ def test_a_placed_variant_whose_p_disagrees_is_unplaced_naming_both_forms(
         # An absent VariantValidator p. is no exemption when the paper names a residue.
         ("p.R279X", {}, "", "unplaced", None),
         ("p.?", {}, "", "mane", None),
-        # The paper's p. is checked only on MANE: another transcript may number differently.
-        ("p.R279Q", {"transcript": "NM_000192.3"}, None, "mane", "NP_852259.1:p.(Arg279Ter)"),
-        ("p.R279Q", {"transcript": "NM_181486.2"}, None, "unplaced", None),
-        ("p.R279Q", {"transcript": "NP_852259.1"}, None, "unplaced", None),
         # D5': a frameshift naming no new residue still differs from a stop gain.
         ("p.R279fs", {}, None, "unplaced", None),
     ],
@@ -759,9 +756,78 @@ def test_a_padded_reported_c_is_asked_stripped_and_the_agree_rule_strips_both_si
     assert cli._agrees({"p": " p.? "}, "NP_852259.1:p.(Arg279Ter)", mane)
     assert cli._agrees({"p": "p.R279X"}, " NP_852259.1:p.(Arg279Ter) ", mane)
     assert not cli._agrees({"p": " p.R279Q"}, "NP_852259.1:p.(Arg279Ter)", mane)
-    assert cli._agrees({"p": "p.R279Q", "transcript": " NM_000192.3 "}, "NP_852259.1:p.X", mane)
+    # R-F9: a variant on the paper's own transcript is placed on MANE, so its p. is compared too.
+    assert not cli._agrees({"p": "p.R279Q", "transcript": " NM_000192.3 "}, "NP_852259.1:p.X", mane)
 
     path = _write(root, literature(linked(1, " c.835C>T ")))
     monkeypatch.setattr(cli, "_vv_fetch", fixture_for({f"{TBX5}:c.835C>T": C835}))  # strict URL
     assert _normalise(stub_atlas, root).exit_code == 0
     assert _variants(path)[1]["grch38"] == "12:114366312:G:A"
+
+
+NR2F2_FRAME = Frame("HGNC:7976", "NR2F2", "NM_021005.4", "NP_066285.1")
+
+
+def _two_step_fetch(step1: str = "nr2f2_v3_c288.json", step2: str = "nr2f2_genomic_on_mane.json"):  # type: ignore[no-untyped-def]
+    paper = "NM_021005.3:c.288C>A"
+    by_url = {
+        url(paper, "NM_021005.3"): (FIXTURES / step1).read_bytes(),
+        url("15-96332393-C-A", NR2F2_FRAME.transcript): (FIXTURES / step2).read_bytes(),
+    }
+    asked: list[str] = []
+
+    def fetch(request_url: str) -> bytes:
+        asked.append(request_url)
+        if request_url not in by_url:
+            raise AssertionError(f"unexpected request {request_url}")
+        return by_url[request_url]
+
+    fetch.asked = asked  # type: ignore[attr-defined]
+    return fetch
+
+
+def _nr2f2(root: Path, monkeypatch: pytest.MonkeyPatch, p: str | None, fetch: Any) -> Path:
+    path = root / "curation" / "literature" / "NR2F2.yaml"
+    path.write_text(
+        literature(variant(1, "c.288C>A", p, transcript="NM_021005.3")).replace(
+            "gene: HGNC:11604", "gene: HGNC:7976"
+        )
+    )
+    monkeypatch.setattr(cli, "frame", lambda *_: NR2F2_FRAME)
+    monkeypatch.setattr(cli, "_vv_fetch", fetch)
+    result = runner.invoke(
+        app, ["normalise", "NR2F2", "--root", str(root), "--atlas-cli", "unused"]
+    )
+    assert result.exit_code == 0, result.stdout
+    return path
+
+
+def _first_variant(path: Path) -> dict[str, Any]:
+    return YAML(typ="safe").load(path.read_text())["findings"][0]["variants"][0]
+
+
+def test_a_variant_on_the_papers_older_transcript_is_placed_on_mane_and_the_run_recorded(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetch = _two_step_fetch()
+    path = _nr2f2(root, monkeypatch, "p.C96X", fetch)
+
+    one = _first_variant(path)
+    assert one["placement"] == "mane"
+    assert one["hgvs_c"] == "NM_021005.4:c.288C>A"
+    assert one["hgvs_p"] == "NP_066285.1:p.(Cys96Ter)"
+    assert one["grch38"] == "15:96332393:C:A"
+    assert one["normalisation"] == 1
+    assert len(YAML(typ="safe").load(path.read_text())["normalisations"]) == 1
+    assert len(fetch.asked) == 2
+
+
+def test_a_paper_c_naming_another_residue_on_its_older_transcript_is_unplaced(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _nr2f2(root, monkeypatch, "p.C96Y", _two_step_fetch())
+
+    one = _first_variant(path)
+    assert one["placement"] == "unplaced" and one["review_status"] == "pending_review"
+    assert "p.C96Y" in one["review_note"] and "NP_066285.1:p.(Cys96Ter)" in one["review_note"]
+    assert not {"hgvs_c", "hgvs_p", "grch38"} & set(one)
