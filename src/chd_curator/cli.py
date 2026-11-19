@@ -44,6 +44,7 @@ from chd_curator.atlas import (
 from chd_curator.diff import DiffError, diff_findings, parse_findings_file, stripped
 from chd_curator.hgvs import names_a_residue, protein_key, same_protein_change, three_letter
 from chd_curator.pubmed import Fetch, PubMedError, urllib_fetch
+from chd_curator.quotes import LONG_QUOTE_WORDS, check_quotes, write_quotes
 from chd_curator.records import (
     ApprovedSynthesis,
     RecordError,
@@ -56,6 +57,7 @@ from chd_curator.records import (
     with_synthesis,
     with_verified,
 )
+from chd_curator.run import RunFormatError, RunPaths
 from chd_curator.write import (
     WriteRefused,
     refuse_anchors,
@@ -742,3 +744,35 @@ def synthesis(
         raise _fail(str(exc), 2) from None
     count = len(loaded["sentences"])
     typer.echo(f"{approved}: wrote a {count}-sentence synthesis, unapproved, to {path}")
+
+
+@app.command("quotes")
+def quotes(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+) -> None:
+    """Check every quote a run holds against the text of its paper; write quotes.json.
+
+    A quote not found is shown on the review page, not fatal: exit 0. Exit 2 when a run
+    file is missing or not in the contract's shape.
+    """
+    _require_root(root)
+    paths = RunPaths(root, symbol, run)
+    try:
+        checks = check_quotes(paths)
+        write_quotes(paths, checks)
+    except RunFormatError as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(f"{paths.quotes}: cannot be written: {exc}", 1) from None
+    missing = [c for c in checks if not c.found]
+    long = [c for c in checks if c.words > LONG_QUOTE_WORDS]
+    typer.echo(
+        f"{len(checks)} quotes checked, {len(missing)} not found, "
+        f"{len(long)} over {LONG_QUOTE_WORDS} words"
+    )
+    for c in missing:
+        typer.echo(f"not found: {c.finding} {c.origin} {c.field}: {c.quote}")
+    for c in long:
+        typer.echo(f"over {LONG_QUOTE_WORDS} words ({c.words}): {c.finding} {c.origin} {c.field}")

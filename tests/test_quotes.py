@@ -1,0 +1,131 @@
+"""``chd-curator quotes``: every quote a review page shows, checked against its paper.
+
+The fixture run (tests/fixtures/review, run r1) holds 11 quotes: 5 evidence on 0000901, 1
+evidence and 5 judge on 0000902. Counts below were read from those files: one quote is
+invented (found nowhere), two are present only through normalisation (a U+2010 hyphen in
+the source, a U+FB01 ligature in the source) and one is 40 words and present.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from chd_curator.cli import app
+from chd_curator.quotes import QuoteCheck, check_quotes, normalise_text, quote_found
+from chd_curator.run import RunFormatError, RunPaths
+
+FIXTURE = Path(__file__).parent / "fixtures" / "review"
+runner = CliRunner()
+
+
+@pytest.fixture
+def run_copy(tmp_path: Path) -> RunPaths:
+    shutil.copytree(FIXTURE, tmp_path / "root")
+    return RunPaths(tmp_path / "root", "TBX5", "r1")
+
+
+@pytest.mark.parametrize(
+    "quote, source",
+    [
+        ("ventricular septal‐defect", "ventricular septal-defect"),  # U+2010 in the quote
+        ("ventricular septal-defect", "ventricular septal‐defect"),  # U+2010 in the source
+        ("the ﬁrst proband", "the first proband"),  # ligature
+        ("P61 PAD/AVSD/SV", "P61 | PAD/AVSD/SV"),  # flattened table cell
+        ("row one and two", "row one---row and two"),  # table row marker
+        ("heterozygous deletion at 10q26", "heterozygous\ndeletion at 10q26"),
+        ("a “quoted” term, d’un", 'a "quoted" term, d\'un'),
+        ("a 3–4 x 5−6 × 7 ∗", "a 3-4 x 5-6 x 7 *"),
+        ("a b c d", "a b c d"),
+        ("THE Variant", "the variant"),
+    ],
+)
+def test_a_quote_is_found_despite_typography(quote: str, source: str) -> None:
+    assert quote_found(quote, [normalise_text(source)])
+
+
+def test_a_paraphrase_or_blank_quote_is_not_found() -> None:
+    source = normalise_text("The proband had a ventricular septal defect.")
+    assert not quote_found("the proband had a septal defect of the ventricle", [source])
+    assert not quote_found("   ...  ", [source])
+    assert not quote_found("anything", [])
+
+
+def test_an_ellipsis_needs_every_part_in_one_source() -> None:
+    a = normalise_text("alpha one beta two")
+    b = normalise_text("alpha one only")
+    c = normalise_text("beta two only")
+    assert quote_found("alpha one ... beta two", [a])
+    assert quote_found("alpha one … beta two", [a])
+    assert not quote_found("alpha one ... beta two", [b, c])  # parts in different sources
+
+
+def test_check_quotes_on_the_fixture_run(run_copy: RunPaths) -> None:
+    checks = check_quotes(run_copy)
+    assert [(c.finding[-4:], c.origin) for c in checks] == [("0901", "evidence")] * 5 + [
+        ("0902", "evidence")
+    ] + [("0902", "judge")] * 5
+    not_found = [c.field for c in checks if not c.found]
+    assert not_found == ["variant 1 carriers"]
+    by_field = {c.field: c for c in checks}
+    assert by_field["design"].found and by_field["carriers"].found  # U+2010, ligature
+    assert [c.words for c in checks if c.words > 30] == [40]
+    assert by_field["design"].words == 9
+    assert all(isinstance(c, QuoteCheck) for c in checks)
+
+
+def test_a_finding_with_no_source_has_every_quote_not_found(run_copy: RunPaths) -> None:
+    lit = run_copy.root / "curation/literature/TBX5.yaml"
+    lit.write_text(
+        lit.read_text(encoding="utf-8").replace(
+            "publication: PMID:90000002", "publication: PMID:90000099"
+        ),
+        encoding="utf-8",
+    )
+    checks = [c for c in check_quotes(run_copy) if c.finding.endswith("0902")]
+    assert len(checks) == 6 and not any(c.found for c in checks)
+
+    texts = run_copy.texts
+    data = json.loads(texts.read_text(encoding="utf-8"))
+    data["papers"][0].update(source="none", text=None, abstract=None, supplements=[])
+    texts.write_text(json.dumps(data), encoding="utf-8")
+    assert not any(c.found for c in check_quotes(run_copy) if c.finding.endswith("0901"))
+
+
+def test_a_listed_source_that_cannot_be_read_is_an_error(run_copy: RunPaths) -> None:
+    (run_copy.root / "local/literature/fulltext/90000001.s1.txt").unlink()
+    with pytest.raises(RunFormatError, match="90000001.s1.txt"):
+        check_quotes(run_copy)
+
+
+def test_the_command_writes_quotes_json_and_names_what_it_found(run_copy: RunPaths) -> None:
+    args = ["quotes", "TBX5", "--run", "r1", "--root", str(run_copy.root)]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0] == "11 quotes checked, 1 not found, 1 over 30 words"
+    assert len(lines) == 3
+    assert "not found: CHDA:LIT:0000901 evidence variant 1 carriers" in lines[1]
+    assert "over 30 words (40): CHDA:LIT:0000901 evidence summary" in lines[2]
+
+    first = run_copy.quotes.read_bytes()
+    payload = json.loads(first)
+    assert payload["format"] == 1 and len(payload["checks"]) == 11
+    assert set(payload["checks"][0]) == {
+        "finding", "origin", "field", "quote", "where", "found", "words"
+    }  # fmt: skip
+    assert [c["found"] for c in payload["checks"]].count(False) == 1
+    assert runner.invoke(app, args).exit_code == 0
+    assert run_copy.quotes.read_bytes() == first  # identical bytes on a second run
+
+
+def test_a_malformed_run_exits_2_and_writes_nothing(run_copy: RunPaths) -> None:
+    run_copy.texts.write_text("{not json", encoding="utf-8")
+    result = runner.invoke(app, ["quotes", "TBX5", "--run", "r1", "--root", str(run_copy.root)])
+    assert result.exit_code == 2
+    assert "texts.json" in result.output
+    assert not run_copy.quotes.exists()
