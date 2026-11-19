@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -187,20 +188,45 @@ def test_the_fixture_carries_what_tasks_5_and_6_need() -> None:
 
 
 @pytest.mark.parametrize(
-    ("loader", "relative", "edit"),
+    ("loader", "relative", "edit", "needle"),
     [
-        ("texts", "texts.json", lambda d: d.update(extra=1)),
-        ("texts", "texts.json", lambda d: d["papers"][0].update(extra=1)),
-        ("texts", "texts.json", lambda d: d["papers"][0].pop("why")),
-        ("texts", "texts.json", lambda d: d["papers"][0].update(source="scan")),
-        ("texts", "texts.json", lambda d: d.update(format=2)),
-        ("comparison", "comparison.json", lambda d: d.update(extra=1)),
-        ("comparison", "comparison.json", lambda d: d.pop("agreed")),
-        ("comparison", "comparison.json", lambda d: d.update(format=True)),
+        ("texts", "texts.json", lambda d: d.update(extra=1), r"unexpected key\(s\) \['extra'\]"),
+        (
+            "texts",
+            "texts.json",
+            lambda d: d["papers"][0].update(extra=1),
+            r"unexpected key\(s\) \['extra'\]",
+        ),
+        (
+            "texts",
+            "texts.json",
+            lambda d: d["papers"][0].pop("why"),
+            r"missing \['why'\]",
+        ),
+        (
+            "texts",
+            "texts.json",
+            lambda d: d["papers"][0].update(source="scan"),
+            "'source' is 'scan'",
+        ),
+        ("texts", "texts.json", lambda d: d.update(format=2), "format is 2"),
+        (
+            "comparison",
+            "comparison.json",
+            lambda d: d.update(extra=1),
+            r"unexpected key\(s\) \['extra'\]",
+        ),
+        (
+            "comparison",
+            "comparison.json",
+            lambda d: d.pop("agreed"),
+            r"missing \['agreed'\]",
+        ),
+        ("comparison", "comparison.json", lambda d: d.update(format=True), "format is True"),
     ],
 )
 def test_an_unexpected_json_key_names_the_file_and_the_key(
-    run_copy: RunPaths, loader: str, relative: str, edit: Any
+    run_copy: RunPaths, loader: str, relative: str, edit: Any, needle: str
 ) -> None:
     path = run_copy.dir / relative
     data = json.loads(path.read_text())
@@ -211,7 +237,7 @@ def test_an_unexpected_json_key_names_the_file_and_the_key(
         load(run_copy)
     message = str(caught.value)
     assert str(path) in message
-    assert any(word in message for word in ("extra", "'why'", "'agreed'", "source", "format"))
+    assert re.search(needle, message), message
 
 
 @pytest.mark.parametrize(
@@ -314,6 +340,12 @@ def _with_finding(**changes: object) -> dict[str, Any]:
     return data
 
 
+def _without_finding_key(key: str) -> dict[str, Any]:
+    data = copy.deepcopy(GOOD_DIGESTS)
+    del data["findings"][0][key]
+    return data
+
+
 @pytest.mark.parametrize(
     ("answer", "expected"),
     [
@@ -322,6 +354,7 @@ def _with_finding(**changes: object) -> dict[str, Any]:
         (GOOD_DIGESTS | {"x": 1}, r"extra \['x'\]"),
         (GOOD_DIGESTS | {"findings": {}}, "findings is not a list"),
         (GOOD_DIGESTS | {"literature_sha256": 5}, "literature_sha256 is not a non-empty"),
+        (_without_finding_key("shown_digest"), r"missing \['shown_digest'\]"),
         (
             _with_finding(extra=1),
             r"finding in the atlas's answer has unexpected keys: extra \['extra'\]",
@@ -358,15 +391,42 @@ def test_the_stub_answers_validate_with_a_summary_line(stub_atlas: Path, tmp_pat
 
 
 @pytest.mark.parametrize(
-    ("relative", "schema", "key"),
+    ("relative", "schema"),
     [
-        ("curation/literature/TBX5.yaml", "gene_literature_file", None),
-        ("curation/publications.yaml", "publication_file", None),
+        ("curation/literature/TBX5.yaml", "gene_literature_file"),
+        ("curation/publications.yaml", "publication_file"),
     ],
 )
 def test_the_fixture_records_validate_against_the_atlas_schema(
-    atlas_root: Path, relative: str, schema: str, key: str | None
+    atlas_root: Path, relative: str, schema: str
 ) -> None:
     data = plain(YAML(typ="safe").load((FIXTURE / relative).read_text(encoding="utf-8")))
     errors = [e.message for e in schema_validator(atlas_root, schema).iter_errors(data)]
     assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("loader", "subdir", "stray"),
+    [
+        (load_evidence, "evidence", "batch-02.yml"),
+        (load_evidence, "evidence", "notes.txt"),
+        (load_judge, "judge", "judge-02.decisions.yml"),
+        (load_judge, "judge", "judge-02.yaml"),
+    ],
+)
+def test_a_misnamed_file_in_evidence_or_judge_is_refused_not_skipped(
+    run_copy: RunPaths, loader: Any, subdir: str, stray: str
+) -> None:
+    path = run_copy.dir / subdir / stray
+    path.write_text("CHDA:LIT:0000903: []\n")
+    with pytest.raises(RunFormatError) as caught:
+        loader(run_copy)
+    assert str(path) in str(caught.value)
+
+
+def test_a_judged_finding_in_two_files_is_an_error(run_copy: RunPaths) -> None:
+    first = run_copy.judge / "judge-01.decisions.yaml"
+    second = run_copy.judge / "judge-02.decisions.yaml"
+    shutil.copy(first, second)
+    with pytest.raises(RunFormatError, match=r"judge-02\.decisions\.yaml.*CHDA:LIT:0000902.*two"):
+        load_judge(run_copy)

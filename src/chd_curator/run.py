@@ -198,7 +198,14 @@ def load_texts(p: RunPaths) -> tuple[PaperText, ...]:
 def _yaml_files(directory: Path, suffix: str) -> list[Path]:
     if not directory.is_dir():
         return []
-    return sorted(f for f in directory.iterdir() if f.is_file() and f.name.endswith(suffix))
+    files = sorted(f for f in directory.iterdir() if f.is_file())
+    for f in files:
+        if not f.name.endswith(suffix):
+            raise RunFormatError(
+                f"{f}: not a *{suffix} file; a misnamed file would drop its contents "
+                "from the page without a sound"
+            )
+    return files
 
 
 def load_evidence(p: RunPaths) -> dict[str, tuple[Quote, ...]]:
