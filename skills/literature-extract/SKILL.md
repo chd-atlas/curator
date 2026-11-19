@@ -67,8 +67,8 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
        atlas_model`. A `protein` variant whose residue validate refuses, or whose `p.` names
        none, is `unplaced` too: remove `hgvs_p`, state only the mismatch in the note and set
        `review_settled_by: authors` (`atlas_model` when its `p.` names no residue).
-   - Not a placement: if `validate` refuses a `reported.p` only for its notation (LIT025,
-     measured: a lower-case `ter` or residue code, or `*` printed as the U+2217 asterisk),
+   - Not a placement: if `validate` refuses a `reported.p` only for its notation (measured:
+     a lower-case `ter` or residue code, or `*` printed as the U+2217 asterisk),
      write the minimal fix in `reported` (capital `Ter`, ASCII `*`) and keep the printed text
      in `as_reported`. A missing `p.` is not refused. Never change a residue, position or base.
    - `carriers` per variant, in the finding's `count_unit`. On a rare-variant design name no
