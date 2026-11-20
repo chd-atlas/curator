@@ -802,7 +802,9 @@ def _atlas_commit(root: Path) -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
-def _second_opinions(paths: Sequence[Path], root: Path, symbol: str) -> list[dict[str, Any]]:
+def _second_opinions(
+    paths: Sequence[Path], root: Path, symbol: str, gene: str
+) -> list[dict[str, Any]]:
     validator = schema_validator(root, "review_decisions")
     loaded: list[dict[str, Any]] = []
     for path in paths:
@@ -818,8 +820,10 @@ def _second_opinions(paths: Sequence[Path], root: Path, symbol: str) -> list[dic
             raise _fail(f"--with {path} is not a format 1 decisions file: {errors[0]}", 2)
         if doc["reviewer"]["role"] != "second_opinion":
             raise _fail(f"--with {path}: its reviewer's role is not second_opinion", 2)
-        if doc["symbol"] != symbol:
-            raise _fail(f"--with {path} is for {doc['symbol']} ({doc['gene']}), not {symbol}", 2)
+        if doc["gene"] != gene or doc["symbol"] != symbol:
+            raise _fail(
+                f"--with {path} is for {doc['symbol']} ({doc['gene']}), not {symbol} ({gene})", 2
+            )
         loaded.append(doc)
     return loaded
 
@@ -857,9 +861,9 @@ def review_page_command(
     cli = _atlas_cli(root, atlas_cli)
     paths = RunPaths(root, symbol, run)
     try:
-        opinions = _second_opinions(with_, root, symbol)
         code, line = validate_summary(root, cli)
         found = digests(root, symbol, cli)
+        opinions = _second_opinions(with_, root, symbol, found.gene)
     except AtlasError as exc:
         raise _fail(str(exc), 2) from None
     if code != 0 or not re.match(r"0 error\(s\)", line):

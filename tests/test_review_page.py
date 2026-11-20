@@ -73,13 +73,13 @@ def chrome() -> str:
     return found
 
 
-def dump_dom(page: Path, fragment: str = "selftest") -> str:
+def dump_dom(page: Path, fragment: str = "selftest", budget: int = 5000) -> str:
     done = subprocess.run(
         [
             chrome(),
             "--headless=new",
             "--disable-gpu",
-            "--virtual-time-budget=5000",
+            f"--virtual-time-budget={budget}",
             "--dump-dom",
             f"file://{page}#{fragment}",
         ],
@@ -289,6 +289,88 @@ def test_im_done_is_refused_while_a_flip_has_no_triage_verdict(
     assert "Give the triage card a verdict" in banner.group(2)
 
 
+STALE_DIGEST = "sha256:" + "9" * 64
+
+
+def _banner(dom: str) -> tuple[bool, str]:
+    match = re.search(r'<div id="banner"([^>]*)>(.*?)</div>', visible(dom), re.S)
+    assert match
+    return "hidden" not in match.group(1), match.group(2)
+
+
+def test_a_decision_made_on_another_version_of_a_card_is_never_counted_or_downloaded(
+    root: Path, stub_atlas: Path
+) -> None:
+    """R-P1-34: one stored decision has another digest, one has none; neither is decided."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    shown = {c["id"]: c["shown_digest"] for c in data_of(page)["findings"]}
+    asks = "decided on an earlier version: decide again"
+
+    before = dump_dom(page, "selftest-stale")
+    assert selftest_output(before)["findings"] == []
+    assert visible(before).count(f">{asks}<") == 4  # chip and card line, on each of two cards
+
+    # opening and closing a stale card saves its time, and must not re-stamp its digest
+    looked = dump_dom(page, "selftest-stale-open")
+    assert selftest_output(looked)["findings"] == []
+    assert visible(looked).count(f">{asks}<") == 4
+
+    after = dump_dom(page, "selftest-stale-click")
+    decisions = selftest_output(after)
+    # a new click carries the card's current digest; the other stale decision stays out
+    assert [(f["id"], f["shown_digest"]) for f in decisions["findings"]] == [(J, shown[J])]
+    assert visible(after).count(f">{asks}<") == 2
+
+
+def test_changing_a_decision_after_im_done_clears_finished_at(root: Path, stub_atlas: Path) -> None:
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    assert selftest_output(dump_dom(page, "selftest"))["session"]["finished_at"] is not None
+    redone = selftest_output(dump_dom(page, "selftest-redecide"))
+    assert redone["session"]["finished_at"] is None
+    assert [f["decision"] for f in redone["findings"]] == ["approve", "fix", "later"]
+
+
+def test_a_flip_after_the_triage_verdict_clears_it_and_asks_again(
+    root: Path, stub_atlas: Path, atlas_root: Path
+) -> None:
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "selftest-reflip")
+    decisions = selftest_output(dom)
+    assert decisions["triage"] is None and decisions["session"]["finished_at"] is None
+    shown, text = _banner(dom)
+    assert shown and "earlier triage verdict was cleared" in text
+    # item 5: the same line says the download leaves the flips out
+    assert "Download my review leaves the flips out" in text
+    errors = schema_validator(atlas_root, "review_decisions").iter_errors(decisions)
+    assert [e.message for e in errors] == []
+
+
+def test_a_store_that_never_answers_falls_back_to_file_mode_after_ten_seconds(
+    root: Path, stub_atlas: Path
+) -> None:
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    stuck = page.with_name("stuck.html")
+    marker = '<script type="application/json" id="data">'
+    text = page.read_text(encoding="utf-8")
+    assert text.count(marker) == 1
+    stuck.write_text(
+        text.replace(
+            marker, "<script>window.claude={use:()=>new Promise(()=>{})}</script>" + marker
+        ),
+        encoding="utf-8",
+    )
+    dom = dump_dom(stuck, "", budget=20000)
+    status = re.search(r'id="store-state">(.*?)</span>', dom, re.S)
+    assert status and "kept in this browser" in status.group(1)
+
+
 def test_a_second_opinion_page_refuses_other_verdicts(
     root: Path, stub_atlas: Path, tmp_path: Path
 ) -> None:
@@ -320,7 +402,8 @@ def test_the_owner_page_shows_a_clinicians_verdict_on_its_card(
     ("override", "why"),
     [
         ({"reviewer": {"name": "E.A.M", "role": "owner"}}, "second_opinion"),
-        ({"gene": "HGNC:4173"}, "HGNC:4173"),
+        ({"gene": "HGNC:4173"}, "--with"),
+        ({"symbol": "GATA4"}, "GATA4"),
         ({"format": 2}, "format"),
     ],
 )

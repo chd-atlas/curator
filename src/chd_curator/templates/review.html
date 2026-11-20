@@ -148,7 +148,8 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const DATA = JSON.parse(document.getElementById("data").textContent);
   const OWNER = DATA.reviewer.role === "owner";
   const SELFTEST = location.hash.startsWith("#selftest");
-  const NOVERDICT = location.hash === "#selftest-noverdict";
+  const MODE = location.hash.replace(/^#selftest-?/, "");   // selftest variants: noverdict, reflip, redecide, stale, stale-click
+  const NOVERDICT = MODE === "noverdict";
   const root = document.getElementById("root");
   const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const LS_KEY = "chd-review:" + DATA.page.literature_sha256 + ":" + DATA.reviewer.role + ":" + slug(DATA.reviewer.name);
@@ -169,6 +170,32 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const now = () => new Date().toISOString();
   const items = [{ id: "triage" }, ...DATA.findings.map((f) => ({ id: f.id }))];
   const triage = () => state.decisions.triage || {};
+  const cardOf = (id) => DATA.findings.find((f) => f.id === id);
+  // A decision counts only on the card version it was made on: a finding's decision must carry that
+  // card's current digest. Anything else (an older page's, a restored entry with none) asks again.
+  function decided(id) {
+    const d = state.decisions[id];
+    if (!d || !d.decision) return false;
+    if (id === "triage") return true;
+    const c = cardOf(id);
+    return !!c && d.shown_digest === c.shown_digest;
+  }
+  function stale(id) { const d = state.decisions[id]; return !!(d && d.decision && id !== "triage" && !decided(id)); }
+  const STALE = "decided on an earlier version: decide again";
+  let bannerNote = "";
+  function triageWarning() {
+    const n = (triage().flips || []).length;
+    if (!n || triage().decision) return "";
+    return bannerNote + "You flipped " + n + " paper(s) in the triage card. Give the triage card a verdict (" + LABEL.approve + ", " + LABEL.fix + " or " + LABEL.later + "). Until then I'm done is refused and Download my review leaves the flips out.";
+  }
+  function updateBanner() {
+    const banner = document.getElementById("banner"), w = triageWarning();
+    banner.textContent = w; banner.hidden = !w;
+  }
+  function reopenSession() {
+    // the owner's "I'm done" covered the earlier set of decisions; a changed decision needs a new one
+    if (state.session.finished_at) { state.session = { ...state.session, finished_at: null }; write("session/main", state.session); }
+  }
 
   document.title = DATA.page.symbol + " review";
   document.getElementById("title").textContent = DATA.page.symbol + " · literature review";
@@ -225,14 +252,14 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   }
   function actions(id) {
     const d = state.decisions[id] || {};
-    const label = d.decision ? PAST[d.decision] : "";
+    const label = decided(id) ? PAST[d.decision] : "";
     return `<div class="actions" data-id="${esc(id)}">
       <textarea id="note-${esc(id)}" placeholder="What to fix, or what to ask (optional for ${esc(LABEL.approve)})">${esc(d.note || "")}</textarea>
       <div class="row">
         <button type="button" class="primary" data-act="approve">${esc(LABEL.approve)}</button>
         <button type="button" data-act="fix">${esc(LABEL.fix)}</button>
         <button type="button" data-act="later">${esc(LABEL.later)}</button>
-        <span class="saved">${label ? `Chosen: ${esc(label)} · ${fmt(activeMs(id))} on this card` : ""}</span>
+        <span class="saved">${label ? `Chosen: ${esc(label)} · ${fmt(activeMs(id))} on this card` : stale(id) ? esc(STALE) : ""}</span>
       </div></div>`;
   }
   function approvalChip(f) {
@@ -252,7 +279,8 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   function chips(f) {
     const d = state.decisions[f.id];
     let h = "";
-    if (d && d.decision) h += `<span class="chip done">${esc(PAST[d.decision])}</span>`;
+    if (decided(f.id)) h += `<span class="chip done">${esc(PAST[d.decision])}</span>`;
+    else if (stale(f.id)) h += `<span class="chip warn">${esc(STALE)}</span>`;
     h += approvalChip(f);
     if (f.n_judged) h += `<span class="chip warn">${f.n_judged} judged</span>`;
     if (f.n_not_found) h += `<span class="chip bad">${f.n_not_found} quote${f.n_not_found > 1 ? "s" : ""} not found in text</span>`;
@@ -309,9 +337,10 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     root.innerHTML = `${neededCard()}<h2 class="section">Papers</h2>${triageCard()}${groups}`;
     root.querySelectorAll("textarea, input[type=text]").forEach((el) => { if (typed[el.id]) el.value = typed[el.id]; });
     updateBar();
+    updateBanner();
   }
   function updateBar() {
-    const done = items.filter((it) => state.decisions[it.id] && state.decisions[it.id].decision).length;
+    const done = items.filter((it) => decided(it.id)).length;
     document.getElementById("n-done").textContent = done;
     document.getElementById("n-all").textContent = items.length;
     document.getElementById("bar").style.width = (100 * done / items.length) + "%";
@@ -342,7 +371,8 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const prev = state.decisions[id] || {};
     const body = { ...prev, ...extra, active_ms: Math.round(activeMs(id)), updated_at: now() };
     if (!body.first_opened_at) body.first_opened_at = now();
-    if (id !== "triage" && !body.shown_digest) body.shown_digest = DATA.findings.find((f) => f.id === id).shown_digest;
+    // a decision made now takes the card's current digest; saving time on an older decision keeps its own
+    if (id !== "triage" && extra.decision) body.shown_digest = cardOf(id).shown_digest;
     delete localActive[id];
     return body;
   }
@@ -383,17 +413,24 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     if (act !== "approve" && !note.trim()) return false;
     if (openId === id) { if (openSince && document.visibilityState === "visible") localActive[id] = (localActive[id] || 0) + (Date.now() - openSince); openSince = Date.now(); }
     save(id, docBody(id, { decision: act, note: note.trim(), decided_at: now() }));
+    reopenSession();
     const card = root.querySelector(`details.card[data-id="${CSS.escape(id)}"]`);
     closeOpen(false);
     if (card) card.open = false;
     render();
-    const nextCard = [...root.querySelectorAll("details.card")].find((c) => !(state.decisions[c.dataset.id] && state.decisions[c.dataset.id].decision));
+    const nextCard = [...root.querySelectorAll("details.card")].find((c) => !decided(c.dataset.id));
     if (nextCard) { nextCard.open = true; if (!SELFTEST) nextCard.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); }
     return true;
   }
   function setFlips(flips) {
-    // a flip never stands in for a verdict: the page does not invent a triage decision
-    save("triage", docBody("triage", { flips }));
+    // a flip never stands in for a verdict, and a verdict never predates the flips it carries
+    const body = docBody("triage", { flips });
+    if (flips.length && body.decision) {
+      delete body.decision; delete body.note; delete body.decided_at;
+      bannerNote = "Your earlier triage verdict was cleared because a flip changed. ";
+    }
+    save("triage", body);
+    reopenSession();
     render();
   }
 
@@ -430,9 +467,9 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   });
 
   function decisionsFile() {
-    const findings = DATA.findings.filter((f) => state.decisions[f.id] && state.decisions[f.id].decision).map((f) => {
+    const findings = DATA.findings.filter((f) => decided(f.id)).map((f) => {
       const d = state.decisions[f.id];
-      return { id: f.id, shown_digest: d.shown_digest || f.shown_digest, decision: d.decision, note: d.note || "", active_ms: Math.round(activeMs(f.id)), first_opened_at: d.first_opened_at || null, decided_at: d.decided_at };
+      return { id: f.id, shown_digest: d.shown_digest, decision: d.decision, note: d.note || "", active_ms: Math.round(activeMs(f.id)), first_opened_at: d.first_opened_at || null, decided_at: d.decided_at };
     });
     const t = state.decisions.triage;
     const out = {
@@ -455,13 +492,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   function finish() {
-    const banner = document.getElementById("banner");
-    if ((triage().flips || []).length && !triage().decision) {
-      banner.textContent = "You flipped " + triage().flips.length + " paper(s) in the triage card. Give the triage card a verdict (" + LABEL.approve + ", " + LABEL.fix + " or " + LABEL.later + ") before pressing I'm done.";
-      banner.hidden = false;
-      return false;
-    }
-    banner.hidden = true;
+    if (triageWarning()) { updateBanner(); return false; }
     closeOpen(true);
     state.session = { ...state.session, finished_at: now(), total_active_ms: Math.round(totalMs()) };
     write("session/main", state.session);
@@ -469,7 +500,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     storeState(mode === "store" ? "Finished. Tell Claude in the terminal." : "Finished. Choose Download my review, then tell Claude in the terminal.");
     return true;
   }
-  document.getElementById("download").addEventListener("click", () => { closeOpen(true); download(); });
+  document.getElementById("download").addEventListener("click", () => { closeOpen(true); updateBanner(); download(); });
   document.getElementById("finish").addEventListener("click", finish);
 
   document.addEventListener("visibilitychange", () => {
@@ -485,6 +516,24 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const step = () => new Promise((r) => setTimeout(r, 20));
     const card = (id) => root.querySelector(`details.card[data-id="${CSS.escape(id)}"]`);
     const [first, second] = DATA.findings;
+    const STALE_DIGEST = "sha256:" + "9".repeat(64);
+    if (MODE.startsWith("stale")) {
+      // decisions an older page (or an older browser entry) left behind: another digest, and none at all
+      state.decisions[first.id] = { decision: "approve", note: "", active_ms: 1, decided_at: now(), shown_digest: STALE_DIGEST };
+      state.decisions[second.id] = { decision: "approve", note: "", active_ms: 1, decided_at: now() };
+      render();
+      if (MODE === "stale-open") {
+        // looking at a stale card (opening, then closing it) must not make its old decision current
+        for (const f of [second, first]) { root.querySelector(`details.card[data-id="${CSS.escape(f.id)}"]`).open = true; await step(); }
+        root.querySelector(`details.card[data-id="${CSS.escape(first.id)}"]`).open = false; await step();
+      }
+      if (MODE === "stale-click") {
+        root.querySelector(`.actions[data-id="${CSS.escape(first.id)}"] [data-act="approve"]`).click(); await step();
+      }
+      const out0 = document.getElementById("selftest-output");
+      out0.textContent = JSON.stringify(decisionsFile(), null, 1); out0.hidden = false;
+      return;
+    }
     card(first.id).open = true; await step();
     root.querySelector(`.actions[data-id="${CSS.escape(first.id)}"] [data-act="approve"]`).click(); await step();
     card(second.id).open = true; await step();
@@ -503,6 +552,18 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     root.querySelector(`[data-record="${CSS.escape(pmid)}"]`).click(); await step();
     if (!NOVERDICT) { root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await step(); }
     finish();
+    if (MODE === "redecide") {
+      // a decision changed after "I'm done" must clear finished_at
+      document.getElementById("note-" + third.id).value = "again";
+      root.querySelector(`.actions[data-id="${CSS.escape(third.id)}"] [data-act="later"]`).click(); await step();
+    }
+    if (MODE === "reflip") {
+      // a flip made after the triage verdict clears the verdict
+      const again = DATA.triage[1].pmid;
+      root.querySelector(`[data-flip="${CSS.escape(again)}"]`).click(); await step();
+      document.getElementById("flipnote-" + again).value = "selftest two";
+      root.querySelector(`[data-record="${CSS.escape(again)}"]`).click(); await step();
+    }
     const out = document.getElementById("selftest-output");
     out.textContent = JSON.stringify(decisionsFile(), null, 1);
     out.hidden = false;
@@ -511,7 +572,13 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
 
   (async () => {
     // claude.use("db") resolves to the store, or to null after up to 10 s when no viewer answers.
-    if (!SELFTEST) { try { db = await (window.claude && window.claude.use ? window.claude.use("db") : null); } catch (e) { db = null; } }
+    // the page's own 10 s limit: no answer in time is the same as no store
+    if (!SELFTEST) {
+      try {
+        const answer = new Promise((resolve) => setTimeout(() => resolve(null), 10000));
+        db = await Promise.race([answer, Promise.resolve(window.claude && window.claude.use ? window.claude.use("db") : null)]);
+      } catch (e) { db = null; }
+    }
     if (!db) {
       mode = "file";
       if (!SELFTEST) {
@@ -534,11 +601,11 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     for (const [path, body] of Object.entries(queued)) { delete queued[path]; write(path, body); }
     storeState("Connecting to the page's store…");
     db.collection("review").onSnapshot((snap) => {
-      for (const d of snap.docs) if (!queued[d.id]) state.decisions[d.id] = d.data();
+      for (const d of snap.docs) state.decisions[d.id] = d.data();
       storeState(snap.metadata.hasPendingWrites ? "Saving…" : STORE_SAVED);
       if (!openId) render(); else updateBar();
     }, (e) => { storeState("Store error: " + e.code); });
-    db.doc("session/main").onSnapshot((snap) => { if (snap.exists) state.session = { ...snap.data(), ...state.session, ...(snap.data().finished_at ? { finished_at: snap.data().finished_at } : {}) }; }, () => {});
+    db.doc("session/main").onSnapshot((snap) => { if (snap.exists) state.session = snap.data(); }, () => {});
   })();
 })();
 </script>
