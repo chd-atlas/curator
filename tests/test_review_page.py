@@ -886,7 +886,9 @@ SAVE_DRIVER = """
   document.body.appendChild(pre);
 })();
 """
-SAVE_ACCEPTS = "return { save: async (r) => { window.__saves.push(r); return { status: 'saved' }; } };"
+SAVE_ACCEPTS = (
+    "return { save: async (r) => { window.__saves.push(r); return { status: 'saved' }; } };"
+)
 SAVE_REFUSES = (
     "return { save: async (r) => { window.__saves.push(r); throw { code: '%s', message: 'x' }; } };"
 )
