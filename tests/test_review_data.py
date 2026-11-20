@@ -735,6 +735,18 @@ def test_agreement_and_coverage_come_from_the_runs_comparison(
         A: ("agreed", "abstract"),  # span_only counts as agreed
         G: ("agreed", "agreed"),
     }
+    # a judge decision on a finding the comparison lists as agreed does not make it "judged":
+    # agreement is the comparison's word, not the judge files'
+    (run.judge / "judge-02.decisions.yaml").write_text(
+        f"{G}:\n  - {{field: design, first: a, second: b, decision: first, value: a,"
+        ' quote: "", where: "", rule: r}\n'
+    )
+    rejudged = card(build(run, stub_atlas), G)
+    assert (rejudged["agreement"], rejudged["group"], rejudged["n_judged"]) == (
+        "agreed",
+        "agreed",
+        1,
+    )
     # covered by the run but in no list: one reader, and its own group between judged and abstract
     _comparison(run, agreed=[])
     data = build(run, stub_atlas)
@@ -743,6 +755,7 @@ def test_agreement_and_coverage_come_from_the_runs_comparison(
         (G, "one_reader", "one_reader"),
         (A, "agreed", "abstract"),
     ]
+    (run.judge / "judge-02.decisions.yaml").unlink()
     # a finding the run does not mention has no card: its pair, its list entry, its judge
     # decisions and its evidence all gone
     ev = run.evidence / "batch-01.yaml"
