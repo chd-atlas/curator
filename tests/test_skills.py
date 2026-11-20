@@ -62,6 +62,7 @@ ATLAS_COMMANDS: dict[str, set[str]] = {
     "literature target": set(),
     "literature frame": {"--root"},
     "literature questions": {"--root"},
+    "literature apply-review": {"--decisions", "--by", "--on", "--root"},
     "literature review": {
         "--approve",
         "--approve-synthesis",
@@ -268,6 +269,7 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "synthesis",
         "quotes",
         "review-page",
+        "review-decisions",
     }
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS

@@ -1,0 +1,9 @@
+{
+  "active_ms": 75733,
+  "decided_at": "2026-11-19T13:44:30.432Z",
+  "decision": "fix",
+  "first_opened_at": "2026-11-19T13:43:02.627Z",
+  "note": "Größe der Kohorte prüfen — n=12",
+  "shown_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "updated_at": "2026-11-19T13:44:30.432Z"
+}

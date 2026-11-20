@@ -401,7 +401,10 @@ def test_the_owner_page_shows_a_clinicians_verdict_on_its_card(
 @pytest.mark.parametrize(
     ("override", "why"),
     [
-        ({"reviewer": {"name": "E.A.M", "role": "owner"}}, "second_opinion"),
+        (
+            {"reviewer": {"name": "E.A.M", "role": "owner"}},
+            "its reviewer's role is not second_opinion",
+        ),
         ({"gene": "HGNC:4173"}, "--with"),
         ({"symbol": "GATA4"}, "GATA4"),
         ({"format": 2}, "format"),

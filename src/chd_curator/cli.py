@@ -44,7 +44,9 @@ from chd_curator.atlas import (
     target,
     validate_summary,
 )
+from chd_curator.decisions import ExportError, decisions_from_export
 from chd_curator.diff import DiffError, diff_findings, parse_findings_file, stripped
+from chd_curator.fs import write_bytes_atomically
 from chd_curator.hgvs import names_a_residue, protein_key, same_protein_change, three_letter
 from chd_curator.pubmed import Fetch, PubMedError, urllib_fetch
 from chd_curator.quotes import LONG_QUOTE_WORDS, check_quotes, write_quotes
@@ -887,6 +889,41 @@ def review_page_command(
     out = paths.dir / ("review.html" if role == "owner" else f"review-{name_slug}.html")
     try:
         out.write_text(review_page.render(data), encoding="utf-8")
+    except OSError as exc:
+        raise _fail(f"{out}: cannot be written: {exc}", 1) from None
+    typer.echo(str(out))
+
+
+@app.command("review-decisions")
+def review_decisions_command(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    export: Path = typer.Option(
+        ..., "--export", help="The page store's export directory (ArtifactData out_dir)."
+    ),
+    out: Path = typer.Option(..., "--out", help="Where to write the decisions file."),
+    page: Path | None = typer.Option(None, "--page", help="The page (default: <run>/review.html)."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+) -> None:
+    """Turn a review page's saved decisions into a decisions file for `apply-review`.
+
+    Reads the export of the page's store (`review/<id>.json`, `session/main.json`) and the
+    page's own inline data, and writes the format 1 file `chd-atlas literature apply-review`
+    applies. Exit 1 when the reviewer has not pressed "I'm done"; exit 2 for a document for a
+    card not on the page, a decision outside approve|fix|later, a decision made on an earlier
+    version of a card (decide it again on the page), or a result failing the schema. Nothing
+    is written on exit 1 or 2.
+    """
+    _require_root(root)
+    source = page if page is not None else RunPaths(root, symbol, run).review_html
+    try:
+        decisions = decisions_from_export(export, source, root)
+    except (ExportError, AtlasError) as exc:
+        raise _fail(str(exc), exc.exit_code if isinstance(exc, ExportError) else 2) from None
+    payload = json.dumps(decisions, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_bytes_atomically(out, payload.encode("utf-8"))
     except OSError as exc:
         raise _fail(f"{out}: cannot be written: {exc}", 1) from None
     typer.echo(str(out))

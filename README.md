@@ -71,6 +71,17 @@ saves to the page's store; opened as a plain file it saves in the browser, and "
 (available at any time) gives the same decisions file, which the atlas's `literature apply-review`
 applies. "I'm done" marks the review finished; the atlas refuses a file without it.
 
+`chd-curator review-decisions <SYMBOL> --run <run id> --export <dir> --out <file> [--page <html>]`
+converts the page's saved decisions into that decisions file without anyone retyping them. When the
+page ran as a claude.ai artifact, Claude exports its store with ArtifactData's out_dir option; the command
+reads `<dir>/review/<id>.json` and `<dir>/session/main.json`, plus the page (default
+`<run>/review.html`) for its provenance, reviewer and each card's digest, and writes the format 1
+file (notes copied byte for byte). It exits 1 when the reviewer has not pressed "I'm done", and 2 for
+a document for a card not on the page, a decision outside approve|fix|later, a decision made on an
+earlier version of a card (decide it again on the page, then press "I'm done" again), or a file
+failing the schema; nothing is written on either. The step after is the atlas's
+`chd-atlas literature apply-review <SYMBOL> --decisions <file> --by <name>`.
+
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and
