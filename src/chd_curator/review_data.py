@@ -59,9 +59,14 @@ def _plain(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _val(value: Any) -> str:
+    """Every non-None value renders: False as ``false``, 0 as ``0``, [] as ``[]``."""
+    return "" if value is None else _plain(value)
+
+
 def _carriers(c: Any, unit: Any = "") -> str:
     if not isinstance(c, Mapping) or not c:
-        return _plain(c) if c else ""
+        return _val(c)
     text = ", ".join(f"{v} {str(k).replace('_', ' ')}" for k, v in c.items())
     return text + (f" ({unit})" if unit else "")
 
@@ -74,39 +79,49 @@ class _Row:
 
 
 def _design(f: Mapping[str, Any], _h: Mapping[str, str]) -> str:
-    text = str(f.get("design", "")).replace("_", " ")
-    return text + (f" · {f['comparator']}" if f.get("comparator") else "")
+    text = _val(f.get("design")).replace("_", " ")
+    return text + (f" · {_val(f['comparator'])}" if f.get("comparator") is not None else "")
 
 
 def _terms(terms: Any, hpo: Mapping[str, str]) -> str:
-    return "; ".join(f"{hpo[t]} ({t})" if t in hpo else str(t) for t in terms or [])
+    if not isinstance(terms, list) or not terms:
+        return _val(terms)
+    return "; ".join(f"{hpo[t]} ({t})" if t in hpo else str(t) for t in terms)
+
+
+def _items(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return _val(value)
+    return ", ".join(_plain(i) for i in value)
 
 
 def _review_mark(f: Mapping[str, Any], _h: Mapping[str, str]) -> str:
-    text = ": ".join(str(f[k]) for k in ("review_status", "review_note") if f.get(k))
-    if f.get("review_settled_by"):
+    text = ": ".join(
+        _val(f[k]) for k in ("review_status", "review_note") if f.get(k) not in (None, "")
+    )
+    if f.get("review_settled_by") not in (None, ""):
         text += f" (settled by {f['review_settled_by']})"
     return text
 
 
 ROWS: Final = (
     _Row("design", ("design", "comparator"), _design),
-    _Row("methods", ("methods",), lambda f, h: ", ".join(map(str, f.get("methods") or []))),
+    _Row("methods", ("methods",), lambda f, h: _items(f.get("methods"))),
     _Row(
         "screened",
         ("screened", "count_unit"),
-        lambda f, h: f"{f.get('screened', '')} {f.get('count_unit', '')}".strip(),
+        lambda f, h: f"{_val(f.get('screened'))} {_val(f.get('count_unit'))}".strip(),
     ),
     _Row("carriers", ("carriers",), lambda f, h: _carriers(f.get("carriers"), f.get("count_unit"))),
     _Row("phenotypes", ("phenotypes",), lambda f, h: _terms(f.get("phenotypes"), h)),
     _Row(
         "lesion groups",
         ("lesion_groups",),
-        lambda f, h: ", ".join(map(str, f.get("lesion_groups") or [])),
+        lambda f, h: _items(f.get("lesion_groups")),
     ),
-    _Row("syndromic", ("syndromic",), lambda f, h: str(f.get("syndromic") or "")),
-    _Row("cohorts", ("cohorts",), lambda f, h: ", ".join(map(str, f.get("cohorts") or []))),
-    _Row("summary", ("summary",), lambda f, h: str(f.get("summary") or "")),
+    _Row("syndromic", ("syndromic",), lambda f, h: _val(f.get("syndromic"))),
+    _Row("cohorts", ("cohorts",), lambda f, h: _items(f.get("cohorts"))),
+    _Row("summary", ("summary",), lambda f, h: _val(f.get("summary"))),
     _Row(
         "review mark",
         ("review_status", "review_note", "review_settled_by"),
@@ -158,11 +173,22 @@ _VARIANT_DIRECT: Final = (
 
 
 def _variant_target(field: str, variants: Sequence[Mapping[str, Any]]) -> int | None:
-    """The id of the variant a field like ``variant c.1A>G phase`` names, or None."""
+    """The id of the variant a field names, or None.
+
+    A field names a variant by its exact ``as_reported`` followed by a space and a subfield
+    (``variant c.1A>G phase``), or by id (``variant 1 phase``). A shorter variant name does not
+    capture a field written for a longer one the finding lacks: that decision stays on the
+    finding.
+    """
     if not field.lower().startswith("variant"):
         return None
     named = [
-        v for v in variants if str(v.get("as_reported") or "") and str(v["as_reported"]) in field
+        v
+        for v in variants
+        if str(v.get("as_reported") or "")
+        and field[len("variant ") :].startswith(str(v["as_reported"]) + " ")
+        and field[len("variant ") :][len(str(v["as_reported"])) + 1 :].strip()
+        and field[:8].lower() == "variant "
     ]
     if named:
         return int(max(named, key=lambda v: len(str(v["as_reported"])))["id"])
@@ -191,19 +217,33 @@ def _shown_quote(check: QuoteCheck) -> dict[str, Any]:
         "where": check.where,
         "checked": check.checked,
         "found": check.found,
+        "origin": check.origin,
         "over_limit": over,
         "words": check.words,
     }
 
 
-def _unique(quotes: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
+def _quotes(checks: Sequence[QuoteCheck]) -> list[dict[str, Any]]:
+    """Shown quotes, one per distinct (quote as written, where, origin, checked, found).
+
+    Two quotes that differ in any of those are two entries: a quote shown found under one
+    location and not found under another must keep both, and so must two long quotes that
+    share their first 30 words.
+    """
+    seen: set[tuple[str, str, str, bool, bool]] = set()
     out: list[dict[str, Any]] = []
-    for q in quotes:
-        if q["quote"] not in seen:
-            seen.add(q["quote"])
-            out.append(q)
+    for c in checks:
+        key = (c.quote, c.where, c.origin, c.checked, c.found)
+        if key not in seen:
+            seen.add(key)
+            out.append(_shown_quote(c))
     return out
+
+
+def _variant_checks(
+    decisions: Sequence[tuple[JudgeDecision, QuoteCheck | None]], evidence: Sequence[QuoteCheck]
+) -> list[QuoteCheck]:
+    return [c for d, c in decisions if c is not None and d.quote] + list(evidence)
 
 
 def _hpo_labels(root: Path) -> dict[str, str]:
@@ -277,19 +317,26 @@ def _variant_card(
     hpo: Mapping[str, str],
 ) -> dict[str, Any]:
     with_text = ""
-    if v.get("with") or v.get("phase"):
-        ids = list(v.get("with") or [])
-        named = [str(o.get("as_reported")) for o in variants if o["id"] in ids]
-        unknown = [str(i) for i in ids if all(o["id"] != i for o in variants)]
-        together = named + [f"variant {i} (not in this finding)" for i in unknown]
+    if v.get("with") is not None or v.get("phase") is not None:
+        ids = v.get("with")
+        together: list[str] = []
+        if isinstance(ids, list) and ids:
+            together = [str(o.get("as_reported")) for o in variants if o["id"] in ids]
+            together += [
+                f"variant {i} (not in this finding)"
+                for i in ids
+                if all(o["id"] != i for o in variants)
+            ]
+        elif ids is not None:
+            together = [_val(ids)]
         with_text = " ".join(
             x
-            for x in (str(v.get("phase") or ""), "with " + ", ".join(together) if together else "")
+            for x in (_val(v.get("phase")), "with " + ", ".join(together) if together else "")
             if x
         )
-    placed_parts = [str(v[k]) for k in ("hgvs_c", "hgvs_p") if v.get(k)]
+    placed_parts = [_val(v[k]) for k in ("hgvs_c", "hgvs_p") if v.get(k) not in (None, "")]
     placed = " → ".join(placed_parts)
-    if v.get("grch38"):
+    if v.get("grch38") is not None:
         g = v["grch38"]
         gtxt = (
             f"GRCh38 {g.get('chrom')}-{g.get('pos')}-{g.get('ref')}-{g.get('alt')}"
@@ -302,10 +349,7 @@ def _variant_card(
     others_rows = [
         {"name": k, "value": _plain(v[k])} for k in sorted(set(v) - set(_VARIANT_DIRECT))
     ]
-    quotes = _unique(
-        [_shown_quote(c) for _d, c in decisions if c is not None and _d.quote]
-        + [_shown_quote(c) for c in evidence]
-    )
+    quotes = _quotes(_variant_checks(decisions, evidence))
     return {
         "id": v["id"],
         "as_reported": v.get("as_reported"),
@@ -338,7 +382,7 @@ def _finding_card(
     *,
     abstract_only: bool,
     shown_digest: str,
-    approval: str,
+    approval: str | None,
     verified: bool,
     decisions: Sequence[JudgeDecision],
     checks: Sequence[QuoteCheck],
@@ -389,15 +433,18 @@ def _finding_card(
             unplaced.append(c)
 
     rows: list[dict[str, Any]] = []
+    tally: list[QuoteCheck] = []  # every check shown on this card, before any dedupe
     keys_shown: set[str] = {k for k in CARD_KEYS if k in f}
 
     def add_row(name: str, keys: Sequence[str], value: str) -> None:
         mine = on_row.get(name, [])
-        quotes = [_shown_quote(c) for c in ev_row.get(name, [])]
+        quotes = _quotes(ev_row.get(name, []))
+        mine_checks = [c for d in mine if d.quote and (c := check_of(d)) is not None]
         present = [k for k in keys if k in f]
         if not present and not mine and not quotes:
             return
         keys_shown.update(present)
+        tally.extend(ev_row.get(name, []) + mine_checks)
         row: dict[str, Any] = {
             "name": name,
             "value": value or ("(empty)" if present else ""),
@@ -410,10 +457,7 @@ def _finding_card(
             row["first"] = "; ".join(d.first for d in mine)
             row["verify"] = "; ".join(d.second for d in mine)
             row["judge"] = " | ".join(f"{_chose(d)}. {d.rule}" for d in mine)
-            row["quotes"] = [
-                _shown_quote(c) for d in mine if d.quote and (c := check_of(d)) is not None
-            ] + quotes
-        row["quotes"] = _unique(row["quotes"])
+            row["quotes"] = _quotes(mine_checks + ev_row.get(name, []))
         rows.append(row)
 
     for spec in ROWS:
@@ -431,9 +475,11 @@ def _finding_card(
                 "first": d.first,
                 "verify": d.second,
                 "judge": f"{_chose(d)}. {d.rule}",
-                "quotes": [_shown_quote(qc)] if d.quote and qc is not None else [],
+                "quotes": _quotes([qc]) if d.quote and qc is not None else [],
             }
         )
+        if d.quote and qc is not None:
+            tally.append(qc)
 
     vouts = [
         _variant_card(
@@ -445,8 +491,12 @@ def _finding_card(
         )
         for v in variants
     ]
-    loose = _unique([_shown_quote(c) for c in unplaced])
-    every = [q for r in rows for q in r["quotes"]] + [q for v in vouts for q in v["quotes"]] + loose
+    loose = _quotes(unplaced)
+    for v in variants:
+        tally.extend(
+            _variant_checks(on_variant.get(int(v["id"]), []), ev_variant.get(int(v["id"]), []))
+        )
+    tally.extend(unplaced)
     n_judged = sum(r["state"] == "judged" for r in rows) + sum(
         v["state"] == "judged" for v in vouts
     )
@@ -477,8 +527,8 @@ def _finding_card(
         "other_quotes": loose,
         "keys_shown": sorted(keys_shown),
         "n_judged": n_judged,
-        "n_unchecked": sum(not q["checked"] for q in every),
-        "n_not_found": sum(q["checked"] and not q["found"] for q in every),
+        "n_unchecked": sum(not c.checked for c in tally),
+        "n_not_found": sum(c.checked and not c.found for c in tally),
         "approval": approval,
         "verified": verified,
         "shown_digest": shown_digest,
@@ -520,7 +570,13 @@ def _second_opinions(
             )
         if doc.get("gene") != gene:
             raise ValueError(f"a second opinion is for {doc.get('gene')!r}, not {gene!r}")
+        if not isinstance(reviewer.get("name"), str) or not reviewer["name"].strip():
+            raise ValueError("a second opinion's reviewer has no name")
         for item in doc.get("findings") or []:
+            if not isinstance(item, Mapping) or not {"id", "decision"} <= set(item):
+                raise ValueError(
+                    f"a second opinion has a finding without an id and decision: {item!r}"
+                )
             if item["id"] not in known:
                 raise ValueError(f"a second opinion names {item['id']}, which the page lacks")
             out.setdefault(item["id"], []).append(
@@ -561,6 +617,13 @@ def build_review_data(
     judge = load_judge(run)
     checks = check_quotes(run)
     by_digest = {d.id: d for d in digests.findings}
+    held = {str(f["id"]) for f in lit["findings"]}
+    stray = sorted({c.finding for c in checks} - held | set(judge) - held)
+    if stray:
+        raise ReviewDataError(
+            f"{lit_path}: holds no finding {stray[0]}, but the run's judge or evidence files "
+            f"carry decisions or quotes for it (all unknown ids: {stray})"
+        )
 
     cards: list[dict[str, Any]] = []
     for f in lit["findings"]:
@@ -578,9 +641,13 @@ def build_review_data(
                 f,
                 abstract_only=abstract_only,
                 shown_digest=dg.shown_digest,
-                approval="void"
-                if dg.approval_void
-                else ("approved" if dg.approved else "unapproved"),
+                approval=(
+                    None
+                    if reviewer.role == "second_opinion"
+                    else "void"
+                    if dg.approval_void
+                    else ("approved" if dg.approved else "unapproved")
+                ),
                 verified=dg.verified,
                 decisions=judge.get(fid, ()),
                 checks=[c for c in checks if c.finding == fid],

@@ -468,3 +468,218 @@ def test_judged_cards_sort_by_how_many_rows_were_judged_then_id(
     )
     data = build(run, stub_atlas)
     assert [(c["id"], c["n_judged"]) for c in data["findings"][:2]] == [(J, 3), (G, 1)]
+
+
+def _add_evidence(run: RunPaths, rows: str) -> None:
+    """Append quotes to 0902's list, the last one in batch-01.yaml."""
+    ev = run.evidence / "batch-01.yaml"
+    ev.write_text(ev.read_text() + rows)
+
+
+def test_quotes_differing_only_after_30_words_or_in_where_are_all_kept_and_counted(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    base = (
+        "The variant was found by exome sequencing in the proband and then confirmed in the "
+        "father; the variant was absent from the unaffected mother and from the unaffected brother"
+    )
+    assert len(base.split()) == 29
+    long1, long2 = base + " and again", base + " and who was also tested"
+    assert long1.split()[:30] == long2.split()[:30] and long1 != long2
+    assert len(long1.split()) > 30
+    found = "a proband with a ventricular septal defect"
+    miss = "not in the abstract at all"
+    rows = [
+        (long1, "Results"),
+        (long2, "Results"),
+        (found, "Results"),
+        (found, "Abstract"),
+        (found, "Abstract"),  # identical to the one above: collapses
+        (miss, "Results"),
+        (miss, "Abstract"),
+        (miss, "Abstract"),  # identical: collapses on the page, counted twice
+    ]
+    _add_evidence(
+        run, "".join(f'  - {{field: "stray", quote: "{q}", where: "{w}"}}\n' for q, w in rows)
+    )
+    c = card(build(run, stub_atlas), J)
+    assert [(q["quote"][:12], q["where"], q["found"]) for q in c["other_quotes"]] == [
+        ("The variant ", "Results", False),
+        ("The variant ", "Results", False),
+        ("a proband wi", "Results", True),
+        ("a proband wi", "Abstract", True),
+        ("not in the a", "Results", False),
+        ("not in the a", "Abstract", False),
+    ]
+    assert sum(q["over_limit"] for q in c["other_quotes"]) == 2
+    # long1, long2, miss/Results and miss/Abstract twice; every fixture quote is found
+    assert (c["n_not_found"], c["n_unchecked"]) == (5, 0)
+
+
+def test_a_second_opinion_page_carries_no_approval_state_but_keeps_verified(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    blind = build(run, stub_atlas, Reviewer("Dr X", "second_opinion"))
+    assert {c["id"]: (c["approval"], c["verified"]) for c in blind["findings"]} == {
+        G: (None, True),
+        J: (None, False),
+        A: (None, False),
+    }
+    owner = build(run, stub_atlas)
+    assert {c["id"]: c["approval"] for c in owner["findings"]} == {
+        G: "approved",
+        J: "unapproved",
+        A: "void",
+    }
+    assert "approved" not in json.dumps(blind["findings"]).replace("approved_", "")
+
+
+FALSY_CARD = {
+    "syndromic": False,
+    "screened": 0,
+    "cohorts": [],
+    "methods": [],
+    "lesion_groups": [],
+    "phenotypes": [],
+    "carriers": {},
+    "comparator": False,
+    "summary": 0,
+}
+FALSY_VARIANT = {
+    "carriers": 0,
+    "phenotypes": [],
+    "with": [],
+    "phase": False,
+    "grch38": {},
+    "hgvs_c": 0,
+    "unclear": False,
+    "locator": {},
+}
+
+
+def _set(run: RunPaths, fid: str, variant: int | None, key: str, value: Any) -> None:
+    path = run.root / LIT
+    doc = YAML(typ="safe").load(path.read_text())
+    for f in doc["findings"]:
+        if f["id"] == fid:
+            target = f if variant is None else next(v for v in f["variants"] if v["id"] == variant)
+            target[key] = value
+    out = YAML(typ="safe")
+    out.default_flow_style = False
+    with path.open("w") as fh:
+        out.dump(doc, fh)
+
+
+@pytest.mark.parametrize(
+    ("variant", "key", "falsy"),
+    [(None, k, v) for k, v in FALSY_CARD.items()] + [(1, k, v) for k, v in FALSY_VARIANT.items()],
+)
+def test_a_falsy_value_renders_and_differs_from_none(
+    run: RunPaths, stub_atlas: Path, variant: int | None, key: str, falsy: Any
+) -> None:
+    _set(run, G, variant, key, None)
+    as_none = _content(card(build(run, stub_atlas), G))
+    _set(run, G, variant, key, falsy)
+    rendered = card(build(run, stub_atlas), G)
+    assert _content(rendered) != as_none
+    shown = rendered["fields"] if variant is None else rendered["variants"][0]
+    assert key in (rendered["keys_shown"] if variant is None else shown["keys_shown"])
+
+
+def test_falsy_values_read_as_themselves(run: RunPaths, stub_atlas: Path) -> None:
+    for key, value in [("syndromic", False), ("screened", 0), ("carriers", {}), ("cohorts", [])]:
+        _set(run, G, None, key, value)
+    _set(run, G, 1, "carriers", 0)
+    c = card(build(run, stub_atlas), G)
+    assert row(c, "syndromic")["value"] == "false"
+    assert row(c, "screened")["value"].startswith("0")
+    assert row(c, "carriers")["value"] == "{}"
+    assert row(c, "cohorts")["value"] == "[]"
+    assert c["variants"][0]["carriers"] == "0"
+
+
+def test_judge_or_evidence_for_a_finding_the_file_lacks_is_refused(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    extra = run.judge / "judge-02.decisions.yaml"
+    extra.write_text(
+        "CHDA:LIT:0009999:\n  - {field: design, first: a, second: b, decision: first,"
+        ' value: a, quote: "", where: "", rule: r}\n'
+    )
+    with pytest.raises(ReviewDataError, match=r"CHDA:LIT:0009999.*TBX5\.yaml|TBX5\.yaml.*0009999"):
+        build(run, stub_atlas)
+    extra.unlink()
+    ev = run.evidence / "batch-02.yaml"
+    ev.write_text('CHDA:LIT:0008888:\n  - {field: design, quote: "x y z", where: "A"}\n')
+    with pytest.raises(ReviewDataError, match="CHDA:LIT:0008888"):
+        build(run, stub_atlas)
+
+
+@pytest.mark.parametrize(
+    ("field", "on_variant"),
+    [
+        ("variant c.100C>T, p.(Arg34Ter) phase", True),
+        ("variant c.100C>T, p.(Arg34Ter) in cis phase", True),  # the name, a space, a subfield
+        ("variant c.100C>T, p.(Arg34Ter)X phase", False),  # a longer name that begins with it
+        ("variant c.100C>T, p.(Arg34Ter), p.(Gly1Ala) phase", False),  # likewise
+        ("variant c.100C>T, p.(Arg34Ter)", False),  # no subfield
+        ("variant c.100C>T, p.(Arg34Ter) ", False),  # a space and still no subfield
+        ("variant c.100C", False),  # a prefix of the name
+    ],
+)
+def test_a_decision_attaches_to_a_variant_only_by_its_exact_name_and_a_subfield(
+    run: RunPaths, stub_atlas: Path, field: str, on_variant: bool
+) -> None:
+    (run.judge / "judge-01.decisions.yaml").write_text(
+        f'{J}:\n  - {{field: "{field}", first: a, second: b, decision: first, value: a,'
+        ' quote: "", where: "", rule: r}\n'
+    )
+    c = card(build(run, stub_atlas), J)
+    assert [d["field"] for d in c["variants"][0]["diffs"]] == ([field] if on_variant else [])
+    assert [r["name"] for r in c["fields"] if r["name"] == field] == ([] if on_variant else [field])
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {
+            "format": 1,
+            "gene": "HGNC:11604",
+            "reviewer": {"name": "A", "role": "second_opinion"},
+            "findings": [{"decision": "approve", "note": ""}],
+        },
+        {
+            "format": 1,
+            "gene": "HGNC:11604",
+            "reviewer": {"name": "A", "role": "second_opinion"},
+            "findings": [{"id": J}],
+        },
+        {
+            "format": 1,
+            "gene": "HGNC:11604",
+            "reviewer": {"name": "A", "role": "second_opinion"},
+            "findings": ["not a mapping"],
+        },
+        {"format": 1, "gene": "HGNC:11604", "reviewer": {"role": "second_opinion"}, "findings": []},
+    ],
+)
+def test_a_malformed_second_opinion_is_a_value_error(
+    run: RunPaths, stub_atlas: Path, bad: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError):
+        build(run, stub_atlas, second_opinions=[bad])
+
+
+def test_unchecked_counts_every_quote_shown_on_a_card_judge_quotes_included(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    texts = json.loads(run.texts.read_text())
+    texts["papers"][1].update(source="none", text=None, abstract=None, supplements=[])
+    run.texts.write_text(json.dumps(texts))
+    c = card(build(run, stub_atlas), J)
+    # 1 evidence quote (design) + 3 shown judge quotes (phenotypes, a variant, a finding row)
+    assert (c["n_unchecked"], c["n_not_found"]) == (4, 0)
+    # two identical unchecked quotes show once but count twice
+    _add_evidence(run, '  - {field: "stray", quote: "same words here", where: "A"}\n' * 2)
+    c = card(build(run, stub_atlas), J)
+    assert len(c["other_quotes"]) == 1 and c["n_unchecked"] == 6
