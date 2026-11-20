@@ -652,14 +652,21 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       } catch (e) { db = null; }
     }
     if (!db) {
+      if (SELFTEST && window.__beforeRestore) await window.__beforeRestore();   // a test acts while the store is awaited
       mode = "file";
       if (LIVE_STORAGE) {
         try {
           const saved = JSON.parse(localStorage.getItem(LS_KEY) || "null");
           if (saved && saved.decisions) {
             for (const id of Object.keys(saved.decisions)) {
-              if (!state.decisions[id]) state.decisions[id] = saved.decisions[id];
-              else if (saved.decisions[id].first_opened_at) state.decisions[id].first_opened_at = saved.decisions[id].first_opened_at;
+              // a card touched while the store was awaited: a decision made then is the newer choice and
+              // wins whole; otherwise the saved entry wins and gains the time saved meanwhile
+              const kept = saved.decisions[id], made = state.decisions[id];
+              if (!made) { state.decisions[id] = kept; continue; }
+              const first = [kept.first_opened_at, made.first_opened_at].filter(Boolean).sort()[0];
+              const merged = made.decision ? { ...made } : { ...kept, active_ms: (kept.active_ms || 0) + (made.active_ms || 0) };
+              if (first) merged.first_opened_at = first;
+              state.decisions[id] = merged;
             }
             if (!state.session.started_at && saved.session) state.session = { ...saved.session, ...state.session };
           }

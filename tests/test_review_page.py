@@ -728,6 +728,68 @@ def test_restoring_from_the_browser_takes_only_this_pages_own_current_decisions(
     assert visible(dom).count(">decided on an earlier version: decide again<") == 4  # J and A
 
 
+@pytest.mark.parametrize(
+    ("act", "decision", "note", "active_ms"),
+    [
+        ("window.__open(); await wait(60);", "approve", "kept", None),
+        (
+            "window.__open(); await wait(60); window.__close(); await wait(10);",
+            "approve",
+            "kept",
+            5001,
+        ),
+        ("window.__open(); await wait(60); window.__decide('fix', 'newer');", "fix", "newer", None),
+    ],
+    ids=["open", "open-and-close", "decide"],
+)
+def test_a_card_touched_before_the_restore_does_not_lose_its_saved_decision(
+    root: Path, stub_atlas: Path, act: str, decision: str, note: str, active_ms: int | None
+) -> None:
+    """Opening a card now creates an entry, so the restore must merge into it, not skip the saved one.
+
+    `window.__beforeRestore` (selftest only) runs while the page still awaits the store, which is
+    when a real user can open a card whose decision an earlier visit saved in this browser."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    shown = {c["id"]: c["shown_digest"] for c in data_of(page)["findings"]}
+    sha = data_of(page)["page"]["literature_sha256"]
+    first = "2026-11-19T08:00:00.000Z"
+    saved = {
+        "decisions": {
+            G: {
+                "decision": "approve",
+                "note": "kept",
+                "shown_digest": shown[G],
+                "decided_at": "2026-11-19T10:00:00Z",
+                "active_ms": 5000,
+                "first_opened_at": first,
+            }
+        },
+        "session": {"started_at": "2026-11-19T09:00:00.000Z"},
+    }
+    head = (
+        f"localStorage.setItem({json.dumps(f'chd-review:{sha}:owner:e-a-m')},"
+        f"{json.dumps(json.dumps(saved))});"
+        "window.__beforeRestore = async () => {"
+        "const wait = (ms) => new Promise((r) => setTimeout(r, ms));"
+        f"const card = () => document.querySelector('details.card[data-id=\"{G}\"]');"
+        "window.__open = () => { card().open = true; };"
+        "window.__close = () => { card().open = false; };"
+        "window.__decide = (act, note) => {"
+        f"document.getElementById('note-{G}').value = note;"
+        f"document.querySelector('.actions[data-id=\"{G}\"] [data-act=\"' + act + '\"]').click(); }};"
+        f"{act} }};"
+    )
+    dom = dump_dom(_persist_page(page, head), "selftest-restore", budget=8000)
+    got = next(f for f in selftest_output(dom)["findings"] if f["id"] == G)
+    assert (got["decision"], got["note"], got["shown_digest"]) == (decision, note, shown[G])
+    assert got["first_opened_at"] == first
+    if active_ms is not None:
+        assert got["active_ms"] >= active_ms
+    assert visible(dom).count(">decided on an earlier version: decide again<") == 0
+
+
 STORE_FAKE = """
 window.__store = {}; window.__subs = [];
 const snapDocs = () => Object.entries(window.__store).filter(([p]) => p.startsWith("review/"))
@@ -826,8 +888,10 @@ FILE_DRIVER = """
 def test_looking_at_a_decided_card_again_keeps_the_time_it_was_first_opened(
     root: Path, stub_atlas: Path
 ) -> None:
-    """R-P1-49: without a store, a later look must not restamp first_opened_at (the store's own
-    snapshots would hide that, so the store-mode test cannot catch it)."""
+    """R-P1-49: without a store, a later look must not restamp first_opened_at.
+
+    Measured: with the open-time stamp made unconditional, the store-mode test above still passes
+    (1 passed), because the store's snapshots replace the in-memory entry; this test fails."""
     code, out = build(root, stub_atlas)
     assert code == 0, out
     page = Path(out.strip().splitlines()[-1])
