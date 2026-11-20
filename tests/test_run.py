@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 from ruamel.yaml import YAML
-from tests.test_atlas import make_stub
 
 from chd_curator.atlas import (
     AtlasError,
@@ -39,6 +38,7 @@ from chd_curator.run import (
     load_judge,
     load_texts,
 )
+from test_atlas import make_stub
 
 FIXTURE = Path(__file__).parent / "fixtures" / "review"
 
