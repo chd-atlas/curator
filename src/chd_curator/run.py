@@ -21,6 +21,8 @@ _SOURCES: Final = ("full_text", "abstract", "supplied_pdf", "none")
 _PAPER_KEYS: Final = frozenset(
     {"pmid", "source", "text", "abstract", "supplements", "needed", "why"}
 )
+# Optional bibliographic keys of a paper entry, for a paper `curation/publications.yaml` lacks.
+_PAPER_OPTIONAL: Final = frozenset({"title", "year", "doi"})
 _QUOTE_KEYS: Final = frozenset({"field", "quote", "where"})
 _COMPARISON_KEYS: Final = frozenset({"format", "pairs", "agreed", "span_only", "differs"})
 _JUDGE_KEYS: Final = frozenset(
@@ -88,6 +90,9 @@ class PaperText:
     supplements: tuple[Path, ...]
     needed: bool
     why: str
+    title: str = ""
+    year: str = ""
+    doi: str = ""
 
 
 @dataclass(frozen=True)
@@ -117,10 +122,16 @@ class JudgeDecision:
     rule: str
 
 
-def _keys(data: Any, expected: frozenset[str], path: Path, what: str) -> dict[str, Any]:
+def _keys(
+    data: Any,
+    expected: frozenset[str],
+    path: Path,
+    what: str,
+    optional: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise RunFormatError(f"{path}: {what} is not an object")
-    extra, missing = sorted(set(data) - expected), sorted(expected - set(data))
+    extra, missing = sorted(set(data) - expected - optional), sorted(expected - set(data))
     if extra or missing:
         raise RunFormatError(f"{path}: {what} has unexpected key(s) {extra}, missing {missing}")
     return data
@@ -172,16 +183,24 @@ def load_texts(p: RunPaths) -> tuple[PaperText, ...]:
     if not isinstance(top["papers"], list):
         raise RunFormatError(f"{path}: 'papers' is not a list")
     papers: list[PaperText] = []
+    seen: set[str] = set()
     for entry in top["papers"]:
-        row = _keys(entry, _PAPER_KEYS, path, "a paper")
+        row = _keys(entry, _PAPER_KEYS, path, "a paper", _PAPER_OPTIONAL)
         source = _str(row["source"], path, "source")
         if source not in _SOURCES:
             raise RunFormatError(f"{path}: 'source' is {source!r}; expected one of {_SOURCES}")
         if type(row["needed"]) is not bool:
             raise RunFormatError(f"{path}: 'needed' is not a boolean: {row['needed']!r}")
+        year = row.get("year", "")
+        if type(year) is int:
+            year = str(year)
+        pmid = _str(row["pmid"], path, "pmid")
+        if pmid in seen:
+            raise RunFormatError(f"{path}: paper {pmid} appears twice")
+        seen.add(pmid)
         papers.append(
             PaperText(
-                pmid=_str(row["pmid"], path, "pmid"),
+                pmid=pmid,
                 source=cast(Source, source),
                 text=_relative(p.root, row["text"], path, "text"),
                 abstract=_relative(p.root, row["abstract"], path, "abstract"),
@@ -190,6 +209,9 @@ def load_texts(p: RunPaths) -> tuple[PaperText, ...]:
                 ),
                 needed=row["needed"],
                 why=_str(row["why"], path, "why"),
+                title=_str(row.get("title", ""), path, "title"),
+                year=_str(year, path, "year"),
+                doi=_str(row.get("doi", ""), path, "doi"),
             )
         )
     return tuple(papers)

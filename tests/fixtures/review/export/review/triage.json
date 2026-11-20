@@ -5,15 +5,14 @@
   "first_opened_at": "2026-11-19T13:43:44.787Z",
   "flips": [
     {
-      "note": "an included case series",
-      "pmid": "PMID:30000002",
-      "to": "included"
+      "note": "a review article, not a case series",
+      "pmid": "PMID:90000001",
+      "to": "excluded"
     }
   ],
   "note": "",
   "papers_seen": [
-    "PMID:30000001",
-    "PMID:30000002"
+    "PMID:90000002"
   ],
   "updated_at": "2026-11-19T13:43:44.786Z"
 }

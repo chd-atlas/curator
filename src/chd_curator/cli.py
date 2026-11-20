@@ -809,6 +809,7 @@ def _second_opinions(
 ) -> list[dict[str, Any]]:
     validator = schema_validator(root, "review_decisions")
     loaded: list[dict[str, Any]] = []
+    names: dict[str, str] = {}  # reviewer name, case-folded, to the file that gave it
     for path in paths:
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
@@ -826,6 +827,18 @@ def _second_opinions(
             raise _fail(
                 f"--with {path} is for {doc['symbol']} ({doc['gene']}), not {symbol} ({gene})", 2
             )
+        if not doc["session"].get("finished_at"):
+            raise _fail(
+                f"--with {path}: the review is not finished (no I'm done), so it is no verdict", 2
+            )
+        who = doc["reviewer"]["name"].strip().casefold()
+        if who in names:
+            raise _fail(
+                f"--with {path}: {names[who]} already gave that reviewer's second opinion; "
+                "one file each",
+                2,
+            )
+        names[who] = str(path)
         loaded.append(doc)
     return loaded
 
@@ -849,7 +862,9 @@ def review_page_command(
     artifact the page saves to its store; opened as a file it saves in the browser and
     offers "Download my review" (a decisions file for `chd-atlas literature apply-review`).
     Refuses (exit 1) to build when `chd-atlas validate` reports an error; exit 2 for a bad
-    argument, an unreadable run, or a `--with` file that is not a second opinion on this gene.
+    argument, an unreadable run, or a `--with` file that is not a finished second opinion on this
+    gene (two files from one reviewer are refused too). Validate is asked first, so a gene the atlas
+    cannot digest still reports its validate errors.
     """
     _require_root(root)
     if role not in ("owner", "second_opinion"):
@@ -864,14 +879,17 @@ def review_page_command(
     paths = RunPaths(root, symbol, run)
     try:
         code, line = validate_summary(root, cli)
-        found = digests(root, symbol, cli)
-        opinions = _second_opinions(with_, root, symbol, found.gene)
     except AtlasError as exc:
         raise _fail(str(exc), 2) from None
     if code != 0 or not re.match(r"0 error\(s\)", line):
         raise _fail(
             f"chd-atlas validate reports errors ({line}); fix them before building a page", 1
         )
+    try:
+        found = digests(root, symbol, cli)
+        opinions = _second_opinions(with_, root, symbol, found.gene)
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
     who = Reviewer(name, "owner" if role == "owner" else "second_opinion")
     try:
         data = build_review_data(
@@ -909,21 +927,34 @@ def review_decisions_command(
 
     Reads the export of the page's store (`review/<id>.json`, `session/main.json`) and the
     page's own inline data, and writes the format 1 file `chd-atlas literature apply-review`
-    applies. Exit 1 when the reviewer has not pressed "I'm done"; exit 2 for a document for a
-    card not on the page, a decision outside approve|fix|later, a decision made on an earlier
-    version of a card (decide it again on the page), or a result failing the schema. Nothing
-    is written on exit 1 or 2.
+    applies. Exit 1 when the reviewer has not pressed "I'm done", or changed a choice after it
+    (press it again); exit 2 for an export that is not this page's (another page, reviewer or
+    gene, a flip or a seen paper the page does not hold), a document for a card not on the page,
+    a decision outside approve|fix|later, or a result failing the schema. Nothing is written on
+    exit 1 or 2. A card decided on an earlier version is left out of the file, as the page's own
+    download leaves it out, and named on stdout (exit 0). The last-but-one line counts what was
+    written.
     """
     _require_root(root)
     source = page if page is not None else RunPaths(root, symbol, run).review_html
     try:
-        decisions = decisions_from_export(export, source, root)
+        converted = decisions_from_export(export, source, root, symbol)
     except (ExportError, AtlasError) as exc:
         raise _fail(str(exc), exc.exit_code if isinstance(exc, ExportError) else 2) from None
+    decisions = converted.decisions
     payload = json.dumps(decisions, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
         write_bytes_atomically(out, payload.encode("utf-8"))
     except OSError as exc:
         raise _fail(f"{out}: cannot be written: {exc}", 1) from None
+    if converted.stale:
+        typer.echo(f"left out, decided on an earlier version: {', '.join(converted.stale)}")
+    made = [f["decision"] for f in decisions["findings"]]
+    triage = decisions["triage"]["decision"] if decisions["triage"] else "none"
+    typer.echo(
+        f"{len(made)} decisions: {made.count('approve')} approve, {made.count('fix')} fix, "
+        f"{made.count('later')} later; triage {triage}; {len(decisions['papers_seen'])} papers "
+        f"seen; {converted.cards} cards on the page"
+    )
     typer.echo(str(out))

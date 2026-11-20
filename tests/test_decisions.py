@@ -3,7 +3,11 @@
 Fixture: tests/fixtures/review/export copies the document shapes and timestamps of the
 MMP21 pilot's real export (ArtifactData ``out_dir``, 2026-11-19), re-keyed to the fixture
 page's findings, each decided finding with the ``shown_digest`` the fixture page carries.
-Notes must come through byte for byte; one has non-ASCII text.
+Notes must come through byte for byte; one has non-ASCII text. The export's flips and
+acknowledgements name the fixture's own papers (PMID:90000001 is included on the page, and
+PMID:90000002 is the one it asks to be read), because the converter refuses any other. The
+fixture's ``session/main.json`` carries no page identity, since ``built_on`` is the build's own
+clock: the ``export`` fixture stamps it from the page, as the page itself does.
 """
 
 from __future__ import annotations
@@ -35,12 +39,6 @@ def root(tmp_path: Path, atlas_root: Path) -> Path:
 
 
 @pytest.fixture
-def export(tmp_path: Path) -> Path:
-    shutil.copytree(FIXTURE / "export", tmp_path / "export")
-    return tmp_path / "export"
-
-
-@pytest.fixture
 def page(root: Path, stub_atlas: Path) -> Path:
     result = CliRunner().invoke(
         app,
@@ -49,6 +47,13 @@ def page(root: Path, stub_atlas: Path) -> Path:
     )
     assert result.exit_code == 0, result.output
     return root / "local/literature/runs/TBX5/r1/review.html"
+
+
+@pytest.fixture
+def export(tmp_path: Path, page: Path) -> Path:
+    shutil.copytree(FIXTURE / "export", tmp_path / "export")
+    stamp(tmp_path / "export", page)
+    return tmp_path / "export"
 
 
 def convert(root: Path, export: Path, out: Path, *extra: str) -> tuple[int, str]:
@@ -74,6 +79,16 @@ def edit(export: Path, name: str, **changes: Any) -> None:
         else:
             doc[key] = value
     path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def stamp(export: Path, page: Path) -> None:
+    """Write into session/main the identity the page itself writes there (R-P1-36)."""
+    data = page_data(page)
+    identity = {
+        "page": {k: data["page"][k] for k in ("literature_sha256", "built_on")},
+        "reviewer": data["reviewer"],
+    }
+    edit(export, "session/main", **identity)
 
 
 def page_data(page: Path) -> dict[str, Any]:
@@ -129,13 +144,25 @@ def test_a_real_shaped_export_becomes_a_schema_valid_decisions_file(
         "finished_at": "2026-11-19T13:45:27.860Z",
         "active_ms": 323438,
     }
-    assert got["papers_seen"] == ["PMID:30000001", "PMID:30000002"]
+    assert got["papers_seen"] == ["PMID:90000002"]
     assert got["triage"] == {
         "decision": "approve",
         "note": "",
         "active_ms": 14452,
-        "flips": [{"pmid": "PMID:30000002", "to": "included", "note": "an included case series"}],
+        "flips": [
+            {
+                "pmid": "PMID:90000001",
+                "to": "excluded",
+                "note": "a review article, not a case series",
+            }
+        ],
     }
+    # the line a wrong --export directory would show: what was written, against the page
+    assert output.splitlines()[-2:] == [
+        "3 decisions: 2 approve, 1 fix, 0 later; triage approve; 1 papers seen; "
+        "3 cards on the page",
+        str(out),
+    ]
 
 
 def test_triage_without_a_verdict_gives_no_block_but_its_papers_still_count(
@@ -147,7 +174,8 @@ def test_triage_without_a_verdict_gives_no_block_but_its_papers_still_count(
     assert code == 0, output
     got = read(out)
     assert got["triage"] is None
-    assert got["papers_seen"] == ["PMID:30000001", "PMID:30000002"]
+    assert got["papers_seen"] == ["PMID:90000002"]
+    assert "triage none; 1 papers seen" in output
 
 
 def test_a_card_opened_but_never_decided_is_not_a_decision(
@@ -162,27 +190,16 @@ def test_a_card_opened_but_never_decided_is_not_a_decision(
     assert sorted(order) == [G, A]
 
 
-@pytest.mark.parametrize("how", ["missing key", "null", "no session file"])
+@pytest.mark.parametrize("how", ["missing key", "null"])
 def test_a_review_not_marked_done_exits_1_and_writes_nothing(
     root: Path, export: Path, page: Path, tmp_path: Path, how: str
 ) -> None:
-    if how == "no session file":
-        (export / "session/main.json").unlink()
-    else:
-        edit(export, "session/main", finished_at=... if how == "missing key" else None)
+    edit(export, "session/main", finished_at=... if how == "missing key" else None)
     out = tmp_path / "decisions.json"
     code, output = convert(root, export, out)
     assert code == 1
     assert "has not pressed I'm done" in output
     assert not out.exists()
-
-
-def stale_digest(export: Path) -> None:
-    edit(export, f"review/{J}", shown_digest="sha256:" + "9" * 64)
-
-
-def missing_digest(export: Path) -> None:
-    edit(export, f"review/{J}", shown_digest=...)
 
 
 def foreign_id(export: Path) -> None:
@@ -204,8 +221,6 @@ def fix_without_a_note(export: Path) -> None:
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
-        (stale_digest, [J, "decide", "again", "I'm done"]),
-        (missing_digest, [J, "decide", "again", "I'm done"]),
         (foreign_id, ["CHDA:LIT:0000999", "not on the page"]),
         (bad_decision, [G, "reject", "is not one of approve|fix|later"]),
         (bad_triage_decision, ["triage", "reject", "is not one of approve|fix|later"]),
@@ -225,13 +240,106 @@ def test_a_refused_export_exits_2_names_the_cause_and_writes_nothing(
     assert not out.exists()
 
 
-def test_the_stale_message_names_only_the_stale_cards(
+@pytest.mark.parametrize("how", ["another digest", "no digest"])
+def test_a_card_decided_on_an_earlier_version_is_left_out_and_named(
+    root: Path, export: Path, page: Path, tmp_path: Path, how: str
+) -> None:
+    """R-P1-44: the page's own download leaves it out; so does this converter, and says so."""
+    edit(
+        export,
+        f"review/{J}",
+        shown_digest="sha256:" + "9" * 64 if how == "another digest" else ...,
+    )
+    out = tmp_path / "decisions.json"
+    code, output = convert(root, export, out)
+    assert code == 0, output
+    assert sorted(f["id"] for f in read(out)["findings"]) == [G, A]
+    lines = output.splitlines()
+    assert lines[0] == f"left out, decided on an earlier version: {J}"
+    assert (
+        "2 decisions: 2 approve, 0 fix, 0 later" in lines[1] and "3 cards on the page" in lines[1]
+    )
+    assert G not in lines[0] and A not in lines[0]
+
+
+def test_a_choice_changed_after_im_done_exits_1_and_writes_nothing(
     root: Path, export: Path, page: Path, tmp_path: Path
 ) -> None:
-    stale_digest(export)
+    for name, key in ((f"review/{J}", "decided_at"), ("review/triage", "decided_at")):
+        edit(export, name, **{key: "2026-11-19T13:45:27.861Z"})  # a millisecond after finished_at
+        out = tmp_path / "decisions.json"
+        code, output = convert(root, export, out)
+        assert code == 1 and "changed after I'm done" in output and not out.exists()
+        edit(export, name, **{key: "2026-11-19T13:45:27.860Z"})  # at finished_at: allowed
+    assert convert(root, export, tmp_path / "decisions.json")[0] == 0
+
+
+def test_a_missing_session_file_names_the_directory(
+    root: Path, export: Path, page: Path, tmp_path: Path
+) -> None:
+    (export / "session/main.json").unlink()
     code, output = convert(root, export, tmp_path / "decisions.json")
-    assert code == 2
-    assert J in output and G not in output and A not in output
+    assert code == 1 and f"no session/main.json in {export}" in output
+
+
+def other_reviewer(export: Path) -> None:
+    edit(export, "session/main", reviewer={"name": "Dr X", "role": "second_opinion"})
+
+
+def other_literature(export: Path) -> None:
+    edit(export, "session/main", page={"literature_sha256": "sha256:" + "b" * 64, "built_on": "x"})
+
+
+def no_identity(export: Path) -> None:
+    edit(export, "session/main", page=..., reviewer=...)
+
+
+def foreign_flip(export: Path) -> None:
+    edit(export, "review/triage", flips=[{"pmid": "PMID:30000002", "to": "excluded", "note": "n"}])
+
+
+def flip_to_the_same_decision(export: Path) -> None:
+    edit(export, "review/triage", flips=[{"pmid": "PMID:90000001", "to": "included", "note": "n"}])
+
+
+def foreign_paper_seen(export: Path) -> None:
+    edit(export, "review/triage", papers_seen=["PMID:90000001"])  # on the page, but not needed
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (other_reviewer, ["not from this page", "reviewer"]),
+        (other_literature, ["not from this page", "page"]),
+        (no_identity, ["not from this page", "page"]),
+        (foreign_flip, ["PMID:30000002", "not a paper of this page's triage"]),
+        (flip_to_the_same_decision, ["PMID:90000001", "'included'", "excluded"]),
+        (foreign_paper_seen, ["PMID:90000001", "does not ask to be read"]),
+    ],
+    ids=lambda v: getattr(v, "__name__", None),
+)
+def test_an_export_that_is_not_this_pages_is_refused_whole(
+    root: Path, export: Path, page: Path, tmp_path: Path, mutate: Any, expected: list[str]
+) -> None:
+    """R-P1-36: the identity the page writes into its own store, and papers it holds."""
+    mutate(export)
+    out = tmp_path / "decisions.json"
+    code, output = convert(root, export, out)
+    assert code == 2, output
+    for fragment in expected:
+        assert fragment in output
+    assert not out.exists()
+
+
+def test_an_export_for_another_gene_is_refused(
+    root: Path, export: Path, page: Path, tmp_path: Path
+) -> None:
+    result = CliRunner().invoke(
+        app,
+        ["review-decisions", "GATA4", "--run", "r1", "--export", str(export)]
+        + ["--out", str(tmp_path / "d.json"), "--root", str(root), "--page", str(page)],
+    )
+    assert result.exit_code == 2 and "page for TBX5, not GATA4" in result.output
 
 
 @pytest.mark.parametrize("html", ["<html></html>", "twice"])
@@ -260,8 +368,12 @@ def test_page_defaults_to_the_owner_page_and_can_be_pointed_elsewhere(
     )
     assert result.exit_code == 0, result.output
     second = page.parent / "review-dr-x.html"
-    page.unlink()
     out = tmp_path / "decisions.json"
+    stamp(export, second)  # a second opinion's store
+    # the owner page against that export (R-P1-36): refused, not written with the owner's name
+    code, output = convert(root, export, out)
+    assert code == 2 and "not from this page" in output and not out.exists()
+    page.unlink()
     code, output = convert(root, export, out)
     assert code == 2 and "review.html" in output
     code, output = convert(root, export, out, "--page", str(second))
@@ -275,9 +387,11 @@ def test_a_page_download_validates_and_the_real_atlas_applies_it(
     """Spec section 9, end to end on a copy of the real atlas (never the checkout itself).
 
     The page's own selftest downloads a decisions file in headless Chrome; the real
-    ``chd-atlas literature apply-review`` then reads it. TBX5's findings are already
-    approved, so the selftest's approve is a no-op and its fix is only a printed next round:
-    the literature file's bytes must not change.
+    ``chd-atlas literature apply-review`` then reads it. One approval is stripped in the copy,
+    from a finding the verifier has compared, so "the page's digest is the atlas's digest, so
+    the atlas approves it" runs end to end: the approve is applied (``approved <id>``) and the
+    file carries the same ``approved_digest`` the stripped approval had. The page's second card
+    is a fix, which apply-review only prints.
     """
     root = tmp_path / "atlas"
     for name in ("curation", "mirrors", "ontologies", "schemas"):
@@ -285,8 +399,32 @@ def test_a_page_download_validates_and_the_real_atlas_applies_it(
     run = root / "local/literature/runs/TBX5/e2e"
     run.mkdir(parents=True)
     (run / "texts.json").write_text('{"format": 1, "papers": []}', encoding="utf-8")
+    ids = ["CHDA:LIT:0000019", "CHDA:LIT:0000020", "CHDA:LIT:0000021"]
+    (run / "comparison.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "pairs": {i: i for i in ids},
+                "agreed": ids,
+                "span_only": [],
+                "differs": {},
+            }
+        ),
+        encoding="utf-8",
+    )
     literature = root / "curation/literature/TBX5.yaml"
-    before = literature.read_bytes()
+    text = literature.read_text(encoding="utf-8")
+    block = re.search(
+        r"(  - id: CHDA:LIT:0000019\n(?:    .*\n|\n)*?)"
+        r"    approved_by: .*\n    approved_on: .*\n    approved_digest: (sha256:\w+)\n",
+        text,
+    )
+    assert block and "verified_by:" in block.group(1)
+    digest = block.group(2)
+    stripped = text.replace(block.group(0), block.group(1))
+    assert stripped != text
+    literature.write_text(stripped, encoding="utf-8")
+    others = {i: stripped.count(i) for i in ids}
 
     built = CliRunner().invoke(
         app,
@@ -299,8 +437,8 @@ def test_a_page_download_validates_and_the_real_atlas_applies_it(
     file = tmp_path / "decisions.json"
     file.write_text(json.dumps(decisions), encoding="utf-8")
     assert list(schema_validator(root, "review_decisions").iter_errors(decisions)) == []
+    assert [c["id"] for c in page_data(page)["findings"]] == ids
 
-    first, second = (c["id"] for c in page_data(page)["findings"][:2])
     applied = subprocess.run(
         [str(atlas_cli), "literature", "apply-review", "TBX5", "--decisions", str(file)]
         + ["--by", "E.A.M", "--root", str(root)],
@@ -309,6 +447,9 @@ def test_a_page_download_validates_and_the_real_atlas_applies_it(
         check=False,
     )
     assert applied.returncode == 0, applied.stdout + applied.stderr
-    assert f"already approved {first}" in applied.stdout
-    assert f"next round: fix {second}: selftest" in applied.stdout
-    assert literature.read_bytes() == before
+    assert f"approved {ids[0]} (E.A.M, " in applied.stdout
+    assert f"note on {ids[0]}: selftest" in applied.stdout  # a stray selftest file shows itself
+    assert f"next round: fix {ids[1]}: selftest" in applied.stdout
+    after = literature.read_text(encoding="utf-8")
+    assert after.count(f"approved_digest: {digest}") == 1  # the digest the stripped approval had
+    assert {i: after.count(i) for i in ids} == others

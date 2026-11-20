@@ -65,7 +65,7 @@ def test_cards_are_ordered_judged_abstract_agreed_and_carry_the_digests_answer(
     data = build(run, stub_atlas)
     assert [c["id"] for c in data["findings"]] == [J, A, G]
     assert [c["group"] for c in data["findings"]] == ["judged", "abstract", "agreed"]
-    assert [g["key"] for g in data["groups"]] == ["judged", "abstract", "agreed"]
+    assert [g["key"] for g in data["groups"]] == ["judged", "one_reader", "abstract", "agreed"]
     assert {
         c["id"]: (c["shown_digest"][7], c["approval"], c["verified"]) for c in data["findings"]
     } == {
@@ -175,6 +175,7 @@ def test_papers_needed_triage_and_labels(run: RunPaths, stub_atlas: Path) -> Non
             "pmid": "PMID:90000002",
             "title": "Two TBX5 missense variants in a compound heterozygous proband.",
             "year": "2021",
+            "source": "abstract",
             "why": "the proband's table is in the full text, which is not open access",
             "doi_url": None,
             "pubmed_url": "https://pubmed.ncbi.nlm.nih.gov/90000002/",
@@ -194,17 +195,27 @@ def test_triage_order_and_the_fallbacks_for_a_paper_not_in_publications(
     run: RunPaths, stub_atlas: Path
 ) -> None:
     (run.root / "curation/publications.yaml").unlink()
-    lit = run.root / LIT
-    doc = YAML(typ="safe").load(lit.read_text())
-    doc["triage"] = [
+    # a triage entry cannot carry a title (the atlas schema forbids it): texts.json does
+    texts = json.loads(run.texts.read_text())
+    texts["papers"].append(
         {
             "pmid": "PMID:90000004",
-            "search": 1,
-            "decision": "included",
+            "source": "none",
+            "text": None,
+            "abstract": None,
+            "supplements": [],
+            "needed": False,
+            "why": "",
             "title": "T4",
             "year": 2020,
             "doi": "10.1/x",
-        },
+        }
+    )
+    run.texts.write_text(json.dumps(texts))
+    lit = run.root / LIT
+    doc = YAML(typ="safe").load(lit.read_text())
+    doc["triage"] = [
+        {"pmid": "PMID:90000004", "search": 1, "decision": "included"},
         {
             "pmid": "PMID:90000003",
             "search": 1,
@@ -233,6 +244,8 @@ def test_triage_order_and_the_fallbacks_for_a_paper_not_in_publications(
     ]
     last = data["triage"][-1]
     assert (last["title"], last["year"]) == ("T4", "2020")
+    # a paper recorded nowhere has no title, and nothing is invented for it
+    assert (data["triage"][0]["title"], data["triage"][0]["year"]) == ("", "")
     assert data["triage"][1]["reason"] == "case series without variants"
     assert data["triage"][1]["note"] == "n"
     assert card(data, G)["title"] == "" and card(data, G)["label"] == "PMID:90000001"
@@ -272,14 +285,28 @@ def test_a_term_missing_from_the_obo_is_shown_as_its_bare_id(
     assert row(card(build(run, stub_atlas), G), "phenotypes")["value"] == "HP:0009999"
 
 
+SHOWN = {G: "sha256:" + "2" * 64, J: "sha256:" + "4" * 64, A: "sha256:" + "6" * 64}
+
+
 def _second(
-    name: str, fid: str, decision: str, note: str, role: str = "second_opinion"
+    name: str,
+    fid: str,
+    decision: str,
+    note: str,
+    role: str = "second_opinion",
+    shown: str | None = None,
 ) -> dict[str, Any]:
+    item = {
+        "id": fid,
+        "decision": decision,
+        "note": note,
+        "shown_digest": SHOWN.get(fid) if shown is None else shown,
+    }
     return {
         "format": 1,
         "gene": "HGNC:11604",
         "reviewer": {"name": name, "role": role},
-        "findings": [{"id": fid, "decision": decision, "note": note}],
+        "findings": [item],
     }
 
 
@@ -290,8 +317,8 @@ def test_second_opinions_reach_the_owner_sorted_and_refuse_a_second_opinion_revi
     data = build(run, stub_atlas, second_opinions=opinions)
     assert data["second_opinions"] == {
         J: [
-            {"name": "Ann", "decision": "approve", "note": ""},
-            {"name": "Zed", "decision": "fix", "note": "why"},
+            {"name": "Ann", "decision": "approve", "note": "", "current": True},
+            {"name": "Zed", "decision": "fix", "note": "why", "current": True},
         ]
     }
     assert "second_opinions" not in build(run, stub_atlas, Reviewer("Dr X", "second_opinion"))
@@ -466,6 +493,10 @@ def test_judged_cards_sort_by_how_many_rows_were_judged_then_id(
         f"{G}:\n  - {{field: design, first: a, second: b, decision: first, value: a,"
         ' quote: "", where: "", rule: r}\n'
     )
+    comparison = json.loads(run.comparison.read_text())
+    comparison["agreed"].remove(G)
+    comparison["differs"][G] = ["design"]
+    run.comparison.write_text(json.dumps(comparison))
     data = build(run, stub_atlas)
     assert [(c["id"], c["n_judged"]) for c in data["findings"][:2]] == [(J, 3), (G, 1)]
 
@@ -619,7 +650,10 @@ def test_judge_or_evidence_for_a_finding_the_file_lacks_is_refused(
     ("field", "on_variant"),
     [
         ("variant c.100C>T, p.(Arg34Ter) phase", True),
-        ("variant c.100C>T, p.(Arg34Ter) in cis phase", True),  # the name, a space, a subfield
+        ("variant c.100C>T, p.(Arg34Ter) in cis phase", False),  # "in" is no key of the variant
+        ("variant c.100C>T, p.(Arg34Ter) reported.c", True),  # a dotted key: its head is a key
+        ("variant c.100C>T, p.(Arg34Ter) zzz", False),  # a subfield the variant lacks
+        ("variant c.100C>T, p.(Arg34Ter) carriers", True),
         ("variant c.100C>T, p.(Arg34Ter)X phase", False),  # a longer name that begins with it
         ("variant c.100C>T, p.(Arg34Ter), p.(Gly1Ala) phase", False),  # likewise
         ("variant c.100C>T, p.(Arg34Ter)", False),  # no subfield
@@ -683,3 +717,180 @@ def test_unchecked_counts_every_quote_shown_on_a_card_judge_quotes_included(
     _add_evidence(run, '  - {field: "stray", quote: "same words here", where: "A"}\n' * 2)
     c = card(build(run, stub_atlas), J)
     assert len(c["other_quotes"]) == 1 and c["n_unchecked"] == 6
+
+
+def _comparison(run: RunPaths, **lists: Any) -> None:
+    doc = json.loads(run.comparison.read_text())
+    doc.update(lists)
+    run.comparison.write_text(json.dumps(doc))
+
+
+def test_agreement_and_coverage_come_from_the_runs_comparison(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    """R-P1-38: a card says what the comparison says, and only the run's findings have one."""
+    data = build(run, stub_atlas)
+    assert {c["id"]: (c["agreement"], c["group"]) for c in data["findings"]} == {
+        J: ("judged", "judged"),
+        A: ("agreed", "abstract"),  # span_only counts as agreed
+        G: ("agreed", "agreed"),
+    }
+    # covered by the run but in no list: one reader, and its own group between judged and abstract
+    _comparison(run, agreed=[])
+    data = build(run, stub_atlas)
+    assert [(c["id"], c["agreement"], c["group"]) for c in data["findings"]] == [
+        (J, "judged", "judged"),
+        (G, "one_reader", "one_reader"),
+        (A, "agreed", "abstract"),
+    ]
+    # a finding the run does not mention has no card: its pair, its list entry, its judge
+    # decisions and its evidence all gone
+    ev = run.evidence / "batch-01.yaml"
+    ev.write_text("CHDA:LIT:0000902" + ev.read_text().split("CHDA:LIT:0000902", 1)[1])
+    doc = json.loads(run.comparison.read_text())
+    del doc["pairs"][G]
+    run.comparison.write_text(json.dumps(doc))
+    assert [c["id"] for c in build(run, stub_atlas)["findings"]] == [J, A]
+
+
+def test_a_run_covering_no_finding_and_a_differing_finding_without_a_judge_are_refused(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    _comparison(run, differs={**json.loads(run.comparison.read_text())["differs"], G: ["design"]})
+    with pytest.raises(ReviewDataError, match=rf"{G}.*no judge decision"):
+        build(run, stub_atlas)
+    _comparison(run, pairs={}, agreed=[], span_only=[], differs={})
+    for path in (*run.judge.iterdir(), *run.evidence.iterdir()):
+        path.unlink()
+    with pytest.raises(ReviewDataError, match="covers no finding"):
+        build(run, stub_atlas)
+    _comparison(run, agreed=["CHDA:LIT:0007777"])
+    with pytest.raises(ReviewDataError, match="CHDA:LIT:0007777"):
+        build(run, stub_atlas)
+
+
+@pytest.mark.parametrize(
+    ("source", "shown"),
+    [("full_text", "full"), ("supplied_pdf", "full"), ("abstract", "abstract"), ("none", "none")],
+)
+def test_a_cards_source_is_what_the_run_read_not_a_default(
+    run: RunPaths, stub_atlas: Path, source: str, shown: str
+) -> None:
+    texts = json.loads(run.texts.read_text())
+    texts["papers"][0]["source"] = source
+    run.texts.write_text(json.dumps(texts))
+    assert card(build(run, stub_atlas), G)["source"] == shown
+    texts["papers"] = texts["papers"][1:]  # no entry for the paper at all
+    run.texts.write_text(json.dumps(texts))
+    assert card(build(run, stub_atlas), G)["source"] == "none"
+    assert next(p for p in build(run, stub_atlas)["papers_needed"])["source"] == "abstract"
+
+
+def test_a_quote_found_in_several_parts_says_how_many(run: RunPaths, stub_atlas: Path) -> None:
+    _add_evidence(
+        run,
+        '  - {field: "stray", quote: "a proband ... septal defect", where: "A"}\n'
+        '  - {field: "stray", quote: "a proband with a ventricular septal", where: "A"}\n',
+    )
+    quotes = card(build(run, stub_atlas), J)["other_quotes"]
+    assert [(q["found"], q["parts"]) for q in quotes] == [(True, 2), (True, 1)]
+
+
+def test_a_card_shows_the_study_type_and_own_lab_the_shown_digest_hashes(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    pubs = run.root / "curation/publications.yaml"
+    pubs.write_text(
+        pubs.read_text().replace(
+            "    study_type: family_linkage\n",
+            "    study_type: family_linkage\n    own_lab: true\n",
+        )
+    )
+    data = build(run, stub_atlas)
+    assert [(c["id"], c["study_type"], c["own_lab"]) for c in data["findings"]] == [
+        (J, "case_report", None),
+        (A, "case_report", None),
+        (G, "family_linkage", True),
+    ]
+
+
+def _drop(run: RunPaths, fid: str, key: str) -> None:
+    path = run.root / LIT
+    doc = YAML(typ="safe").load(path.read_text())
+    for f in doc["findings"]:
+        if f["id"] == fid:
+            del f[key]
+    out = YAML(typ="safe")
+    out.default_flow_style = False
+    with path.open("w") as fh:
+        out.dump(doc, fh)
+
+
+def test_the_headline_states_only_what_the_record_states(run: RunPaths, stub_atlas: Path) -> None:
+    assert card(build(run, stub_atlas), G)["headline"] == (
+        "family segregation · 1 families screened · 1 carrier families"
+    )
+    _drop(run, G, "carriers")
+    assert card(build(run, stub_atlas), G)["headline"] == (
+        "family segregation · 1 families screened"
+    )
+    _drop(run, G, "count_unit")
+    _set(run, G, None, "carriers", {"de_novo": 2, "inherited": 0})
+    assert card(build(run, stub_atlas), G)["headline"] == (
+        "family segregation · 1 screened · 2 carriers"
+    )
+    _drop(run, G, "screened")
+    headline = card(build(run, stub_atlas), G)["headline"]
+    assert headline == "family segregation · 2 carriers" and "None" not in headline
+
+
+@pytest.mark.parametrize(
+    ("placement", "by"),
+    [
+        ("mane", "variantvalidator"),
+        ("protein", "recorded"),
+        ("unplaced", "recorded"),
+        ("structural", "recorded"),
+        ("outside_region", "recorded"),
+    ],
+)
+def test_only_a_mane_variants_names_are_labelled_as_variantvalidators(
+    run: RunPaths, stub_atlas: Path, placement: str, by: str
+) -> None:
+    _set(run, G, 1, "placement", placement)
+    _set(run, G, 1, "hgvs_p", "p.(Pro362Argfs*8)")
+    v = card(build(run, stub_atlas), G)["variants"][0]
+    assert v["placed_by"] == by and v["placed"] == "p.(Pro362Argfs*8)"
+
+
+def test_titles_year_and_doi_come_from_publications_then_the_runs_texts(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    texts = json.loads(run.texts.read_text())
+    texts["papers"][1].update(title="From the run", year="2020", doi="10.1/run")
+    run.texts.write_text(json.dumps(texts))
+    (need,) = build(run, stub_atlas)["papers_needed"]
+    assert (need["title"], need["year"]) == (
+        "Two TBX5 missense variants in a compound heterozygous proband.",
+        "2021",
+    )  # publications.yaml wins where it has the value
+    assert need["doi_url"] == "https://doi.org/10.1/run"  # and texts.json supplies what it lacks
+    (run.root / "curation/publications.yaml").unlink()
+    (need,) = build(run, stub_atlas)["papers_needed"]
+    assert (need["title"], need["year"]) == ("From the run", "2020")
+
+
+def test_a_clinicians_verdict_on_an_earlier_version_of_a_card_is_not_current(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    opinions = [
+        _second("Ann", J, "fix", "x", shown="sha256:" + "9" * 64),
+        _second("Bea", J, "fix", "y"),
+        _second("Cy", J, "fix", "z", shown=""),
+    ]
+    got = build(run, stub_atlas, second_opinions=opinions)["second_opinions"][J]
+    assert [(o["name"], o["current"]) for o in got] == [
+        ("Ann", False),
+        ("Bea", True),
+        ("Cy", False),
+    ]

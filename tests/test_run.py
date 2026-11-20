@@ -309,6 +309,29 @@ def test_a_missing_texts_file_is_an_error(run_copy: RunPaths) -> None:
         load_texts(run_copy)
 
 
+def test_a_paper_entry_may_carry_a_title_year_and_doi_and_nothing_else_unknown(
+    run_copy: RunPaths,
+) -> None:
+    data = json.loads(run_copy.texts.read_text())
+    data["papers"][0].update(title="T", year=2019, doi="10.1/x")
+    run_copy.texts.write_text(json.dumps(data))
+    first = load_texts(run_copy)[0]
+    assert (first.title, first.year, first.doi) == ("T", "2019", "10.1/x")
+    assert load_texts(run_copy)[1].title == ""
+    data["papers"][0]["subtitle"] = "x"
+    run_copy.texts.write_text(json.dumps(data))
+    with pytest.raises(RunFormatError, match="subtitle"):
+        load_texts(run_copy)
+
+
+def test_a_pmid_listed_twice_in_texts_is_an_error(run_copy: RunPaths) -> None:
+    data = json.loads(run_copy.texts.read_text())
+    data["papers"].append(dict(data["papers"][0]))
+    run_copy.texts.write_text(json.dumps(data))
+    with pytest.raises(RunFormatError, match=r"PMID:90000001.*twice"):
+        load_texts(run_copy)
+
+
 GOOD_DIGESTS = {
     "format": 1,
     "gene": "HGNC:11604",

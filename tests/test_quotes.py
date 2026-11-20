@@ -2,8 +2,11 @@
 
 The fixture run (tests/fixtures/review, run r1) holds 11 quotes: 5 evidence on 0000901, 1
 evidence and 5 judge on 0000902. Counts below were read from those files: one quote is
-invented (found nowhere), two are present only through normalisation (a U+2010 hyphen in
-the source, a U+FB01 ligature in the source) and one is 40 words and present.
+invented (found nowhere), one is present only through normalisation (a U+FB01 ligature in
+the source; measured by swapping ``normalise_text`` for whitespace-and-case folding alone, which
+changes only that quote's answer) and one is 40 words and present. The fixture source also
+carries a U+2010 hyphen, but its quote is found without any mapping, so this fixture does not
+pin the U+2010 entry of the translation table; the parametrised test does.
 """
 
 from __future__ import annotations
@@ -97,7 +100,7 @@ def test_check_quotes_on_the_fixture_run(run_copy: RunPaths) -> None:
     not_found = [c.field for c in checks if not c.found]
     assert not_found == ["variant 1 carriers"]
     by_field = {c.field: c for c in checks}
-    assert by_field["design"].found and by_field["carriers"].found  # U+2010, ligature
+    assert by_field["design"].found and by_field["carriers"].found  # carriers: ligature
     assert [c.words for c in checks if c.words > 30] == [40]
     assert by_field["design"].words == 9
     assert all(isinstance(c, QuoteCheck) for c in checks)
@@ -123,6 +126,51 @@ def test_a_finding_with_no_source_text_is_unchecked_not_a_miss(run_copy: RunPath
     assert len(no_text) == 5 and not any(c.found or c.checked for c in no_text)
 
 
+def test_a_source_with_nothing_in_it_is_no_text(run_copy: RunPaths) -> None:
+    """An empty or blank listed file must not make a quote "not found" in nothing."""
+    for name in ("90000001.txt", "90000001.abstract.txt", "90000001.s1.txt"):
+        (run_copy.root / "local/literature/fulltext" / name).write_text(" \n\t\n", encoding="utf-8")
+    checks = [c for c in check_quotes(run_copy) if c.finding.endswith("0901")]
+    assert len(checks) == 5 and not any(c.found or c.checked for c in checks)
+    (run_copy.root / "local/literature/fulltext/90000001.s1.txt").write_text(
+        "this sentence is not in the paper", encoding="utf-8"
+    )
+    again = {c.field: c for c in check_quotes(run_copy) if c.finding.endswith("0901")}
+    assert all(c.checked for c in again.values()) and again["variant 1 carriers"].found
+
+
+def test_a_judge_decision_with_no_quote_is_not_a_quote(run_copy: RunPaths) -> None:
+    before = check_quotes(run_copy)
+    path = run_copy.judge / "judge-02.decisions.yaml"
+    path.write_text(
+        "CHDA:LIT:0000901:\n  - {field: design, first: a, second: b, decision: first,"
+        ' value: a, quote: "  ", where: "", rule: r}\n',
+        encoding="utf-8",
+    )
+    assert check_quotes(run_copy) == before
+
+
+def test_a_quote_records_how_many_parts_it_has(run_copy: RunPaths) -> None:
+    ev = run_copy.evidence / "batch-01.yaml"  # 0902's list is the last one in the file
+    ev.write_text(
+        ev.read_text(encoding="utf-8")
+        + '  - {field: "x", quote: "a proband ... septal defect", where: "A"}\n',
+        encoding="utf-8",
+    )
+    extra = next(c for c in check_quotes(run_copy) if c.field == "x")
+    assert (extra.found, extra.parts) == (True, 2)
+    assert {c.parts for c in check_quotes(run_copy) if c.field != "x"} == {1}
+    run_copy.quotes.unlink(missing_ok=True)
+    assert (
+        runner.invoke(
+            app, ["quotes", "TBX5", "--run", "r1", "--root", str(run_copy.root)]
+        ).exit_code
+        == 0
+    )
+    written = json.loads(run_copy.quotes.read_bytes())["checks"]
+    assert [c["parts"] for c in written if c["field"] == "x"] == [2]
+
+
 def test_a_listed_source_that_cannot_be_read_is_an_error(run_copy: RunPaths) -> None:
     (run_copy.root / "local/literature/fulltext/90000001.s1.txt").unlink()
     with pytest.raises(RunFormatError, match="90000001.s1.txt"):
@@ -143,7 +191,8 @@ def test_the_command_writes_quotes_json_and_names_what_it_found(run_copy: RunPat
     payload = json.loads(first)
     assert payload["format"] == 1 and len(payload["checks"]) == 11
     assert set(payload["checks"][0]) == {
-        "finding", "origin", "field", "quote", "where", "found", "checked", "paper", "words"
+        "finding", "origin", "field", "quote", "where", "found", "checked", "paper", "words",
+        "parts"
     }  # fmt: skip
     assert all(c["checked"] is True for c in payload["checks"])
     assert [c["found"] for c in payload["checks"]].count(False) == 1

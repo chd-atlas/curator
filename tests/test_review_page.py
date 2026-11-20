@@ -2,10 +2,11 @@
 
 The page is one HTML file whose behaviour is JavaScript, so its tests run it: headless Chrome
 opens ``review.html#selftest`` (file mode: no ``window.claude``), the page drives itself
-through a decision of each kind and writes the decisions JSON into ``#selftest-output``, and
-the test validates that JSON against the atlas's exported schema. A missing Chrome fails the
-test; it is never skipped, because a skipped page test would leave the page unchecked while
-the suite stayed green.
+through a decision of each kind (approve and fix; it makes no "later" decision, except in
+``#selftest-redecide``) and writes into ``#selftest-output`` the exact text its own ``download()``
+produced, and the test validates that JSON against the atlas's exported schema. A missing
+Chrome fails the test; it is never skipped, because a skipped page test would leave the page
+unchecked while the suite stayed green.
 
 Fixture: tests/fixtures/review (TBX5, run r1; the stub atlas answers its digests and
 ``validate``). ``STUB_VALIDATE_ERRORS`` makes the stub's ``validate`` report errors.
@@ -27,6 +28,7 @@ from typer.testing import CliRunner
 from chd_curator import review_page
 from chd_curator.atlas import schema_validator
 from chd_curator.cli import app
+from chd_curator.decisions import decisions_from_export
 
 FIXTURE = Path(__file__).parent / "fixtures" / "review"
 G, J, A = "CHDA:LIT:0000901", "CHDA:LIT:0000902", "CHDA:LIT:0000903"
@@ -211,7 +213,9 @@ def test_selftest_download_is_a_valid_decisions_file(
     status = json.loads(
         html.unescape(re.search(r'<pre id="selftest-status"[^>]*>(.*?)</pre>', dom, re.S).group(1))
     )  # type: ignore[union-attr]
-    assert any("this browser" in m for m in status)
+    # persistence is skipped in a selftest, so the page claims nothing was kept: only the
+    # connection line at load names the browser (the `persist` tests pin what a real write says)
+    assert not [m for m in status if m.lower().startswith("saved")]
     assert not [m for m in status if "saved to the page's store" in m.lower()]
     assert "saved to the page's store" not in dom.lower()
     button = "Agree" if role == "second_opinion" else "Approve"
@@ -241,7 +245,7 @@ def test_the_papers_needed_card_and_every_quote_state_render(root: Path, stub_at
     dom = dump_dom(page, "")
     marks = quote_marks(dom)
     assert any(m.startswith("over 30 words") for m in marks) and "not found in text" in marks
-    assert "Papers whose full text the readers did not have" in dom
+    assert "Papers the run flags for you to read" in dom
     # a quote naming no row is listed, not dropped
     data["findings"][0]["other_quotes"] = [
         {
@@ -391,7 +395,7 @@ def test_the_owner_page_shows_a_clinicians_verdict_on_its_card(
     page = Path(out.strip().splitlines()[-1])
     data = inline_data(page.read_text(encoding="utf-8"))
     assert data["second_opinions"][J] == [
-        {"name": "Dr X", "decision": "fix", "note": "the carrier count is wrong"}
+        {"name": "Dr X", "decision": "fix", "note": "the carrier count is wrong", "current": True}
     ]
     dom = dump_dom(page, "")
     assert "Dr X: needs a fix: the carrier count is wrong" in dom
@@ -408,6 +412,7 @@ def test_the_owner_page_shows_a_clinicians_verdict_on_its_card(
         ({"gene": "HGNC:4173"}, "--with"),
         ({"symbol": "GATA4"}, "GATA4"),
         ({"format": 2}, "format"),
+        ({"session": {"started_at": None, "finished_at": None, "active_ms": 0}}, "not finished"),
     ],
 )
 def test_a_with_file_must_be_a_second_opinion_on_this_gene(
@@ -450,3 +455,373 @@ def test_a_decisions_file_with_a_malformed_date_time_fails_the_schema(
     # the page's own form, with milliseconds and a Z, is accepted
     opinion["session"]["finished_at"] = "2026-11-19T13:45:27.860Z"
     assert list(validator.iter_errors(opinion)) == []
+
+
+def test_two_files_from_one_reviewer_are_refused(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    first = second_opinion_file(tmp_path / "a.json")
+    again = second_opinion_file(
+        tmp_path / "b.json", reviewer={"name": " dr x", "role": "second_opinion"}
+    )
+    code, out = build(root, stub_atlas, "--with", str(first), "--with", str(again))
+    assert code == 2 and "already gave" in out and "a.json" in out
+    assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+
+
+def test_a_verdict_on_an_earlier_version_of_a_card_reads_as_one(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    opinion = second_opinion_file(tmp_path / "x.json")
+    doc = json.loads(opinion.read_text(encoding="utf-8"))
+    doc["findings"][0]["shown_digest"] = "sha256:" + "9" * 64  # J's card has changed since
+    opinion.write_text(json.dumps(doc), encoding="utf-8")
+    code, out = build(root, stub_atlas, "--with", str(opinion))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    assert (
+        inline_data(page.read_text(encoding="utf-8"))["second_opinions"][J][0]["current"] is False
+    )
+    text = plain(card_html(dump_dom(page, ""), J))
+    assert "Dr X: needs a fix on an earlier version: the carrier count is wrong" in text
+    assert "Dr X: agrees" in plain(card_html(dump_dom(page, ""), G))  # G's digest still matches
+
+
+@pytest.mark.parametrize("errors", [None, "2"])
+def test_validate_is_asked_before_the_atlas_digests_a_gene(
+    root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch, errors: str | None
+) -> None:
+    """E3: the stub cannot digest GATA4 (no literature file); validate's errors come first."""
+    if errors:
+        monkeypatch.setenv("STUB_VALIDATE_ERRORS", errors)
+    result = CliRunner().invoke(
+        app,
+        ["review-page", "GATA4", "--run", "r1", "--reviewer", "E.A.M", "--root", str(root)]
+        + ["--atlas-cli", str(stub_atlas)],
+    )
+    assert result.exit_code == (1 if errors else 2), result.output
+    assert ("2 error(s)" in result.output) is bool(errors)
+    assert ("no literature file" in result.output) is not bool(errors)
+
+
+def card_html(dom: str, fid: str) -> str:
+    """One finding card's markup, so an assertion cannot be satisfied by another card's text."""
+    match = re.search(
+        rf'<details class="card" data-id="{re.escape(fid)}"[^>]*>(.*?)</details>',
+        visible(dom),
+        re.S,
+    )
+    assert match, f"no card {fid}"
+    return match.group(1)
+
+
+def plain(markup: str) -> str:
+    """Visible text of a fragment: tags become spaces, entities are read, whitespace collapsed."""
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", markup))).strip()
+
+
+def edit_literature(root: Path, edit: Any) -> None:
+    from ruamel.yaml import YAML
+
+    path = root / "curation/literature/TBX5.yaml"
+    doc = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    edit({f["id"]: f for f in doc["findings"]})
+    out = YAML(typ="safe")
+    out.default_flow_style = False
+    with path.open("w", encoding="utf-8") as fh:
+        out.dump(doc, fh)
+
+
+def test_what_each_card_claims_is_what_the_data_says_card_by_card(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """R-P1-38/39/41, B2, B4, B8, E5, A2 and the judge, row and variant detail, per card.
+
+    Every assertion is made on one card's own markup (CLAUDE.md section 4.19): the same words
+    on another card must not satisfy it.
+    """
+
+    def tweak(by_id: dict[str, Any]) -> None:
+        g, j = by_id[G], by_id[J]
+        g["variants"][0].update(
+            hgvs_p="p.(Pro362Argfs*8)",
+            review_status="pending_review",
+            review_note="check the exon",
+            review_settled_by="E.A.M",
+            unclear={"zygosity": {"reason": "paper silent", "settled_by": "expert"}},
+        )
+        j["variants"][0].update(placement="mane", hgvs_c="c.100C>T", hgvs_p="p.(Arg34Ter)")
+
+    edit_literature(root, tweak)
+    run = root / "local/literature/runs/TBX5/r1"
+    comparison = json.loads((run / "comparison.json").read_text(encoding="utf-8"))
+    comparison["agreed"] = []  # G is covered by the run (its pair) but in no list: one reader
+    (run / "comparison.json").write_text(json.dumps(comparison), encoding="utf-8")
+    ev = run / "evidence/batch-01.yaml"
+    ev.write_text(
+        ev.read_text(encoding="utf-8")
+        + '  - {field: "stray", quote: "a proband ... septal defect", where: "Abstract"}\n',
+        encoding="utf-8",
+    )
+    pubs = root / "curation/publications.yaml"
+    pubs.write_text(
+        pubs.read_text(encoding="utf-8").replace(
+            "    study_type: family_linkage\n",
+            "    study_type: family_linkage\n    own_lab: true\n",
+        ),
+        encoding="utf-8",
+    )
+    opinion = second_opinion_file(tmp_path / "x.json")
+    doc = json.loads(opinion.read_text(encoding="utf-8"))
+    doc["findings"][0]["shown_digest"] = "sha256:" + "9" * 64
+    opinion.write_text(json.dumps(doc), encoding="utf-8")
+    code, out = build(root, stub_atlas, "--with", str(opinion))
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "")
+    g, j, a = (plain(card_html(dom, i)) for i in (G, J, A))
+
+    # G: a row, a variant's other fields, its review mark, its label, its id, its quotes
+    assert "design agreed family segregation" in g
+    assert 'locator {"element": "Results - Patients", "kind": "in_text"}' in g
+    assert 'unclear {"zygosity": {"reason": "paper silent", "settled_by": "expert"}}' in g
+    assert "pending_review: check the exon (settled by E.A.M)" in g
+    assert "variant 1" in g  # E5: the variant's id, which the shown digest binds
+    assert "Recorded in the finding, not by VariantValidator: p.(Pro362Argfs*8)" in g
+    assert "VariantValidator:" not in g.replace("not by VariantValidator", "")
+    assert "family linkage · own lab" in g and "read from the full text" in g
+    assert "1 quote not found in text" in g
+    assert "over 30 words (40 words; first 30 shown)" in g
+    assert "one reader only" in g and "readers agreed" not in g
+    # J: the judge's rule, a variant's diff, and the VariantValidator label for a mane variant
+    assert "Judge: chose reader 1. Phenotypes are the carrier's own lesions" in j
+    assert (
+        "variant c.100C>T, p.(Arg34Ter) phase reader 1: trans · reader 2: not stated · "
+        "judge: chose reader 1: trans. A phase the paper states is kept." in j
+    )
+    assert "VariantValidator: c.100C>T → p.(Arg34Ter)" in j and "Recorded in the finding" not in j
+    assert "found in 2 parts" in j and "Dr X: needs a fix on an earlier version:" in j
+    assert "readers agreed" not in j and "one reader only" not in j
+    # A: span-only counts as agreed; abstract-only source
+    assert "readers agreed" in a and "read from the abstract only" in a
+    assert "Dr X" not in a and "Dr X: agrees" in g  # a verdict sits on its own card only
+    assert "Only one reader reported this" in visible(dom)
+
+
+def _persist_page(page: Path, head: str) -> Path:
+    marker = '<script type="application/json" id="data">'
+    text = page.read_text(encoding="utf-8")
+    out = page.with_name("persist.html")
+    out.write_text(text.replace(marker, f"<script>{head}</script>" + marker), encoding="utf-8")
+    return out
+
+
+def _status(dom: str) -> list[str]:
+    match = re.search(r'<pre id="selftest-status"[^>]*>(.*?)</pre>', dom, re.S)
+    assert match
+    messages: list[str] = json.loads(html.unescape(match.group(1)))
+    return messages
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_a_choice_the_browser_could_not_keep_is_not_reported_as_saved(
+    root: Path, stub_atlas: Path, blocked: bool
+) -> None:
+    """R-P1-40: persistence is live in `#selftest-persist`; blocked storage must be admitted."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    head = "Storage.prototype.setItem=function(){throw new Error('blocked')};" if blocked else ""
+    status = _status(dump_dom(_persist_page(page, head), "selftest-persist"))
+    kept = [m for m in status if m.startswith("Saved in this browser")]
+    refused = [m for m in status if m.startswith("NOT saved in this browser")]
+    assert (len(kept) == 0, len(refused) > 0) == (blocked, blocked)
+    assert bool(kept) is not blocked and all("Download my review" in m for m in kept + refused)
+
+
+def test_restoring_from_the_browser_takes_only_this_pages_own_current_decisions(
+    root: Path, stub_atlas: Path
+) -> None:
+    """D2: a stale entry does not count and another reviewer's or page's entry is not read."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    shown = {c["id"]: c["shown_digest"] for c in data_of(page)["findings"]}
+    sha = data_of(page)["page"]["literature_sha256"]
+
+    def entry(**decisions: dict[str, Any]) -> str:
+        return json.dumps(
+            {
+                "decisions": {
+                    i: {
+                        "decision": "approve",
+                        "note": "",
+                        "decided_at": "2026-11-19T10:00:00Z",
+                        **d,
+                    }
+                    for i, d in decisions.items()
+                },
+                "session": {"started_at": "2026-11-19T09:00:00.000Z"},
+            }
+        )
+
+    mine = f"chd-review:{sha}:owner:e-a-m"
+    seeded = {
+        mine: entry(
+            **{G: {"shown_digest": shown[G]}, J: {"shown_digest": "sha256:" + "9" * 64}, A: {}}
+        ),
+        f"chd-review:{sha}:owner:dr-x": entry(**{A: {"shown_digest": shown[A]}}),
+        f"chd-review:{sha}:second_opinion:e-a-m": entry(**{A: {"shown_digest": shown[A]}}),
+        f"chd-review:{sha}": entry(**{A: {"shown_digest": shown[A]}}),
+        f"chd-review:sha256:{'b' * 64}:owner:e-a-m": entry(**{A: {"shown_digest": shown[A]}}),
+    }
+    head = "".join(
+        f"localStorage.setItem({json.dumps(k)},{json.dumps(v)});" for k, v in seeded.items()
+    )
+    dom = dump_dom(_persist_page(page, head), "selftest-restore")
+    restored = selftest_output(dom)
+    assert [(f["id"], f["decision"], f["shown_digest"]) for f in restored["findings"]] == [
+        (G, "approve", shown[G])
+    ]
+    assert restored["session"]["started_at"] == "2026-11-19T09:00:00.000Z"
+    assert visible(dom).count(">decided on an earlier version: decide again<") == 4  # J and A
+
+
+STORE_FAKE = """
+window.__store = {}; window.__subs = [];
+const snapDocs = () => Object.entries(window.__store).filter(([p]) => p.startsWith("review/"))
+  .map(([p, b]) => ({ id: p.slice(7), data: () => JSON.parse(JSON.stringify(b)) }));
+const notify = () => window.__subs.forEach((s) => s());
+const fakeDb = {
+  doc: (path) => ({
+    set: (body) => {
+      if (window.__refuse) return Promise.reject({ code: "invalid_argument" });
+      window.__store[path] = JSON.parse(JSON.stringify(body));
+      setTimeout(notify, 0); return Promise.resolve();
+    },
+    onSnapshot: (cb) => {
+      const f = () => cb({ exists: path in window.__store,
+        data: () => JSON.parse(JSON.stringify(window.__store[path])) });
+      window.__subs.push(f); setTimeout(f, 0); return () => {};
+    },
+  }),
+  collection: () => ({ onSnapshot: (cb) => {
+    const f = () => cb({ docs: snapDocs(), metadata: { hasPendingWrites: false } });
+    window.__subs.push(f); setTimeout(f, 0); return () => {};
+  } }),
+};
+window.claude = { use: async () => fakeDb };
+"""
+STORE_DRIVER = """
+(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await wait(300);
+  const root = document.getElementById("root");
+  const card = (id) => root.querySelector(`details.card[data-id="${id}"]`);
+  const ids = [...root.querySelectorAll("details.card")].map((c) => c.dataset.id)
+    .filter((i) => i !== "triage");
+  card(ids[0]).open = true; await wait(50);
+  root.querySelector(`.actions[data-id="${ids[0]}"] [data-act="approve"]`).click(); await wait(50);
+  card(ids[1]).open = true; await wait(50);
+  document.getElementById("note-" + ids[1]).value = "check n";
+  root.querySelector(`.actions[data-id="${ids[1]}"] [data-act="fix"]`).click(); await wait(50);
+  root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await wait(50);
+  document.getElementById("finish").click(); await wait(300);
+  const pre = document.createElement("pre"); pre.id = "store-dump";
+  pre.textContent = JSON.stringify({ store: window.__store,
+    status: document.getElementById("store-state").textContent });
+  document.body.appendChild(pre);
+})();
+"""
+
+
+def run_in_store_mode(page: Path, *, refuse: bool = False) -> dict[str, Any]:
+    text = page.read_text(encoding="utf-8")
+    marker = '<script type="application/json" id="data">'
+    harness = page.with_name("store.html")
+    refusal = "window.__refuse = true;" if refuse else ""
+    harness.write_text(
+        text.replace(marker, f"<script>{refusal}{STORE_FAKE}</script>" + marker)
+        + f"<script>{STORE_DRIVER}</script>",
+        encoding="utf-8",
+    )
+    dom = dump_dom(harness, "", budget=8000)
+    match = re.search(r'<pre id="store-dump">(.*?)</pre>', dom, re.S)
+    assert match, "the driver wrote no dump"
+    dump: dict[str, Any] = json.loads(html.unescape(match.group(1)))
+    return dump
+
+
+def test_a_store_session_converts_and_what_the_page_says_matches_what_it_saved(
+    root: Path, stub_atlas: Path, atlas_root: Path, tmp_path: Path
+) -> None:
+    """D2: the page in store mode with a fake db, exported in ArtifactData's layout, converted."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    dump = run_in_store_mode(page)
+    store = dump["store"]
+    assert dump["status"] == "Finished. Tell Claude in the terminal."
+    session = store["session/main"]
+    data = data_of(page)
+    assert session["page"] == {
+        "literature_sha256": data["page"]["literature_sha256"],
+        "built_on": data["page"]["built_on"],
+    }
+    assert session["reviewer"] == {"name": "E.A.M", "role": "owner"}
+    assert isinstance(session["total_active_ms"], int) and "total_ms" not in session
+    export = tmp_path / "export"
+    for path, body in store.items():
+        target = export / f"{path}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(body), encoding="utf-8")
+    converted = decisions_from_export(export, page, atlas_root, "TBX5")
+    got = converted.decisions
+    assert got["session"]["active_ms"] == session["total_active_ms"]
+    assert [(f["decision"], f["note"]) for f in got["findings"]] == [
+        ("approve", ""),
+        ("fix", "check n"),
+    ]
+    assert converted.stale == () and got["triage"]["decision"] == "approve"
+
+
+@pytest.mark.parametrize(
+    ("role", "refuse", "says"),
+    [
+        ("owner", False, "Finished. Tell Claude in the terminal."),
+        ("second_opinion", False, "Finished. Choose Download my review and send the file back."),
+        ("owner", True, "Finished, but nothing was saved"),
+        ("second_opinion", True, "Finished, but nothing was saved"),
+    ],
+)
+def test_the_finished_line_names_the_next_step_for_this_role_and_this_mode(
+    root: Path, stub_atlas: Path, role: str, refuse: bool, says: str
+) -> None:
+    name = "E.A.M" if role == "owner" else "Dr X"
+    code, out = build(root, stub_atlas, "--reviewer", name, "--role", role)
+    assert code == 0, out
+    dump = run_in_store_mode(Path(out.strip().splitlines()[-1]), refuse=refuse)
+    assert dump["status"].startswith(says)
+    assert (dump["store"] == {}) is refuse
+
+
+def test_taking_back_the_only_flip_after_the_verdict_clears_the_verdict(
+    root: Path, stub_atlas: Path
+) -> None:
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    assert selftest_output(dump_dom(page, "selftest"))["triage"]["flips"] != []
+    decisions = selftest_output(dump_dom(page, "selftest-unflip"))
+    assert decisions["triage"] is None and decisions["session"]["finished_at"] is None
+
+
+def test_the_selftest_publishes_the_text_the_download_made_and_notes_its_approvals(
+    root: Path, stub_atlas: Path
+) -> None:
+    """D1/C3: a `{}` from download() would fail the schema; the approve carries its note."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "selftest")
+    first = selftest_output(dom)["findings"][0]
+    assert first["decision"] == "approve" and first["note"] == "selftest"
+    assert re.search(r'<pre id="selftest-output"[^>]*>\{\n  "format": 1,\n  "gene"', dom)

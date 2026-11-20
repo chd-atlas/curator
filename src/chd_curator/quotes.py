@@ -5,13 +5,14 @@ supplement), after both sides are normalised over typography: case, whitespace, 
 quotes, dashes (U+2010 included), ligatures, and the ``|`` and ``---row`` marks a flattened
 table leaves behind. A quote that does not match is reported ``found: False`` and the page
 says "not found in text". A quote whose finding has no source text (no paper in texts.json, or
-a paper with no text, abstract or supplement) was not checked: it carries ``checked: False`` and
-``found: False``, and the page must not present it as a miss.
+a paper with no text, abstract or supplement, or only empty ones) was not checked: it carries
+``checked: False`` and ``found: False``, and the page must not present it as a miss.
 
-Adapted from the pilot's ``quotecheck.py`` (19 lines). Differences: U+2010 is mapped, and the
-word count is kept for the page's long-quote flag. Whether the normalisation is complete is
-not measured beyond the fixture and the parametrised test: a typographic variant outside the
-list shows as "not found", which fails safe.
+Adapted from the pilot's ``quotecheck.py`` (19 lines). Differences: U+2010 is mapped, the
+word count and the number of parts are kept for the page's flags, and a quote must be found
+whole, in order, at word boundaries (the R-P1-27 tightening, below). Whether the
+normalisation is complete is not measured beyond the fixture and the parametrised test: a
+typographic variant outside the list shows as "not found", which fails safe.
 
 What "found" guarantees (R-P1-27): every part of the quote, split at ``...`` or the ellipsis
 character, occurs in ONE source, in the quote's order, each part starting at a word boundary
@@ -93,6 +94,13 @@ def _occurs_in_order(parts: Sequence[str], source: str) -> bool:
     return True
 
 
+def quote_parts(quote: str) -> list[str]:
+    """The normalised parts of ``quote``, split at ``...`` or ``…``; empty parts dropped."""
+    q = normalise_text(quote).strip(" .\"'…")
+    q = q.replace("...", _ELLIPSIS_MARK).replace("…", _ELLIPSIS_MARK)
+    return [p.strip() for p in q.split(_ELLIPSIS_MARK) if p.strip()]
+
+
 def quote_found(quote: str, normalised_sources: Sequence[str]) -> bool:
     """True when ``quote`` occurs in one of the (already normalised) sources.
 
@@ -100,9 +108,7 @@ def quote_found(quote: str, normalised_sources: Sequence[str]) -> bool:
     word boundaries; a part under ``MIN_PART_CHARS`` characters makes the quote not found, as
     does a quote with no text left after stripping.
     """
-    q = normalise_text(quote).strip(" .\"'…")
-    q = q.replace("...", _ELLIPSIS_MARK).replace("…", _ELLIPSIS_MARK)
-    parts = [p.strip() for p in q.split(_ELLIPSIS_MARK) if p.strip()]
+    parts = quote_parts(quote)
     if not parts or any(len(p) < MIN_PART_CHARS for p in parts):
         return False
     return any(_occurs_in_order(parts, s) for s in normalised_sources)
@@ -119,6 +125,7 @@ class QuoteCheck:
     checked: bool
     paper: str
     words: int
+    parts: int
 
 
 def _read(path: Path) -> str:
@@ -160,7 +167,9 @@ def check_quotes(run: RunPaths) -> tuple[QuoteCheck, ...]:
             return ()
         if pmid not in cache:
             files = [paper.text, paper.abstract, *paper.supplements]
-            cache[pmid] = tuple(normalise_text(_read(f)) for f in files if f is not None)
+            read = (normalise_text(_read(f)) for f in files if f is not None)
+            # a file with nothing in it is no text: a quote is "not checked", not "not found"
+            cache[pmid] = tuple(t for t in read if t)
         return cache[pmid]
 
     checks: list[QuoteCheck] = []
@@ -170,6 +179,8 @@ def check_quotes(run: RunPaths) -> tuple[QuoteCheck, ...]:
         for q in evidence.get(finding, ()):
             rows.append(("evidence", q.field, q.quote, q.where))
         for d in judge.get(finding, ()):
+            if not d.quote.strip():
+                continue  # a decision settled without a quote has nothing to check
             rows.append(("judge", d.field, d.quote, d.where))
         for origin, field, quote, where in rows:
             checks.append(
@@ -183,6 +194,7 @@ def check_quotes(run: RunPaths) -> tuple[QuoteCheck, ...]:
                     bool(known),
                     paper_of.get(finding, finding),
                     len(quote.split()),
+                    len(quote_parts(quote)),
                 )
             )
     return tuple(checks)

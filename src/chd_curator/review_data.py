@@ -11,8 +11,17 @@ sorted keys it renders. ``keys_shown`` is assembled from the rows actually emitt
 no row renders is absent from it and a test comparing it with the record fails.
 
 What this module does not do: it computes no statistic, reads no clock and never recomputes a
-quote check. ``checked`` and ``found`` are those of :func:`chd_curator.quotes.check_quotes`
-(R-P1-26), and a quote over 30 words reaches the data only as its first 30 words (R-P1-5).
+quote check. The one sum it makes is the card headline's carriers total, the sum of the
+integers in the finding's own ``carriers`` mapping (shown only when the record states one).
+``checked`` and ``found`` are those of :func:`chd_curator.quotes.check_quotes` (R-P1-26), and a
+quote over 30 words reaches the data only as its first 30 words (R-P1-5).
+
+The page covers the RUN (R-P1-38): a card is shown for each finding the run mentions, that is
+each id in ``comparison.json`` (``pairs``, ``agreed``, ``span_only``, ``differs``), the judge
+files or the evidence files. Other findings of the literature file are outside this run and
+``apply-review`` never touches them. A card's ``agreement`` comes from that comparison, not
+from the judge files: ``agreed`` (listed ``agreed`` or ``span_only``), ``judged`` (listed in
+``differs``, which must then have judge decisions) or ``one_reader`` (covered, in no list).
 Nothing here iterates a ``set`` into the output; every list is built in a stated order.
 """
 
@@ -31,11 +40,21 @@ from ruamel.yaml.error import YAMLError
 
 from chd_curator.atlas import Digests
 from chd_curator.quotes import LONG_QUOTE_WORDS, QuoteCheck, check_quotes
-from chd_curator.run import JudgeDecision, RunPaths, load_judge, load_texts
+from chd_curator.run import (
+    Comparison,
+    JudgeDecision,
+    PaperText,
+    RunPaths,
+    load_comparison,
+    load_evidence,
+    load_judge,
+    load_texts,
+)
 
 APPROVAL_KEYS: Final = frozenset({"approved_by", "approved_on", "approved_digest"})
 GROUPS: Final = (
     {"key": "judged", "title": "The readers disagreed; a judge chose"},
+    {"key": "one_reader", "title": "Only one reader reported this"},
     {"key": "abstract", "title": "Read from the abstract only"},
     {"key": "agreed", "title": "The readers agreed"},
 )
@@ -176,20 +195,24 @@ def _variant_target(field: str, variants: Sequence[Mapping[str, Any]]) -> int | 
     """The id of the variant a field names, or None.
 
     A field names a variant by its exact ``as_reported`` followed by a space and a subfield
-    (``variant c.1A>G phase``), or by id (``variant 1 phase``). A shorter variant name does not
-    capture a field written for a longer one the finding lacks: that decision stays on the
-    finding.
+    (``variant c.1A>G phase``), or by id (``variant 1 phase``). For the ``as_reported`` form the
+    subfield, the first token after that space, must be one of the variant's own keys or the
+    head of a dotted one (``reported.c`` names ``reported``); anything else stays on the
+    finding, so a field such as ``variant c.1A>G in cis phase`` is not captured. A shorter
+    variant name does not capture a field written for a longer one the finding lacks. The id
+    form checks nothing after the number.
     """
     if not field.lower().startswith("variant"):
         return None
-    named = [
-        v
-        for v in variants
-        if str(v.get("as_reported") or "")
-        and field[len("variant ") :].startswith(str(v["as_reported"]) + " ")
-        and field[len("variant ") :][len(str(v["as_reported"])) + 1 :].strip()
-        and field[:8].lower() == "variant "
-    ]
+    rest = field[len("variant ") :] if field[:8].lower() == "variant " else None
+    named: list[Mapping[str, Any]] = []
+    for v in variants:
+        name = str(v.get("as_reported") or "")
+        if rest is None or not name or not rest.startswith(name + " "):
+            continue
+        tail = rest[len(name) + 1 :].split()
+        if tail and (tail[0] in v or tail[0].split(".")[0] in v):
+            named.append(v)
     if named:
         return int(max(named, key=lambda v: len(str(v["as_reported"])))["id"])
     m = re.match(r"variant\s+(\d+)\b", field, re.IGNORECASE)
@@ -220,6 +243,7 @@ def _shown_quote(check: QuoteCheck) -> dict[str, Any]:
         "origin": check.origin,
         "over_limit": over,
         "words": check.words,
+        "parts": check.parts,
     }
 
 
@@ -284,18 +308,23 @@ def _publications(root: Path) -> dict[str, Mapping[str, Any]]:
 
 
 class _Paper:
-    """Title, year and DOI for a PMID: publications.yaml, else its triage entry, else empty."""
+    """Title, year and DOI for a PMID: publications.yaml, else the run's texts.json entry.
+
+    A triage entry cannot carry them (the atlas's schema forbids it), so a paper in neither
+    has empty strings and the page says its title is not recorded in this run.
+    """
 
     def __init__(
-        self, pubs: Mapping[str, Mapping[str, Any]], triage: Mapping[str, Mapping[str, Any]]
+        self, pubs: Mapping[str, Mapping[str, Any]], texts: Mapping[str, PaperText]
     ) -> None:
-        self._pubs, self._triage = pubs, triage
+        self._pubs, self._texts = pubs, texts
 
     def get(self, pmid: str, key: str) -> str:
-        for source in (self._pubs.get(pmid, {}), self._triage.get(pmid, {})):
-            if source.get(key):
-                return str(source[key])
-        return ""
+        recorded = self._pubs.get(pmid, {}).get(key)
+        if recorded:
+            return str(recorded)
+        entry = self._texts.get(pmid)
+        return str(getattr(entry, key, "") or "") if entry is not None else ""
 
     def info(self, pmid: str) -> dict[str, Any]:
         digits = re.sub(r"\D", "", pmid)
@@ -360,6 +389,9 @@ def _variant_card(
         "carriers": _carriers(v.get("carriers")),
         "phenotypes": _terms(v.get("phenotypes"), hpo),
         "placed": placed,
+        # only a `mane` variant's names come from `chd-curator normalise` (VariantValidator);
+        # every other placement's hgvs_p is the agent's own, so it is labelled as recorded
+        "placed_by": "variantvalidator" if v.get("placement") == "mane" else "recorded",
         "vv_note": note,
         "others": others_rows,
         "keys_shown": sorted(direct + [r["name"] for r in others_rows]),
@@ -380,7 +412,8 @@ def _variant_card(
 def _finding_card(
     f: Mapping[str, Any],
     *,
-    abstract_only: bool,
+    source: str,
+    agreement: str,
     shown_digest: str,
     approval: str | None,
     verified: bool,
@@ -391,6 +424,7 @@ def _finding_card(
     hpo: Mapping[str, str],
 ) -> dict[str, Any]:
     pmid = str(f["publication"])
+    abstract_only = source == "abstract" or f.get("review_status") == "not_accessible"
     variants: list[Mapping[str, Any]] = list(f.get("variants") or [])
     pub = pubs.get(pmid, {})
     authors = pub.get("authors") or []
@@ -500,25 +534,27 @@ def _finding_card(
     n_judged = sum(r["state"] == "judged" for r in rows) + sum(
         v["state"] == "judged" for v in vouts
     )
-    carriers = f.get("carriers") or {}
-    unit = f.get("count_unit", "")
-    n_carriers = (
-        sum(v for v in carriers.values() if isinstance(v, int))
-        if isinstance(carriers, Mapping)
-        else 0
-    )
-    headline = (
-        f"{str(f.get('design', '')).replace('_', ' ')} · {f.get('screened')} {unit} screened"
-        f" · {n_carriers}"
-        f" carrier {unit}"
-    ).strip()
+    unit = str(f.get("count_unit") or "")
+    carriers = f.get("carriers")
+    headline_parts: list[str] = []
+    if f.get("design"):
+        headline_parts.append(str(f["design"]).replace("_", " "))
+    if f.get("screened") is not None:
+        headline_parts.append(" ".join(x for x in (str(f["screened"]), unit, "screened") if x))
+    if isinstance(carriers, Mapping) and carriers:
+        total = sum(v for v in carriers.values() if isinstance(v, int) and not isinstance(v, bool))
+        headline_parts.append(f"{total} carrier {unit}" if unit else f"{total} carriers")
+    headline = " · ".join(headline_parts)
     return {
         "id": f["id"],
         "pmid": pmid,
         "label": label,
-        "title": str(pub.get("title", "")) or paper.get(pmid, "title"),
+        "title": paper.get(pmid, "title"),
+        "study_type": pub.get("study_type"),
+        "own_lab": pub.get("own_lab"),
         "pmc": pub.get("pmcid"),
-        "source": "abstract" if abstract_only else "full",
+        "source": "abstract" if abstract_only else source,
+        "agreement": agreement,
         "headline": headline,
         "summary": f.get("summary", ""),
         "fields": rows,
@@ -532,7 +568,11 @@ def _finding_card(
         "approval": approval,
         "verified": verified,
         "shown_digest": shown_digest,
-        "group": "judged" if n_judged else ("abstract" if abstract_only else "agreed"),
+        "group": (
+            agreement
+            if agreement in ("judged", "one_reader")
+            else ("abstract" if abstract_only else "agreed")
+        ),
     }
 
 
@@ -559,9 +599,14 @@ def _triage(entries: Sequence[Mapping[str, Any]], paper: _Paper) -> list[dict[st
 
 
 def _second_opinions(
-    sources: Sequence[Mapping[str, Any]], gene: str, known: set[str]
-) -> dict[str, list[dict[str, str]]]:
-    out: dict[str, list[dict[str, str]]] = {}
+    sources: Sequence[Mapping[str, Any]], gene: str, shown: Mapping[str, str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Each second opinion's verdicts by finding id.
+
+    ``current`` is whether the verdict's ``shown_digest`` equals the card's own: a verdict
+    made on an older version of the card must not read as a verdict on this one (R-P1-37).
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
     for doc in sources:
         reviewer = doc.get("reviewer") or {}
         if doc.get("format") != 1 or reviewer.get("role") != "second_opinion":
@@ -577,18 +622,35 @@ def _second_opinions(
                 raise ValueError(
                     f"a second opinion has a finding without an id and decision: {item!r}"
                 )
-            if item["id"] not in known:
+            if item["id"] not in shown:
                 raise ValueError(f"a second opinion names {item['id']}, which the page lacks")
             out.setdefault(item["id"], []).append(
                 {
                     "name": str(reviewer["name"]),
                     "decision": str(item["decision"]),
                     "note": str(item.get("note") or ""),
+                    "current": item.get("shown_digest") == shown[item["id"]],
                 }
             )
     return {
         k: sorted(v, key=lambda o: (o["name"], o["decision"], o["note"]))
         for k, v in sorted(out.items())
+    }
+
+
+def _covered(
+    comparison: Comparison,
+    judge: Mapping[str, Sequence[JudgeDecision]],
+    evidence: Mapping[str, Sequence[Any]],
+) -> set[str]:
+    """The finding ids the run mentions anywhere; a set, only ever tested and sorted."""
+    return {
+        *comparison.pairs,
+        *comparison.agreed,
+        *comparison.span_only,
+        *comparison.differs,
+        *judge,
+        *evidence,
     }
 
 
@@ -612,34 +674,62 @@ def build_review_data(
     hpo = _hpo_labels(root)
     pubs = _publications(root)
     triage_entries = [e for e in lit.get("triage") or [] if isinstance(e, dict)]
-    paper = _Paper(pubs, {str(e["pmid"]): e for e in triage_entries})
     texts = {t.pmid: t for t in load_texts(run)}
+    paper = _Paper(pubs, texts)
     judge = load_judge(run)
+    evidence = load_evidence(run)
+    comparison = load_comparison(run)
     checks = check_quotes(run)
     by_digest = {d.id: d for d in digests.findings}
     held = {str(f["id"]) for f in lit["findings"]}
-    stray = sorted({c.finding for c in checks} - held | set(judge) - held)
+    covered = _covered(comparison, judge, evidence)
+    stray = sorted(covered - held)
     if stray:
         raise ReviewDataError(
-            f"{lit_path}: holds no finding {stray[0]}, but the run's judge or evidence files "
-            f"carry decisions or quotes for it (all unknown ids: {stray})"
+            f"{lit_path}: holds no finding {stray[0]}, but the run's comparison, judge or "
+            f"evidence files mention it (all unknown ids: {stray})"
+        )
+    if not covered:
+        raise ReviewDataError(
+            f"{run.dir}: this run covers no finding (comparison.json, judge and evidence "
+            "name none); there is nothing to review"
+        )
+    unjudged = sorted(i for i in comparison.differs if not judge.get(i))
+    if unjudged:
+        raise ReviewDataError(
+            f"{run.comparison}: lists {unjudged[0]} as differing, but the run holds no judge "
+            f"decision for it, so the run is incomplete (all such ids: {unjudged})"
         )
 
     cards: list[dict[str, Any]] = []
     for f in lit["findings"]:
         fid = str(f["id"])
+        if fid not in covered:
+            continue
         if fid not in by_digest:
             raise ReviewDataError(f"the atlas gave no digests for {fid}; a card needs its own")
         dg = by_digest[fid]
         pmid = str(f["publication"])
         text = texts.get(pmid)
-        abstract_only = (text is not None and text.source == "abstract") or (
-            f.get("review_status") == "not_accessible"
+        source = (
+            "none"
+            if text is None or text.source == "none"
+            else ("abstract" if text.source == "abstract" else "full")
+        )
+        agreement = (
+            "judged"
+            if fid in comparison.differs
+            else (
+                "agreed"
+                if fid in comparison.agreed or fid in comparison.span_only
+                else "one_reader"
+            )
         )
         cards.append(
             _finding_card(
                 f,
-                abstract_only=abstract_only,
+                source=source,
+                agreement=agreement,
                 shown_digest=dg.shown_digest,
                 approval=(
                     None
@@ -670,7 +760,7 @@ def build_review_data(
         "reviewer": {"name": reviewer.name, "role": reviewer.role},
         "groups": [dict(g) for g in GROUPS],
         "papers_needed": [
-            {**paper.info(t.pmid), "why": t.why}
+            {**paper.info(t.pmid), "why": t.why, "source": t.source}
             for t in sorted(texts.values(), key=lambda t: t.pmid)
             if t.needed
         ],
@@ -679,7 +769,7 @@ def build_review_data(
     }
     if reviewer.role == "owner":
         data["second_opinions"] = _second_opinions(
-            second_opinions, digests.gene, {c["id"] for c in cards}
+            second_opinions, digests.gene, {c["id"]: c["shown_digest"] for c in cards}
         )
     return data
 
