@@ -200,6 +200,7 @@ def test_selftest_download_is_a_valid_decisions_file(
     assert (first["id"], first["decision"], first["shown_digest"]) == (J, "approve", shown[J])
     assert (second["id"], second["decision"], second["note"]) == (A, "fix", "selftest")
     assert shown[A] == second["shown_digest"]
+    assert decisions["triage"]["decision"] == "approve"
     assert decisions["triage"]["flips"][0]["note"] == "selftest"
     assert decisions["session"]["finished_at"] is not None
     assert decisions["reviewer"] == {"name": "E.A.M" if role == "owner" else "Dr X", "role": role}
@@ -268,6 +269,24 @@ def tmp_page(page: Path, data: dict[str, Any]) -> Path:
     out = page.with_name("altered.html")
     out.write_text(review_page.render(data), encoding="utf-8")
     return out
+
+
+def test_im_done_is_refused_while_a_flip_has_no_triage_verdict(
+    root: Path, stub_atlas: Path, atlas_root: Path
+) -> None:
+    """R-P1-33: a flip never stands in for a verdict, and finishing needs the verdict."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "selftest-noverdict")
+    decisions = selftest_output(dom)
+    assert decisions["session"]["finished_at"] is None
+    assert decisions["triage"] is None
+    assert [
+        e.message for e in schema_validator(atlas_root, "review_decisions").iter_errors(decisions)
+    ] == []
+    banner = re.search(r'<div id="banner"([^>]*)>(.*?)</div>', visible(dom), re.S)
+    assert banner and "hidden" not in banner.group(1)
+    assert "Give the triage card a verdict" in banner.group(2)
 
 
 def test_a_second_opinion_page_refuses_other_verdicts(

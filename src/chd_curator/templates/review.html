@@ -147,7 +147,8 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
 (() => {
   const DATA = JSON.parse(document.getElementById("data").textContent);
   const OWNER = DATA.reviewer.role === "owner";
-  const SELFTEST = location.hash === "#selftest";
+  const SELFTEST = location.hash.startsWith("#selftest");
+  const NOVERDICT = location.hash === "#selftest-noverdict";
   const root = document.getElementById("root");
   const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const LS_KEY = "chd-review:" + DATA.page.literature_sha256 + ":" + DATA.reviewer.role + ":" + slug(DATA.reviewer.name);
@@ -391,11 +392,8 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     return true;
   }
   function setFlips(flips) {
-    const d = state.decisions.triage || {};
-    const extra = { flips };
-    // a flip is itself a verdict on the triage; a card the reviewer has not judged reads "needs a fix"
-    if (!d.decision && flips.length) { extra.decision = "fix"; extra.note = "flipped " + flips.length + " paper(s); see each flip"; extra.decided_at = now(); }
-    save("triage", docBody("triage", extra));
+    // a flip never stands in for a verdict: the page does not invent a triage decision
+    save("triage", docBody("triage", { flips }));
     render();
   }
 
@@ -457,11 +455,19 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   function finish() {
+    const banner = document.getElementById("banner");
+    if ((triage().flips || []).length && !triage().decision) {
+      banner.textContent = "You flipped " + triage().flips.length + " paper(s) in the triage card. Give the triage card a verdict (" + LABEL.approve + ", " + LABEL.fix + " or " + LABEL.later + ") before pressing I'm done.";
+      banner.hidden = false;
+      return false;
+    }
+    banner.hidden = true;
     closeOpen(true);
     state.session = { ...state.session, finished_at: now(), total_active_ms: Math.round(totalMs()) };
     write("session/main", state.session);
     render();
     storeState(mode === "store" ? "Finished. Tell Claude in the terminal." : "Finished. Choose Download my review, then tell Claude in the terminal.");
+    return true;
   }
   document.getElementById("download").addEventListener("click", () => { closeOpen(true); download(); });
   document.getElementById("finish").addEventListener("click", finish);
@@ -495,6 +501,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     root.querySelector(`[data-flip="${CSS.escape(pmid)}"]`).click(); await step();
     document.getElementById("flipnote-" + pmid).value = "selftest";
     root.querySelector(`[data-record="${CSS.escape(pmid)}"]`).click(); await step();
+    if (!NOVERDICT) { root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await step(); }
     finish();
     const out = document.getElementById("selftest-output");
     out.textContent = JSON.stringify(decisionsFile(), null, 1);
