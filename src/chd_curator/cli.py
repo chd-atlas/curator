@@ -21,9 +21,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import urllib.error
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,15 +32,17 @@ import typer
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from chd_curator import pubmed, variantvalidator
+from chd_curator import pubmed, review_page, variantvalidator
 from chd_curator.atlas import (
     AtlasError,
     Frame,
     default_atlas_cli,
+    digests,
     frame,
     plain,
     schema_validator,
     target,
+    validate_summary,
 )
 from chd_curator.diff import DiffError, diff_findings, parse_findings_file, stripped
 from chd_curator.hgvs import names_a_residue, protein_key, same_protein_change, three_letter
@@ -57,6 +60,7 @@ from chd_curator.records import (
     with_synthesis,
     with_verified,
 )
+from chd_curator.review_data import ReviewDataError, Reviewer, build_review_data
 from chd_curator.run import RunFormatError, RunPaths
 from chd_curator.write import (
     WriteRefused,
@@ -781,3 +785,104 @@ def quotes(
         typer.echo(f"not found: {c.finding} {c.origin} {c.field}: {c.quote}")
     for c in long:
         typer.echo(f"over {LONG_QUOTE_WORDS} words ({c.words}): {c.finding} {c.origin} {c.field}")
+
+
+def _atlas_commit(root: Path) -> str | None:
+    """The checkout's short HEAD commit, or None when it is not a git checkout."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def _second_opinions(paths: Sequence[Path], root: Path, symbol: str) -> list[dict[str, Any]]:
+    validator = schema_validator(root, "review_decisions")
+    loaded: list[dict[str, Any]] = []
+    for path in paths:
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise _fail(f"--with {path}: cannot be read as JSON: {exc}", 2) from None
+        errors = sorted(
+            f"{'/'.join(map(str, e.path)) or '(file)'}: {e.message}"
+            for e in validator.iter_errors(doc)
+        )
+        if errors:
+            raise _fail(f"--with {path} is not a format 1 decisions file: {errors[0]}", 2)
+        if doc["reviewer"]["role"] != "second_opinion":
+            raise _fail(f"--with {path}: its reviewer's role is not second_opinion", 2)
+        if doc["symbol"] != symbol:
+            raise _fail(f"--with {path} is for {doc['symbol']} ({doc['gene']}), not {symbol}", 2)
+        loaded.append(doc)
+    return loaded
+
+
+@app.command("review-page")
+def review_page_command(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    reviewer: str = typer.Option(..., "--reviewer", help="The reviewer's name, shown on the page."),
+    role: str = typer.Option("owner", "--role", help="owner or second_opinion."),
+    with_: list[Path] = typer.Option(
+        [], "--with", help="A second opinion's decisions file to show on the owner page."
+    ),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Write the run's review page: one HTML file the owner or a second reviewer opens.
+
+    The owner page is `<run>/review.html`; a second opinion's is `<run>/review-<name>.html`
+    and shows no approval state and no other reviewer's verdict. Opened as a claude.ai
+    artifact the page saves to its store; opened as a file it saves in the browser and
+    offers "Download my review" (a decisions file for `chd-atlas literature apply-review`).
+    Refuses (exit 1) to build when `chd-atlas validate` reports an error; exit 2 for a bad
+    argument, an unreadable run, or a `--with` file that is not a second opinion on this gene.
+    """
+    _require_root(root)
+    if role not in ("owner", "second_opinion"):
+        raise _fail(f"--role {role!r} is not owner or second_opinion", 2)
+    if role == "second_opinion" and with_:
+        raise _fail("a second-opinion page shows no other reviewer's verdicts: drop --with", 2)
+    name = reviewer.strip()
+    name_slug = review_page.slug(name)
+    if not name_slug:
+        raise _fail("--reviewer must contain a letter or digit", 2)
+    cli = _atlas_cli(root, atlas_cli)
+    paths = RunPaths(root, symbol, run)
+    try:
+        opinions = _second_opinions(with_, root, symbol)
+        code, line = validate_summary(root, cli)
+        found = digests(root, symbol, cli)
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    if code != 0 or not re.match(r"0 error\(s\)", line):
+        raise _fail(
+            f"chd-atlas validate reports errors ({line}); fix them before building a page", 1
+        )
+    who = Reviewer(name, "owner" if role == "owner" else "second_opinion")
+    try:
+        data = build_review_data(
+            root,
+            paths,
+            found,
+            who,
+            datetime.now(UTC),
+            _atlas_commit(root),
+            line,
+            second_opinions=opinions,
+        )
+    except (ReviewDataError, RunFormatError, ValueError) as exc:
+        raise _fail(str(exc), 2) from None
+    out = paths.dir / ("review.html" if role == "owner" else f"review-{name_slug}.html")
+    try:
+        out.write_text(review_page.render(data), encoding="utf-8")
+    except OSError as exc:
+        raise _fail(f"{out}: cannot be written: {exc}", 1) from None
+    typer.echo(str(out))

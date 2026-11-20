@@ -61,6 +61,16 @@ For one published gene:
 `local/literature/runs/<SYMBOL>/<run id>/quotes.json`. A quote whose paper has no text is
 recorded as not checked, never as not found.
 
+`chd-curator review-page <SYMBOL> --run <run id> --reviewer <name> [--role owner|second_opinion]
+[--with <decisions.json> ...]` writes the run's review page, one self-contained HTML file:
+`<run>/review.html` for the owner, `<run>/review-<name>.html` for a second opinion (which shows no
+approval state and no other reviewer's verdict; `--with` is for the owner page only, and each file
+must be a format 1 decisions file by a second opinion on the same gene). It refuses to build, exit 1,
+when `chd-atlas validate` reports an error. The page saves two ways: opened as a claude.ai artifact it
+saves to the page's store; opened as a plain file it saves in the browser, and "Download my review"
+(available at any time) gives the same decisions file, which the atlas's `literature apply-review`
+applies. "I'm done" marks the review finished; the atlas refuses a file without it.
+
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and

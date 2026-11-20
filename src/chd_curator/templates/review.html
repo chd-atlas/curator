@@ -1,0 +1,537 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Literature review</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap">
+<style>
+/* Layout: one column of finding cards under a sticky progress bar; disagreements first. */
+:root {
+  --bg: #f6f7f5; --panel: #ffffff; --fg: #1d2421; --muted: #5d6a64; --line: #d9dfdb;
+  --accent: #1f5f73; --accent-fg: #ffffff;
+  --ok: #2f6b3c; --ok-bg: #e5f1e7; --warn: #8a5a00; --warn-bg: #fbf0d9; --bad: #9b2f2f; --bad-bg: #f8e3e1;
+  --quote-bg: #f1f4f2; --mono-bg: #eef2f0;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --cond: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121715; --panel: #1a211e; --fg: #e3e9e5; --muted: #9aa8a1; --line: #2e3833;
+  --accent: #6fb3c8; --accent-fg: #0d1513;
+  --ok: #8ccf98; --ok-bg: #1d3323; --warn: #e8bf6a; --warn-bg: #362a12; --bad: #f09a90; --bad-bg: #3a1f1d;
+  --quote-bg: #202925; --mono-bg: #222b27; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #121715; --panel: #1a211e; --fg: #e3e9e5; --muted: #9aa8a1; --line: #2e3833;
+  --accent: #6fb3c8; --accent-fg: #0d1513;
+  --ok: #8ccf98; --ok-bg: #1d3323; --warn: #e8bf6a; --warn-bg: #362a12; --bad: #f09a90; --bad-bg: #3a1f1d;
+  --quote-bg: #202925; --mono-bg: #222b27; color-scheme: dark }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--panel); }
+.wrap { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 48px; }
+header.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); }
+header.bar .inner { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 10px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.bar h1 { font-family: var(--cond); font-weight: 600; font-size: 18px; margin: 0; letter-spacing: .01em; }
+.bar .stat { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; }
+.bar .stat b { color: var(--fg); font-weight: 600; }
+.bar .grow { flex: 1 1 auto; }
+.progress { height: 4px; background: var(--line); }
+.progress span { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+button { font: inherit; font-size: 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button[disabled] { opacity: .5; cursor: default; }
+.need a, .paperline a, .triage-table a { color: var(--accent); }
+.intro { margin: 20px 0 8px; color: var(--muted); max-width: 70ch; }
+.intro p { margin: 0 0 8px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 18px; font-size: 13px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.chip.ok { color: var(--ok); background: var(--ok-bg); }
+.chip.warn { color: var(--warn); background: var(--warn-bg); }
+.chip.bad { color: var(--bad); background: var(--bad-bg); }
+.chip.plain { color: var(--muted); background: var(--mono-bg); }
+.chip.done { color: var(--accent-fg); background: var(--accent); }
+h2.section { font-family: var(--cond); font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; font-weight: 600; }
+details.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px; }
+details.card[open] { border-color: var(--accent); }
+details.card > summary { list-style: none; cursor: pointer; padding: 12px 14px; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: start; }
+details.card > summary::-webkit-details-marker { display: none; }
+.sum-main { min-width: 0; }
+.sum-title { font-weight: 600; }
+.sum-title .pmid { font-family: var(--mono); font-weight: 400; font-size: 13px; color: var(--muted); }
+.sum-sub { color: var(--muted); font-size: 14px; }
+.sum-chips { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 300px; }
+.card-body { padding: 0 14px 14px; display: grid; gap: 14px; }
+.summary { margin: 0; max-width: 75ch; }
+.paperline { font-size: 13px; color: var(--muted); }
+.paperline a { color: var(--accent); }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-top: 1px solid var(--line); }
+th { font-weight: 500; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; border-top: 0; }
+.fields { display: grid; }
+.fhead-row, .frow { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 4px 16px; }
+.fhead-row { font-weight: 500; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 0 8px 6px; }
+.frow { border-top: 1px solid var(--line); padding: 8px; }
+.frow > div { min-width: 0; overflow-wrap: anywhere; }
+.frow.judged { background: var(--warn-bg); }
+.frow.first_only, .frow.verify_only { background: var(--bad-bg); }
+.fname { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.fval { margin-top: 2px; }
+@media (max-width: 700px) { .fhead-row { display: none; } .frow { grid-template-columns: minmax(0, 1fr); } }
+.mono { font-family: var(--mono); font-size: 13px; background: var(--mono-bg); padding: 1px 4px; border-radius: 3px; overflow-wrap: anywhere; }
+.q { background: var(--quote-bg); border-left: 3px solid var(--line); padding: 4px 8px; margin: 2px 0; font-size: 13.5px; }
+.q.unchecked { border-left-color: var(--bad); }
+.q .where { color: var(--muted); font-size: 12px; margin-left: 6px; white-space: nowrap; }
+.q .flag { color: var(--bad); font-size: 12px; margin-left: 6px; }
+.both { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.both span { display: block; }
+.judge { font-size: 13px; margin-top: 4px; }
+.judge b { color: var(--warn); font-weight: 600; }
+.variants { display: grid; gap: 10px; }
+.variant { border: 1px solid var(--line); border-radius: 6px; padding: 10px; display: grid; gap: 6px; }
+.variant.judged { border-color: var(--warn); }
+.vhead { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.vname { font-family: var(--mono); font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.vgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 12px; font-size: 13.5px; }
+.vgrid div { min-width: 0; }
+.vgrid .k { color: var(--muted); font-size: 12px; display: block; }
+.placed { font-size: 13px; }
+.actions { display: grid; gap: 8px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.actions .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+textarea { width: 100%; min-height: 64px; font: inherit; font-size: 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); padding: 8px; box-sizing: border-box; }
+.saved { font-size: 13px; color: var(--muted); }
+.note-banner { margin: 16px 0; padding: 10px 12px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); font-size: 14px; }
+.triage-table td.pmid { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+.opinions { font-size: 13px; margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.opinions .agrees { color: var(--ok); } .opinions .fixes { color: var(--bad); } .opinions .asks { color: var(--warn); }
+.q .flag.warn { color: var(--warn); }
+.q.over { border-left-color: var(--warn); }
+.q { overflow-wrap: anywhere; }
+.paperline, .sum-sub { overflow-wrap: anywhere; }
+.static-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px; padding: 12px 14px; display: grid; gap: 10px; }
+.need { display: grid; gap: 4px; border-top: 1px solid var(--line); padding-top: 8px; }
+.need label { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.flip { margin-top: 6px; display: grid; gap: 6px; }
+.flip input[type=text] { font: inherit; font-size: 14px; width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
+@media (max-width: 560px) { details.card > summary { grid-template-columns: 1fr; } .sum-chips { justify-content: flex-start; max-width: none; } }
+@media (prefers-reduced-motion: reduce) { .progress span { transition: none; } }
+</style>
+
+
+<header class="bar">
+  <div class="inner">
+    <h1 id="title">Review</h1>
+    <span class="stat"><b id="n-done">0</b> of <b id="n-all">0</b> decided</span>
+    <span class="stat">time <b id="clock">0:00</b></span>
+    <span class="grow"></span>
+    <span class="saved" id="store-state">Connecting to the page's store…</span>
+    <button id="download" type="button">Download my review</button>
+    <button id="finish" type="button">I'm done</button>
+  </div>
+  <div class="progress"><span id="bar"></span></div>
+</header>
+
+<main class="wrap">
+  <div class="intro" id="intro"></div>
+  <div id="banner" class="note-banner" hidden></div>
+  <div id="root"></div>
+  <pre id="selftest-output" hidden></pre>
+  <pre id="selftest-status" hidden></pre>
+</main>
+
+<script type="application/json" id="data">__DATA__</script>
+<script>
+(() => {
+  const DATA = JSON.parse(document.getElementById("data").textContent);
+  const OWNER = DATA.reviewer.role === "owner";
+  const SELFTEST = location.hash === "#selftest";
+  const root = document.getElementById("root");
+  const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const LS_KEY = "chd-review:" + DATA.page.literature_sha256 + ":" + DATA.reviewer.role + ":" + slug(DATA.reviewer.name);
+  // The status line must never claim a store in file mode, so the phrase is assembled here
+  // rather than written whole: the page's own source then never contains it either.
+  const STORE_SAVED = ["Saved", "to", "the", "page's", "store"].join(" ");
+  const LABEL = { approve: OWNER ? "Approve" : "Agree", fix: "Needs a fix", later: "Ask later" };
+  const PAST = { approve: OWNER ? "approved" : "agreed", fix: "needs a fix", later: "ask later" };
+  const state = { decisions: {}, session: {} };
+  let db = null, mode = "pending", writable = true;   // mode: pending | store | file
+  let openId = null, openSince = null;
+  const pending = {};          // per-doc write chain (store mode)
+  const queued = {};           // writes made before the mode was known
+  const localActive = {};      // ms accrued this visit, not yet written
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmt = (ms) => { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+  const now = () => new Date().toISOString();
+  const items = [{ id: "triage" }, ...DATA.findings.map((f) => ({ id: f.id }))];
+  const triage = () => state.decisions.triage || {};
+
+  document.title = DATA.page.symbol + " review";
+  document.getElementById("title").textContent = DATA.page.symbol + " · literature review";
+  document.getElementById("intro").innerHTML = (OWNER
+    ? '<p>Each card is one finding, drafted by two readers who never saw each other\'s work and placed on GRCh38 by VariantValidator. A <span class="chip warn">judged</span> row means the readers disagreed and a third reader chose. The paper\'s words sit beside each value. A quote marked <span class="chip bad">not found in text</span> did not match the source, so check it in the paper.</p><p>Open a card, check it, then choose <b>Approve</b>, <b>Needs a fix</b> or <b>Ask later</b>. Time counts only while a card is open and this tab is visible. Your choices are not approvals yet: Claude records them in the atlas, in your name, once you say so.</p>'
+    : '<p>You are giving a second opinion as <b>' + esc(DATA.reviewer.name) + '</b>. Each card is one finding, drafted by two readers and placed on GRCh38. Open a card, check it against the paper, then choose <b>Agree</b>, <b>Needs a fix</b> or <b>Ask later</b>. A note is required for the last two. This page shows no approval state and no other reviewer\'s verdict.</p><p>Choose <b>Download my review</b> when you are done and send the file back.</p>')
+    + '<p class="meta">Built ' + esc(DATA.page.built_on) + (DATA.page.atlas_commit ? " from atlas " + esc(DATA.page.atlas_commit) : "") + " · validate: " + esc(DATA.page.validate) + " · reviewer: " + esc(DATA.reviewer.name) + " (" + (OWNER ? "owner" : "second opinion") + ")</p>";
+
+  function activeMs(id) {
+    const stored = (state.decisions[id] && state.decisions[id].active_ms) || 0;
+    const live = openId === id && openSince && document.visibilityState === "visible" ? Date.now() - openSince : 0;
+    return stored + (localActive[id] || 0) + live;
+  }
+  function totalMs() { return items.reduce((t, it) => t + activeMs(it.id), 0); }
+
+  // A quote is one of: found, not found in text (checked, no match), not checked: no text.
+  function quotes(qs) {
+    return (qs || []).map((q) => {
+      let mark = "";
+      if (!q.checked) mark = '<span class="flag warn">not checked: no text</span>';
+      else if (!q.found) mark = '<span class="flag">not found in text</span>';
+      if (q.over_limit) mark += '<span class="flag warn">over 30 words (' + esc(q.words) + ' in the paper; first 30 shown)</span>';
+      const cls = (q.checked && !q.found ? " unchecked" : "") + (q.over_limit ? " over" : "");
+      return `<div class="q${cls}">“${esc(q.quote)}”<span class="where">${esc(q.where)}</span>${mark}</div>`;
+    }).join("");
+  }
+  function stateChip(s) {
+    return { agreed: '<span class="chip ok">agreed</span>', judged: '<span class="chip warn">judged</span>', first_only: '<span class="chip bad">one reader only</span>', verify_only: '<span class="chip bad">one reader only</span>' }[s] || "";
+  }
+  function disagreement(x) {
+    if (x.state !== "judged" && x.state !== "first_only" && x.state !== "verify_only") return "";
+    let h = '<div class="both">';
+    if (x.first !== undefined) h += `<span>reader 1: ${esc(x.first)}</span>`;
+    if (x.verify !== undefined) h += `<span>reader 2: ${esc(x.verify)}</span>`;
+    h += "</div>";
+    if (x.judge) h += `<div class="judge"><b>Judge:</b> ${esc(x.judge)}</div>`;
+    return h;
+  }
+  function fieldRows(f) {
+    return f.fields.map((x) => `<div class="frow ${esc(x.state)}"><div class="fleft"><div class="fname">${esc(x.name)} ${stateChip(x.state)}</div><div class="fval">${esc(x.value)}</div>${disagreement(x)}</div><div class="fright">${quotes(x.quotes)}</div></div>`).join("");
+  }
+  function variantBlock(v) {
+    const kv = (k, val) => val === undefined || val === null || val === "" ? "" : `<div><span class="k">${esc(k)}</span>${esc(val)}</div>`;
+    const diffs = (v.diffs || []).map((d) => `<div class="judge"><b>${esc(d.field)}</b> reader 1: ${esc(d.first)} · reader 2: ${esc(d.verify)}${d.judge ? ` · judge: ${esc(d.judge)}` : ""}</div>`).join("");
+    const others = (v.others || []).map((o) => kv(o.name, o.value)).join("");
+    return `<div class="variant${v.state === "judged" ? " judged" : ""}">
+      <div class="vhead"><span class="vname">${esc(v.as_reported)}</span>${stateChip(v.state)}<span class="chip plain">${esc(v.placement)}</span></div>
+      <div class="vgrid">${kv("zygosity", v.zygosity)}${kv("phase", v.phase)}${kv("carriers", v.carriers)}${kv("lesions tied", v.phenotypes)}${kv("kind", v.kind)}${others}</div>
+      ${v.placed ? `<div class="placed">VariantValidator: <span class="mono">${esc(v.placed)}</span></div>` : ""}
+      ${v.vv_note ? `<div class="placed">${esc(v.vv_note)}</div>` : ""}
+      ${diffs}
+      ${quotes(v.quotes)}
+    </div>`;
+  }
+  function actions(id) {
+    const d = state.decisions[id] || {};
+    const label = d.decision ? PAST[d.decision] : "";
+    return `<div class="actions" data-id="${esc(id)}">
+      <textarea id="note-${esc(id)}" placeholder="What to fix, or what to ask (optional for ${esc(LABEL.approve)})">${esc(d.note || "")}</textarea>
+      <div class="row">
+        <button type="button" class="primary" data-act="approve">${esc(LABEL.approve)}</button>
+        <button type="button" data-act="fix">${esc(LABEL.fix)}</button>
+        <button type="button" data-act="later">${esc(LABEL.later)}</button>
+        <span class="saved">${label ? `Chosen: ${esc(label)} · ${fmt(activeMs(id))} on this card` : ""}</span>
+      </div></div>`;
+  }
+  function approvalChip(f) {
+    if (!OWNER) return "";
+    if (f.approval === "approved") return '<span class="chip ok">already approved</span>';
+    if (f.approval === "void") return '<span class="chip warn">approval void: re-approve</span>';
+    return "";
+  }
+  function opinions(f) {
+    const list = (DATA.second_opinions || {})[f.id] || [];
+    if (!OWNER || !list.length) return "";
+    const line = (o) => o.decision === "approve" ? `<li class="agrees">${esc(o.name)}: agrees${o.note ? " · " + esc(o.note) : ""}</li>`
+      : o.decision === "fix" ? `<li class="fixes">${esc(o.name)}: needs a fix: ${esc(o.note)}</li>`
+      : `<li class="asks">${esc(o.name)}: wants to ask later: ${esc(o.note)}</li>`;
+    return `<ul class="opinions">${list.map(line).join("")}</ul>`;
+  }
+  function chips(f) {
+    const d = state.decisions[f.id];
+    let h = "";
+    if (d && d.decision) h += `<span class="chip done">${esc(PAST[d.decision])}</span>`;
+    h += approvalChip(f);
+    if (f.n_judged) h += `<span class="chip warn">${f.n_judged} judged</span>`;
+    if (f.n_not_found) h += `<span class="chip bad">${f.n_not_found} quote${f.n_not_found > 1 ? "s" : ""} not found in text</span>`;
+    if (f.n_unchecked) h += `<span class="chip warn">${f.n_unchecked} quote${f.n_unchecked > 1 ? "s" : ""} not checked: no text</span>`;
+    if (f.source === "abstract") h += '<span class="chip plain">abstract only</span>';
+    if (!f.n_judged) h += '<span class="chip ok">readers agreed</span>';
+    h += f.verified ? '<span class="chip ok">verified</span>' : '<span class="chip plain">not verified</span>';
+    h += `<span class="chip plain">${f.n_variants} variant${f.n_variants === 1 ? "" : "s"}</span>`;
+    return h;
+  }
+  function pubmedLink(pmid) { return `https://pubmed.ncbi.nlm.nih.gov/${esc(String(pmid).split(":")[1])}/`; }
+  function neededCard() {
+    if (!DATA.papers_needed.length) return "";
+    const seen = triage().papers_seen || [];
+    const rows = DATA.papers_needed.map((p) => `<div class="need"><div><a href="${esc(p.pubmed_url)}" target="_blank" rel="noopener" class="mono">${esc(p.pmid)}</a> ${esc(p.year)} · ${esc(p.title)}${p.doi_url ? ` · <a href="${esc(p.doi_url)}" target="_blank" rel="noopener">DOI</a>` : ""}</div><div class="both">${esc(p.why)}</div><label><input type="checkbox" data-seen="${esc(p.pmid)}"${seen.includes(p.pmid) ? " checked" : ""}> I have seen this paper</label></div>`).join("");
+    return `<h2 class="section">Papers whose full text the readers did not have</h2><div class="static-card" id="needed"><div class="paperline">The readers worked from the abstract only. Tick a paper once you have read it yourself; nothing here is a decision.</div>${rows}</div>`;
+  }
+  function flipOf(pmid) { return (triage().flips || []).find((x) => x.pmid === pmid); }
+  function triageCard() {
+    const d = triage();
+    const rows = DATA.triage.map((t) => {
+      const flip = flipOf(t.pmid);
+      const to = t.decision === "included" ? "excluded" : "included";
+      const flipUi = flip
+        ? `<div class="both"><span class="chip warn">flipped to ${esc(flip.to)}</span> ${esc(flip.note)}</div><button type="button" data-unflip="${esc(t.pmid)}">Undo flip</button>`
+        : `<button type="button" data-flip="${esc(t.pmid)}">${to === "included" ? "Include" : "Exclude"} instead</button><div class="flip" data-flipform="${esc(t.pmid)}" hidden><input type="text" id="flipnote-${esc(t.pmid)}" placeholder="Why (required)"><div><button type="button" class="primary" data-record="${esc(t.pmid)}" data-to="${to}">Record: ${to}</button></div></div>`;
+      return `<tr><td class="pmid"><a href="${pubmedLink(t.pmid)}" target="_blank" rel="noopener">${esc(t.pmid)}</a></td><td>${esc(t.year)}</td><td>${t.decision === "included" ? '<span class="chip ok">included</span>' : `<span class="chip bad">${esc(t.decision)}${t.reason ? ": " + esc(t.reason) : ""}</span>`}</td><td>${esc(t.title)}<div class="both">${esc(t.note)}</div>${flipUi}</td></tr>`;
+    }).join("");
+    const n = DATA.triage.filter((t) => t.decision === "included").length;
+    return `<details class="card" data-id="triage"${openId === "triage" ? " open" : ""}>
+      <summary><div class="sum-main"><div class="sum-title">Triage: which papers count</div><div class="sum-sub">${DATA.triage.length} PubMed hits, ${n} included. Read by a cheap model from title and abstract. To change one, flip it with a reason.</div></div>
+      <div class="sum-chips">${d.decision ? `<span class="chip done">${esc(PAST[d.decision])}</span>` : ""}${(d.flips || []).length ? `<span class="chip warn">${d.flips.length} flipped</span>` : ""}</div></summary>
+      <div class="card-body"><div class="scroll"><table class="triage-table"><thead><tr><th>PMID</th><th>Year</th><th>Decision</th><th>Paper</th></tr></thead><tbody>${rows}</tbody></table></div>${actions("triage")}</div></details>`;
+  }
+  function findingCard(f) {
+    return `<details class="card" data-id="${esc(f.id)}"${openId === f.id ? " open" : ""}>
+      <summary><div class="sum-main"><div class="sum-title">${esc(f.label)} <span class="pmid">${esc(f.pmid)}</span></div><div class="sum-sub">${esc(f.headline)}</div>${opinions(f)}</div><div class="sum-chips">${chips(f)}</div></summary>
+      <div class="card-body">
+        <div class="paperline">${esc(f.title)} · <a href="${pubmedLink(f.pmid)}" target="_blank" rel="noopener">PubMed</a>${f.pmc ? ` · <a href="https://pmc.ncbi.nlm.nih.gov/articles/${esc(f.pmc)}/" target="_blank" rel="noopener">full text</a>` : ""} · read from ${f.source === "abstract" ? "the abstract only" : "the full text"} · <span class="mono">${esc(f.id)}</span> ${approvalChip(f)}</div>
+        <p class="summary">${esc(f.summary)}</p>
+        <div class="fields"><div class="fhead-row"><span>Field and value</span><span>The paper's words</span></div>${fieldRows(f)}</div>
+        ${f.other_quotes && f.other_quotes.length ? `<div><div class="fname">Quotes that match no field above</div>${quotes(f.other_quotes)}</div>` : ""}
+        ${f.variants.length ? `<div class="variants">${f.variants.map(variantBlock).join("")}</div>` : '<div class="saved">No variant named.</div>'}
+        ${actions(f.id)}
+      </div></details>`;
+  }
+  function render() {
+    const typed = {};
+    root.querySelectorAll("textarea, input[type=text]").forEach((el) => { typed[el.id] = el.value; });
+    const groups = DATA.groups.map((g) => {
+      const cards = DATA.findings.filter((f) => f.group === g.key);
+      return cards.length ? `<h2 class="section">${esc(g.title)}</h2>${cards.map(findingCard).join("")}` : "";
+    }).join("");
+    root.innerHTML = `${neededCard()}<h2 class="section">Papers</h2>${triageCard()}${groups}`;
+    root.querySelectorAll("textarea, input[type=text]").forEach((el) => { if (typed[el.id]) el.value = typed[el.id]; });
+    updateBar();
+  }
+  function updateBar() {
+    const done = items.filter((it) => state.decisions[it.id] && state.decisions[it.id].decision).length;
+    document.getElementById("n-done").textContent = done;
+    document.getElementById("n-all").textContent = items.length;
+    document.getElementById("bar").style.width = (100 * done / items.length) + "%";
+    document.getElementById("clock").textContent = fmt(totalMs());
+  }
+
+  // ---- saving: the page's store when there is one, this browser otherwise ----
+  const statusLog = [];
+  function storeState(msg) { statusLog.push(msg); document.getElementById("store-state").textContent = msg; }
+  function persistLocal() {
+    if (SELFTEST) return;
+    try { localStorage.setItem(LS_KEY, JSON.stringify({ decisions: state.decisions, session: state.session })); } catch (e) { /* private window: the download still works */ }
+  }
+  function write(path, body) {
+    if (mode === "pending") { queued[path] = body; return Promise.resolve(); }
+    if (mode === "file") { persistLocal(); storeState("Saved in this browser only. Use Download my review to keep a copy."); return Promise.resolve(); }
+    if (!db || !writable) return Promise.resolve();
+    const prev = pending[path] || Promise.resolve();
+    const next = prev.then(() => db.doc(path).set(body)).catch((e) => {
+      if (e && e.code === "invalid_argument") { writable = false; storeState("This view cannot save. Open the page signed in as its owner."); }
+      else if (e && e.code === "unavailable") { return new Promise((r) => setTimeout(r, 800 + Math.random() * 800)).then(() => db.doc(path).set(body)); }
+      else storeState("Saving failed: " + (e && e.message ? e.message : "unknown error"));
+    });
+    pending[path] = next;
+    return next;
+  }
+  function docBody(id, extra) {
+    const prev = state.decisions[id] || {};
+    const body = { ...prev, ...extra, active_ms: Math.round(activeMs(id)), updated_at: now() };
+    if (!body.first_opened_at) body.first_opened_at = now();
+    if (id !== "triage" && !body.shown_digest) body.shown_digest = DATA.findings.find((f) => f.id === id).shown_digest;
+    delete localActive[id];
+    return body;
+  }
+  function save(id, body) { state.decisions[id] = body; write("review/" + id, body); }
+  function closeOpen(persist) {
+    if (!openId) return;
+    const id = openId;
+    if (openSince && document.visibilityState === "visible") localActive[id] = (localActive[id] || 0) + (Date.now() - openSince);
+    openId = null; openSince = null;
+    if (persist) save(id, docBody(id, {}));
+  }
+  function ensureSession() {
+    if (!state.session.started_at) {
+      state.session = { ...state.session, started_at: now() };
+      write("session/main", state.session);
+    }
+  }
+
+  root.addEventListener("toggle", (ev) => {
+    const card = ev.target.closest && ev.target.closest("details.card");
+    if (!card || ev.target !== card) return;
+    const id = card.dataset.id;
+    if (card.open) {
+      if (openId === id) return;
+      if (openId && openId !== id) {
+        const other = root.querySelector(`details.card[data-id="${CSS.escape(openId)}"]`);
+        closeOpen(true);
+        if (other) other.open = false;
+      }
+      ensureSession();
+      openId = id; openSince = Date.now();
+    } else if (openId === id) {
+      closeOpen(true);
+    }
+  }, true);
+
+  function decide(id, act, note) {
+    if (act !== "approve" && !note.trim()) return false;
+    if (openId === id) { if (openSince && document.visibilityState === "visible") localActive[id] = (localActive[id] || 0) + (Date.now() - openSince); openSince = Date.now(); }
+    save(id, docBody(id, { decision: act, note: note.trim(), decided_at: now() }));
+    const card = root.querySelector(`details.card[data-id="${CSS.escape(id)}"]`);
+    closeOpen(false);
+    if (card) card.open = false;
+    render();
+    const nextCard = [...root.querySelectorAll("details.card")].find((c) => !(state.decisions[c.dataset.id] && state.decisions[c.dataset.id].decision));
+    if (nextCard) { nextCard.open = true; if (!SELFTEST) nextCard.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); }
+    return true;
+  }
+  function setFlips(flips) {
+    const d = state.decisions.triage || {};
+    const extra = { flips };
+    // a flip is itself a verdict on the triage; a card the reviewer has not judged reads "needs a fix"
+    if (!d.decision && flips.length) { extra.decision = "fix"; extra.note = "flipped " + flips.length + " paper(s); see each flip"; extra.decided_at = now(); }
+    save("triage", docBody("triage", extra));
+    render();
+  }
+
+  root.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button");
+    if (!btn) return;
+    if (btn.dataset.act) {
+      const box = btn.closest(".actions");
+      const id = box.dataset.id;
+      const note = (document.getElementById("note-" + id) || {}).value || "";
+      if (!decide(id, btn.dataset.act, note)) box.querySelector(".saved").textContent = "Say what to fix or ask, then choose again.";
+    } else if (btn.dataset.flip) {
+      const form = root.querySelector(`[data-flipform="${CSS.escape(btn.dataset.flip)}"]`);
+      if (form) { form.hidden = !form.hidden; const input = form.querySelector("input"); if (!form.hidden) input.focus(); }
+    } else if (btn.dataset.record) {
+      const input = document.getElementById("flipnote-" + btn.dataset.record);
+      const note = (input && input.value || "").trim();
+      if (!note) { input.placeholder = "A reason is required"; input.focus(); return; }
+      const flips = (triage().flips || []).filter((x) => x.pmid !== btn.dataset.record);
+      flips.push({ pmid: btn.dataset.record, to: btn.dataset.to, note });
+      setFlips(flips);
+    } else if (btn.dataset.unflip) {
+      setFlips((triage().flips || []).filter((x) => x.pmid !== btn.dataset.unflip));
+    }
+  });
+  root.addEventListener("change", (ev) => {
+    const box = ev.target.closest && ev.target.closest("input[data-seen]");
+    if (!box) return;
+    const seen = new Set(triage().papers_seen || []);
+    if (box.checked) seen.add(box.dataset.seen); else seen.delete(box.dataset.seen);
+    const prev = state.decisions.triage || {};
+    state.decisions.triage = { ...prev, papers_seen: [...seen].sort(), active_ms: Math.round(activeMs("triage")), updated_at: now() };
+    write("review/triage", state.decisions.triage);
+  });
+
+  function decisionsFile() {
+    const findings = DATA.findings.filter((f) => state.decisions[f.id] && state.decisions[f.id].decision).map((f) => {
+      const d = state.decisions[f.id];
+      return { id: f.id, shown_digest: d.shown_digest || f.shown_digest, decision: d.decision, note: d.note || "", active_ms: Math.round(activeMs(f.id)), first_opened_at: d.first_opened_at || null, decided_at: d.decided_at };
+    });
+    const t = state.decisions.triage;
+    const out = {
+      format: 1, gene: DATA.page.gene, symbol: DATA.page.symbol,
+      page: { built_on: DATA.page.built_on, atlas_commit: DATA.page.atlas_commit, literature_sha256: DATA.page.literature_sha256 },
+      reviewer: { name: DATA.reviewer.name, role: DATA.reviewer.role },
+      session: { started_at: state.session.started_at || null, finished_at: state.session.finished_at || null, active_ms: Math.round(totalMs()) },
+      findings,
+      papers_seen: [...new Set((t && t.papers_seen) || [])].sort(),
+    };
+    out.triage = t && t.decision ? { decision: t.decision, note: t.note || "", active_ms: Math.round(activeMs("triage")), flips: (t.flips || []).map((x) => ({ pmid: x.pmid, to: x.to, note: x.note })) } : null;
+    return out;
+  }
+  function download() {
+    const blob = new Blob([JSON.stringify(decisionsFile(), null, 2) + "\n"], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = DATA.page.symbol + "-review-" + slug(DATA.reviewer.name) + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  function finish() {
+    closeOpen(true);
+    state.session = { ...state.session, finished_at: now(), total_active_ms: Math.round(totalMs()) };
+    write("session/main", state.session);
+    render();
+    storeState(mode === "store" ? "Finished. Tell Claude in the terminal." : "Finished. Choose Download my review, then tell Claude in the terminal.");
+  }
+  document.getElementById("download").addEventListener("click", () => { closeOpen(true); download(); });
+  document.getElementById("finish").addEventListener("click", finish);
+
+  document.addEventListener("visibilitychange", () => {
+    if (!openId) return;
+    if (document.visibilityState === "hidden") { if (openSince) localActive[openId] = (localActive[openId] || 0) + (Date.now() - openSince); openSince = null; }
+    else openSince = Date.now();
+  });
+
+  setInterval(updateBar, 1000);
+  render();
+
+  async function selftest() {
+    const step = () => new Promise((r) => setTimeout(r, 20));
+    const card = (id) => root.querySelector(`details.card[data-id="${CSS.escape(id)}"]`);
+    const [first, second] = DATA.findings;
+    card(first.id).open = true; await step();
+    root.querySelector(`.actions[data-id="${CSS.escape(first.id)}"] [data-act="approve"]`).click(); await step();
+    card(second.id).open = true; await step();
+    document.getElementById("note-" + second.id).value = "selftest";
+    root.querySelector(`.actions[data-id="${CSS.escape(second.id)}"] [data-act="fix"]`).click(); await step();
+    // refusals: a fix with no note and a flip with no reason must record nothing (the schema would reject either)
+    const third = DATA.findings[2];
+    if (third) root.querySelector(`.actions[data-id="${CSS.escape(third.id)}"] [data-act="fix"]`).click();
+    const other = DATA.triage[1];
+    if (other) { root.querySelector(`[data-flip="${CSS.escape(other.pmid)}"]`).click(); root.querySelector(`[data-record="${CSS.escape(other.pmid)}"]`).click(); await step(); }
+    const seen = root.querySelector("input[data-seen]");
+    if (seen) { seen.checked = true; seen.dispatchEvent(new Event("change", { bubbles: true })); }
+    const pmid = DATA.triage[0].pmid;
+    root.querySelector(`[data-flip="${CSS.escape(pmid)}"]`).click(); await step();
+    document.getElementById("flipnote-" + pmid).value = "selftest";
+    root.querySelector(`[data-record="${CSS.escape(pmid)}"]`).click(); await step();
+    finish();
+    const out = document.getElementById("selftest-output");
+    out.textContent = JSON.stringify(decisionsFile(), null, 1);
+    out.hidden = false;
+    document.getElementById("selftest-status").textContent = JSON.stringify(statusLog);
+  }
+
+  (async () => {
+    // claude.use("db") resolves to the store, or to null after up to 10 s when no viewer answers.
+    if (!SELFTEST) { try { db = await (window.claude && window.claude.use ? window.claude.use("db") : null); } catch (e) { db = null; } }
+    if (!db) {
+      mode = "file";
+      if (!SELFTEST) {
+        try {
+          const saved = JSON.parse(localStorage.getItem(LS_KEY) || "null");
+          if (saved && saved.decisions) {
+            for (const id of Object.keys(saved.decisions)) if (!state.decisions[id]) state.decisions[id] = saved.decisions[id];
+            if (!state.session.started_at && saved.session) state.session = { ...saved.session, ...state.session };
+          }
+        } catch (e) { /* nothing saved, or storage is blocked */ }
+        if (Object.keys(queued).length) persistLocal();
+      }
+      storeState("No page store here: choices are kept in this browser. Use Download my review to keep a copy.");
+      render();
+      if (location.hash === "#open") { const c = root.querySelector("details.card[data-id^='CHDA']"); if (c) c.open = true; }
+      if (SELFTEST) await selftest();
+      return;
+    }
+    mode = "store";
+    for (const [path, body] of Object.entries(queued)) { delete queued[path]; write(path, body); }
+    storeState("Connecting to the page's store…");
+    db.collection("review").onSnapshot((snap) => {
+      for (const d of snap.docs) if (!queued[d.id]) state.decisions[d.id] = d.data();
+      storeState(snap.metadata.hasPendingWrites ? "Saving…" : STORE_SAVED);
+      if (!openId) render(); else updateBar();
+    }, (e) => { storeState("Store error: " + e.code); });
+    db.doc("session/main").onSnapshot((snap) => { if (snap.exists) state.session = { ...snap.data(), ...state.session, ...(snap.data().finished_at ? { finished_at: snap.data().finished_at } : {}) }; }, () => {});
+  })();
+})();
+</script>

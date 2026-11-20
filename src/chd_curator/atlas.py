@@ -29,7 +29,22 @@ _FINDING_DIGESTS_KEYS: Final = frozenset(
     {"id", "finding_digest", "shown_digest", "approved", "verified", "approval_void"}
 )
 _TIMEOUT_SECONDS: Final = 300
-_FORMAT_CHECKER: Final[FormatChecker] = Draft202012Validator.FORMAT_CHECKER
+_FORMAT_CHECKER: Final[FormatChecker] = FormatChecker()
+
+
+@_FORMAT_CHECKER.checks("date-time", raises=ValueError)
+def _is_date_time(value: object) -> bool:
+    """RFC 3339 enough for the review page: ``fromisoformat`` (3.12 reads ``Z``), zone required.
+
+    jsonschema's own ``date-time`` check needs ``rfc3339-validator``, which curator does not
+    depend on; without any check ``"x"`` would pass the schema's ``format: date-time``.
+    """
+    if not isinstance(value, str):
+        return True
+    parsed = datetime.datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("a date-time carries a UTC offset")
+    return True
 
 
 class AtlasError(Exception):
@@ -113,6 +128,24 @@ def _ask(root: Path, subcommand: str, symbol: str, atlas_cli: Path) -> dict[str,
     if not isinstance(answer, dict):
         raise AtlasError(f"the atlas's answer is not a JSON object: {run.stdout[:200]!r}")
     return answer
+
+
+def validate_summary(root: Path, atlas_cli: Path) -> tuple[int, str]:
+    """Run ``chd-atlas validate --root <root>``: its exit code and last non-empty line."""
+    try:
+        run = subprocess.run(
+            [str(atlas_cli), "validate", "--root", str(root)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AtlasError(f"the atlas CLI {atlas_cli} could not be run: {exc}") from exc
+    lines = [line for line in run.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise AtlasError(f"chd-atlas validate printed nothing (exit {run.returncode})")
+    return run.returncode, lines[-1].strip()
 
 
 def _check_shape(answer: dict[str, Any], expected: frozenset[str], version: int) -> None:

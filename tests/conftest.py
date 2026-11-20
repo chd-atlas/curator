@@ -42,6 +42,7 @@ def atlas_python() -> Path:
 
 _STUB = """\
 import json
+import os
 import sys
 
 ANSWERS = {
@@ -59,6 +60,11 @@ FRAMES = {
     "GATA4": ("NM_002052.5", "NP_002043.2", "8", "+"),
 }
 if sys.argv[1] == "validate":
+    if os.environ.get("STUB_VALIDATE_ERRORS"):
+        print("error GEN001 [mirrors/genes.tsv]: stub error")
+        print()
+        print(os.environ["STUB_VALIDATE_ERRORS"] + " error(s), 3 warning(s)")
+        sys.exit(1)
     print("warning SCP003 [curation/chd_scope.yaml]: stub candidate report")
     print("warning SCP007 [curation/chd_scope.yaml]: stub Orphanet digest")
     print()
