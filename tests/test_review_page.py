@@ -768,7 +768,7 @@ STORE_DRIVER = """
   card(ids[0]).open = true; await wait(50);
   root.querySelector(`.actions[data-id="${ids[0]}"] [data-act="approve"]`).click(); await wait(50);
   // looking at a decided card again must keep the time it was first opened
-  window.__firstSaved = window.__store["review/" + ids[0]].first_opened_at;
+  window.__firstSaved = (window.__store["review/" + ids[0]] || {}).first_opened_at;
   card(ids[0]).open = true; await wait(80); card(ids[0]).open = false; await wait(50);
   card(ids[1]).open = true; await wait(50);
   document.getElementById("note-" + ids[1]).value = "check n";
@@ -808,7 +808,8 @@ FILE_DRIVER = """
   await wait(300);
   const root = document.getElementById("root");
   const card = (id) => root.querySelector(`details.card[data-id="${id}"]`);
-  const id = [...root.querySelectorAll("details.card")].map((c) => c.dataset.id).find((i) => i !== "triage");
+  const id = [...root.querySelectorAll("details.card")].map((c) => c.dataset.id)
+    .find((i) => i !== "triage");
   card(id).open = true; await wait(80);
   root.querySelector(`.actions[data-id="${id}"] [data-act="approve"]`).click(); await wait(50);
   document.getElementById("download").click(); await wait(100);
@@ -838,7 +839,7 @@ def test_looking_at_a_decided_card_again_keeps_the_time_it_was_first_opened(
         + f"<script>{FILE_DRIVER}</script>",
         encoding="utf-8",
     )
-    # `restore` is the selftest variant that drives nothing itself, so the driver has the page to itself
+    # `restore` is the selftest variant that drives nothing itself: the driver has the page alone
     dom = dump_dom(harness, "selftest-restore", budget=8000)
     match = re.search(r'<pre id="file-dump">(.*?)</pre>', dom, re.S)
     assert match, "the driver wrote no dump"
