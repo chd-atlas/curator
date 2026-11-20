@@ -1,0 +1,8 @@
+CHDA:LIT:0000901:
+  - {field: "design", quote: "We describe a Holt-Oram family with a TBX5 frameshift", where: "Abstract"}
+  - {field: "carriers", quote: "The first child of the index patient was unaffected", where: "Results - Patients"}
+  - {field: "variant 1 zygosity", quote: "Her father carried the same heterozygous frameshift, c.1085delC, p.(Pro362Argfs*8)", where: "Results - Patients"}
+  - {field: "variant 1 carriers", quote: "this sentence is not in the paper", where: "Results - Patients"}
+  - {field: "summary", quote: "The variant was found by exome sequencing in the proband and then confirmed in the father; the variant was absent from the unaffected mother and from the unaffected brother, who were both tested because the family history described several relatives", where: "Results - Patients"}
+CHDA:LIT:0000902:
+  - {field: "design", quote: "We report a proband with a ventricular septal defect", where: "Abstract"}

@@ -1,0 +1,18 @@
+{
+  "active_ms": 14452,
+  "decided_at": "2026-11-19T13:43:44.786Z",
+  "decision": "approve",
+  "first_opened_at": "2026-11-19T13:43:44.787Z",
+  "flips": [
+    {
+      "note": "a review article, not a case series",
+      "pmid": "PMID:90000001",
+      "to": "excluded"
+    }
+  ],
+  "note": "",
+  "papers_seen": [
+    "PMID:90000002"
+  ],
+  "updated_at": "2026-11-19T13:43:44.786Z"
+}

@@ -23,8 +23,28 @@ FRAME_FORMAT: Final = 1
 _FRAME_KEYS: Final = frozenset(
     {"format", "gene", "symbol", "transcript", "protein", "chrom", "strand"}
 )
+DIGESTS_FORMAT: Final = 1
+_DIGESTS_KEYS: Final = frozenset({"format", "gene", "symbol", "literature_sha256", "findings"})
+_FINDING_DIGESTS_KEYS: Final = frozenset(
+    {"id", "finding_digest", "shown_digest", "approved", "verified", "approval_void"}
+)
 _TIMEOUT_SECONDS: Final = 300
-_FORMAT_CHECKER: Final[FormatChecker] = Draft202012Validator.FORMAT_CHECKER
+_FORMAT_CHECKER: Final[FormatChecker] = FormatChecker()
+
+
+@_FORMAT_CHECKER.checks("date-time", raises=ValueError)
+def _is_date_time(value: object) -> bool:
+    """RFC 3339 enough for the review page: ``fromisoformat`` (3.12 reads ``Z``), zone required.
+
+    jsonschema's own ``date-time`` check needs ``rfc3339-validator``, which curator does not
+    depend on; without any check ``"x"`` would pass the schema's ``format: date-time``.
+    """
+    if not isinstance(value, str):
+        return True
+    parsed = datetime.datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("a date-time carries a UTC offset")
+    return True
 
 
 class AtlasError(Exception):
@@ -48,6 +68,26 @@ class Frame:
     transcript: str
     protein: str
     strand: str  # "+" or "-": the gene's, which a listed `del<bases>` is read on
+
+
+@dataclass(frozen=True)
+class FindingDigests:
+    """One finding's digests as the atlas computes them; curator only compares them."""
+
+    id: str
+    finding_digest: str
+    shown_digest: str
+    approved: bool
+    verified: bool
+    approval_void: bool  # approved, and its approved_digest no longer matches (LIT015)
+
+
+@dataclass(frozen=True)
+class Digests:
+    gene: str
+    symbol: str
+    literature_sha256: str
+    findings: tuple[FindingDigests, ...]
 
 
 def default_atlas_cli(root: Path) -> Path:
@@ -90,6 +130,24 @@ def _ask(root: Path, subcommand: str, symbol: str, atlas_cli: Path) -> dict[str,
     return answer
 
 
+def validate_summary(root: Path, atlas_cli: Path) -> tuple[int, str]:
+    """Run ``chd-atlas validate --root <root>``: its exit code and last non-empty line."""
+    try:
+        run = subprocess.run(
+            [str(atlas_cli), "validate", "--root", str(root)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AtlasError(f"the atlas CLI {atlas_cli} could not be run: {exc}") from exc
+    lines = [line for line in run.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise AtlasError(f"chd-atlas validate printed nothing (exit {run.returncode})")
+    return run.returncode, lines[-1].strip()
+
+
 def _check_shape(answer: dict[str, Any], expected: frozenset[str], version: int) -> None:
     keys = set(answer)
     if keys != expected:
@@ -127,6 +185,47 @@ def frame(root: Path, symbol: str, atlas_cli: Path) -> Frame:
     return Frame(
         answer["gene"], answer["symbol"], answer["transcript"], answer["protein"], answer["strand"]
     )
+
+
+def digests(root: Path, symbol: str, atlas_cli: Path) -> Digests:
+    """Run ``literature digests``: each finding's digests and the file's sha256."""
+    answer = _ask(root, "digests", symbol, atlas_cli)
+    _check_shape(answer, _DIGESTS_KEYS, DIGESTS_FORMAT)
+    for key in ("gene", "symbol", "literature_sha256"):
+        if not isinstance(answer[key], str) or not answer[key]:
+            raise AtlasError(f"the atlas's {key} is not a non-empty string: {answer[key]!r}")
+    rows = answer["findings"]
+    if not isinstance(rows, list):
+        raise AtlasError(f"the atlas's findings is not a list: {rows!r}")
+    findings: list[FindingDigests] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise AtlasError(f"a finding in the atlas's answer is not an object: {row!r}")
+        if set(row) != _FINDING_DIGESTS_KEYS:
+            raise AtlasError(
+                f"a finding in the atlas's answer has unexpected keys: extra "
+                f"{sorted(set(row) - _FINDING_DIGESTS_KEYS)}, missing "
+                f"{sorted(_FINDING_DIGESTS_KEYS - set(row))}"
+            )
+        for key in ("id", "finding_digest", "shown_digest"):
+            if not isinstance(row[key], str) or not row[key]:
+                raise AtlasError(
+                    f"the atlas's finding {key} is not a non-empty string: {row[key]!r}"
+                )
+        for key in ("approved", "verified", "approval_void"):
+            if type(row[key]) is not bool:
+                raise AtlasError(f"the atlas's finding {key} is not a boolean: {row[key]!r}")
+        findings.append(
+            FindingDigests(
+                row["id"],
+                row["finding_digest"],
+                row["shown_digest"],
+                row["approved"],
+                row["verified"],
+                row["approval_void"],
+            )
+        )
+    return Digests(answer["gene"], answer["symbol"], answer["literature_sha256"], tuple(findings))
 
 
 def schema_validator(root: Path, name: str) -> Draft202012Validator:

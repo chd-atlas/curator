@@ -1,0 +1,5 @@
+Synthetic full text, PMID 90000001.
+
+Abstract. We describe a Holt‐Oram family with a TBX5 frameshift.
+
+Results - Patients. The index patient, a woman aged 31, had an atrial septal defect. Her father carried the same heterozygous frameshift, c.1085delC, p.(Pro362Argfs*8), and also had an atrial septal defect. The ﬁrst child of the index patient was unaffected. The variant was found by exome sequencing in the proband and then confirmed in the father; the variant was absent from the unaffected mother and from the unaffected brother, who were both tested because the family history described several relatives with upper limb anomalies and cardiac disease of unclear type.

@@ -21,9 +21,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import urllib.error
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,19 +32,24 @@ import typer
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from chd_curator import pubmed, variantvalidator
+from chd_curator import pubmed, review_page, variantvalidator
 from chd_curator.atlas import (
     AtlasError,
     Frame,
     default_atlas_cli,
+    digests,
     frame,
     plain,
     schema_validator,
     target,
+    validate_summary,
 )
+from chd_curator.decisions import ExportError, decisions_from_export
 from chd_curator.diff import DiffError, diff_findings, parse_findings_file, stripped
+from chd_curator.fs import write_bytes_atomically
 from chd_curator.hgvs import names_a_residue, protein_key, same_protein_change, three_letter
 from chd_curator.pubmed import Fetch, PubMedError, urllib_fetch
+from chd_curator.quotes import LONG_QUOTE_WORDS, check_quotes, write_quotes
 from chd_curator.records import (
     ApprovedSynthesis,
     RecordError,
@@ -56,6 +62,8 @@ from chd_curator.records import (
     with_synthesis,
     with_verified,
 )
+from chd_curator.review_data import ReviewDataError, Reviewer, build_review_data
+from chd_curator.run import RunFormatError, RunPaths
 from chd_curator.write import (
     WriteRefused,
     refuse_anchors,
@@ -742,3 +750,211 @@ def synthesis(
         raise _fail(str(exc), 2) from None
     count = len(loaded["sentences"])
     typer.echo(f"{approved}: wrote a {count}-sentence synthesis, unapproved, to {path}")
+
+
+@app.command("quotes")
+def quotes(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+) -> None:
+    """Check every quote a run holds against the text of its paper; write quotes.json.
+
+    A quote not found is shown on the review page, not fatal: exit 0. Exit 2 when a run
+    file is missing or not in the contract's shape.
+    """
+    _require_root(root)
+    paths = RunPaths(root, symbol, run)
+    try:
+        checks = check_quotes(paths)
+        write_quotes(paths, checks)
+    except RunFormatError as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(f"{paths.quotes}: cannot be written: {exc}", 1) from None
+    done = [c for c in checks if c.checked]
+    missing = [c for c in done if not c.found]
+    unchecked = [c for c in checks if not c.checked]
+    long = [c for c in checks if c.words > LONG_QUOTE_WORDS]
+    typer.echo(
+        f"{len(done)} quotes checked, {len(missing)} not found, "
+        f"{len(long)} over {LONG_QUOTE_WORDS} words"
+    )
+    if unchecked:
+        papers = ", ".join(sorted({c.paper for c in unchecked}))
+        typer.echo(f"{len(unchecked)} quotes not checked: no text ({papers})")
+    for c in missing:
+        typer.echo(f"not found: {c.finding} {c.origin} {c.field}: {c.quote}")
+    for c in long:
+        typer.echo(f"over {LONG_QUOTE_WORDS} words ({c.words}): {c.finding} {c.origin} {c.field}")
+
+
+def _atlas_commit(root: Path) -> str | None:
+    """The checkout's short HEAD commit, or None when it is not a git checkout."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def _second_opinions(
+    paths: Sequence[Path], root: Path, symbol: str, gene: str
+) -> list[dict[str, Any]]:
+    validator = schema_validator(root, "review_decisions")
+    loaded: list[dict[str, Any]] = []
+    names: dict[str, str] = {}  # reviewer name, case-folded, to the file that gave it
+    for path in paths:
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise _fail(f"--with {path}: cannot be read as JSON: {exc}", 2) from None
+        errors = sorted(
+            f"{'/'.join(map(str, e.path)) or '(file)'}: {e.message}"
+            for e in validator.iter_errors(doc)
+        )
+        if errors:
+            raise _fail(f"--with {path} is not a format 1 decisions file: {errors[0]}", 2)
+        if doc["reviewer"]["role"] != "second_opinion":
+            raise _fail(f"--with {path}: its reviewer's role is not second_opinion", 2)
+        if doc["gene"] != gene or doc["symbol"] != symbol:
+            raise _fail(
+                f"--with {path} is for {doc['symbol']} ({doc['gene']}), not {symbol} ({gene})", 2
+            )
+        if not doc["session"].get("finished_at"):
+            raise _fail(
+                f"--with {path}: the review is not finished (no I'm done), so it is no verdict", 2
+            )
+        who = doc["reviewer"]["name"].strip().casefold()
+        if who in names:
+            raise _fail(
+                f"--with {path}: {names[who]} already gave that reviewer's second opinion; "
+                "one file each",
+                2,
+            )
+        names[who] = str(path)
+        loaded.append(doc)
+    return loaded
+
+
+@app.command("review-page")
+def review_page_command(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    reviewer: str = typer.Option(..., "--reviewer", help="The reviewer's name, shown on the page."),
+    role: str = typer.Option("owner", "--role", help="owner or second_opinion."),
+    with_: list[Path] = typer.Option(
+        [], "--with", help="A second opinion's decisions file to show on the owner page."
+    ),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Write the run's review page: one HTML file the owner or a second reviewer opens.
+
+    The owner page is `<run>/review.html`; a second opinion's is `<run>/review-<name>.html`
+    and shows no approval state and no other reviewer's verdict. Opened as a claude.ai
+    artifact the page saves to its store; opened as a file it saves in the browser and
+    offers "Download my review" (a decisions file for `chd-atlas literature apply-review`).
+    Refuses (exit 1) to build when `chd-atlas validate` reports an error; exit 2 for a bad
+    argument, an unreadable run, or a `--with` file that is not a finished second opinion on this
+    gene (two files from one reviewer are refused too). Validate is asked first, so a gene the atlas
+    cannot digest still reports its validate errors.
+    """
+    _require_root(root)
+    if role not in ("owner", "second_opinion"):
+        raise _fail(f"--role {role!r} is not owner or second_opinion", 2)
+    if role == "second_opinion" and with_:
+        raise _fail("a second-opinion page shows no other reviewer's verdicts: drop --with", 2)
+    name = reviewer.strip()
+    name_slug = review_page.slug(name)
+    if not name_slug:
+        raise _fail("--reviewer must contain a letter or digit", 2)
+    cli = _atlas_cli(root, atlas_cli)
+    paths = RunPaths(root, symbol, run)
+    try:
+        code, line = validate_summary(root, cli)
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    if code != 0 or not re.match(r"0 error\(s\)", line):
+        raise _fail(
+            f"chd-atlas validate reports errors ({line}); fix them before building a page", 1
+        )
+    try:
+        found = digests(root, symbol, cli)
+        opinions = _second_opinions(with_, root, symbol, found.gene)
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    who = Reviewer(name, "owner" if role == "owner" else "second_opinion")
+    try:
+        data = build_review_data(
+            root,
+            paths,
+            found,
+            who,
+            datetime.now(UTC),
+            _atlas_commit(root),
+            line,
+            second_opinions=opinions,
+        )
+    except (ReviewDataError, RunFormatError, ValueError) as exc:
+        raise _fail(str(exc), 2) from None
+    out = paths.dir / ("review.html" if role == "owner" else f"review-{name_slug}.html")
+    try:
+        out.write_text(review_page.render(data), encoding="utf-8")
+    except OSError as exc:
+        raise _fail(f"{out}: cannot be written: {exc}", 1) from None
+    typer.echo(str(out))
+
+
+@app.command("review-decisions")
+def review_decisions_command(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    export: Path = typer.Option(
+        ..., "--export", help="The page store's export directory (ArtifactData out_dir)."
+    ),
+    out: Path = typer.Option(..., "--out", help="Where to write the decisions file."),
+    page: Path | None = typer.Option(None, "--page", help="The page (default: <run>/review.html)."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+) -> None:
+    """Turn a review page's saved decisions into a decisions file for `apply-review`.
+
+    Reads the export of the page's store (`review/<id>.json`, `session/main.json`) and the
+    page's own inline data, and writes the format 1 file `chd-atlas literature apply-review`
+    applies. Exit 1 when the reviewer has not pressed "I'm done", or changed a choice after it
+    (press it again); exit 2 for an export that is not this page's (another page, reviewer or
+    gene, a flip or a seen paper the page does not hold), a document for a card not on the page,
+    a decision outside approve|fix|later, or a result failing the schema. Nothing is written on
+    exit 1 or 2. A card decided on an earlier version is left out of the file, as the page's own
+    download leaves it out, and named on stdout (exit 0). The last-but-one line counts what was
+    written.
+    """
+    _require_root(root)
+    source = page if page is not None else RunPaths(root, symbol, run).review_html
+    try:
+        converted = decisions_from_export(export, source, root, symbol)
+    except (ExportError, AtlasError) as exc:
+        raise _fail(str(exc), exc.exit_code if isinstance(exc, ExportError) else 2) from None
+    decisions = converted.decisions
+    payload = json.dumps(decisions, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_bytes_atomically(out, payload.encode("utf-8"))
+    except OSError as exc:
+        raise _fail(f"{out}: cannot be written: {exc}", 1) from None
+    if converted.stale:
+        typer.echo(f"left out, decided on an earlier version: {', '.join(converted.stale)}")
+    made = [f["decision"] for f in decisions["findings"]]
+    triage = decisions["triage"]["decision"] if decisions["triage"] else "none"
+    typer.echo(
+        f"{len(made)} decisions: {made.count('approve')} approve, {made.count('fix')} fix, "
+        f"{made.count('later')} later; triage {triage}; {len(decisions['papers_seen'])} papers "
+        f"seen; {converted.cards} cards on the page"
+    )
+    typer.echo(str(out))
