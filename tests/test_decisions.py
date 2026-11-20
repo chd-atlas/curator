@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from typer.testing import CliRunner
 
 from chd_curator.atlas import schema_validator
 from chd_curator.cli import app
+from test_review_page import dump_dom, selftest_output
 
 FIXTURE = Path(__file__).parent / "fixtures" / "review"
 G, J, A = "CHDA:LIT:0000901", "CHDA:LIT:0000902", "CHDA:LIT:0000903"
@@ -205,8 +207,8 @@ def fix_without_a_note(export: Path) -> None:
         (stale_digest, [J, "decide", "again", "I'm done"]),
         (missing_digest, [J, "decide", "again", "I'm done"]),
         (foreign_id, ["CHDA:LIT:0000999", "not on the page"]),
-        (bad_decision, [G, "reject"]),
-        (bad_triage_decision, ["triage", "reject"]),
+        (bad_decision, [G, "reject", "is not one of approve|fix|later"]),
+        (bad_triage_decision, ["triage", "reject", "is not one of approve|fix|later"]),
         (fix_without_a_note, ["note"]),
     ],
     ids=lambda v: getattr(v, "__name__", None),
@@ -265,3 +267,48 @@ def test_page_defaults_to_the_owner_page_and_can_be_pointed_elsewhere(
     code, output = convert(root, export, out, "--page", str(second))
     assert code == 0, output
     assert read(out)["reviewer"] == {"name": "Dr X", "role": "second_opinion"}
+
+
+def test_a_page_download_validates_and_the_real_atlas_applies_it(
+    tmp_path: Path, atlas_root: Path, atlas_cli: Path
+) -> None:
+    """Spec section 9, end to end on a copy of the real atlas (never the checkout itself).
+
+    The page's own selftest downloads a decisions file in headless Chrome; the real
+    ``chd-atlas literature apply-review`` then reads it. TBX5's findings are already
+    approved, so the selftest's approve is a no-op and its fix is only a printed next round:
+    the literature file's bytes must not change.
+    """
+    root = tmp_path / "atlas"
+    for name in ("curation", "mirrors", "ontologies", "schemas"):
+        shutil.copytree(atlas_root / name, root / name)
+    run = root / "local/literature/runs/TBX5/e2e"
+    run.mkdir(parents=True)
+    (run / "texts.json").write_text('{"format": 1, "papers": []}', encoding="utf-8")
+    literature = root / "curation/literature/TBX5.yaml"
+    before = literature.read_bytes()
+
+    built = CliRunner().invoke(
+        app,
+        ["review-page", "TBX5", "--run", "e2e", "--reviewer", "E.A.M", "--root", str(root)]
+        + ["--atlas-cli", str(atlas_cli)],
+    )
+    assert built.exit_code == 0, built.output
+    page = run / "review.html"
+    decisions = selftest_output(dump_dom(page))
+    file = tmp_path / "decisions.json"
+    file.write_text(json.dumps(decisions), encoding="utf-8")
+    assert list(schema_validator(root, "review_decisions").iter_errors(decisions)) == []
+
+    first, second = (c["id"] for c in page_data(page)["findings"][:2])
+    applied = subprocess.run(
+        [str(atlas_cli), "literature", "apply-review", "TBX5", "--decisions", str(file)]
+        + ["--by", "E.A.M", "--root", str(root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert f"already approved {first}" in applied.stdout
+    assert f"next round: fix {second}: selftest" in applied.stdout
+    assert literature.read_bytes() == before
