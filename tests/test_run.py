@@ -332,6 +332,19 @@ def test_a_pmid_listed_twice_in_texts_is_an_error(run_copy: RunPaths) -> None:
         load_texts(run_copy)
 
 
+@pytest.mark.parametrize("bad", ["90000001", "pmid:90000001", "PMID:", "PMID:9000x", "PMID:1 "])
+def test_a_pmid_that_is_not_pmid_colon_digits_is_refused_naming_file_and_value(
+    run_copy: RunPaths, bad: str
+) -> None:
+    """R-P1-47: a bare number once turned 188 quote checks into 'not checked: no text'."""
+    data = json.loads(run_copy.texts.read_text())
+    data["papers"][0]["pmid"] = bad
+    run_copy.texts.write_text(json.dumps(data))
+    with pytest.raises(RunFormatError) as caught:
+        load_texts(run_copy)
+    assert str(run_copy.texts) in str(caught.value) and repr(bad) in str(caught.value)
+
+
 GOOD_DIGESTS = {
     "format": 1,
     "gene": "HGNC:11604",

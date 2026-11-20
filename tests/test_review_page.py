@@ -269,6 +269,48 @@ def test_the_papers_needed_card_and_every_quote_state_render(root: Path, stub_at
     assert after.count("not found in text") == marks.count("not found in text") - 1
 
 
+def test_a_second_opinion_intro_says_to_press_im_done_before_downloading(
+    root: Path, stub_atlas: Path
+) -> None:
+    """R-P1-46a: downloading without 'I'm done' yields a file `review-page --with` refuses."""
+    code, out = build(root, stub_atlas, "--reviewer", "Dr X", "--role", "second_opinion")
+    assert code == 0, out
+    dom = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+    intro = re.search(r'<div class="intro" id="intro">(.*?)</div>', dom, re.S)
+    assert intro
+    text = html.unescape(re.sub(r"<[^>]+>", "", intro.group(1)))
+    assert (
+        "When you are done, press I'm done first, then Download my review, "
+        "then send the file back." in text
+    )
+
+
+def test_the_papers_needed_card_words_every_text_source(root: Path, stub_atlas: Path) -> None:
+    """R-P1-46b: a raw texts.json token such as full_text must never reach the card."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    data = inline_data(page.read_text(encoding="utf-8"))
+    said = {}
+    for source in ("full_text", "supplied_pdf", "abstract", "none"):
+        data["papers_needed"][0]["source"] = source
+        dom = visible(dump_dom(tmp_page(page, data), ""))
+        card = re.search(r'<div class="static-card" id="needed">(.*?)</div></div>', dom, re.S)
+        assert card
+        said[source] = re.search(r"The readers had: (.*?)\.", card.group(1))
+        assert said[source] and "_" not in said[source].group(1)
+    assert [m.group(1) for m in said.values() if m] == [
+        "the full text",
+        "a PDF supplied for the run",
+        "the abstract only",
+        "no text",
+    ]
+    # a token the run contract does not allow is still never printed raw
+    data["papers_needed"][0]["source"] = "odd_token"
+    odd = visible(dump_dom(tmp_page(page, data), ""))
+    assert "odd_token" not in odd and "The readers had: an unrecognised text source." in odd
+
+
 def tmp_page(page: Path, data: dict[str, Any]) -> Path:
     out = page.with_name("altered.html")
     out.write_text(review_page.render(data), encoding="utf-8")

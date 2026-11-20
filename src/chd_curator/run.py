@@ -9,6 +9,7 @@ ignored would drop a quote or a decision from the page without a sound.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal, cast
@@ -17,6 +18,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 RUN_FORMAT: Final = 1
+_PMID: Final = re.compile(r"PMID:[0-9]+")
 _SOURCES: Final = ("full_text", "abstract", "supplied_pdf", "none")
 _PAPER_KEYS: Final = frozenset(
     {"pmid", "source", "text", "abstract", "supplements", "needed", "why"}
@@ -195,6 +197,8 @@ def load_texts(p: RunPaths) -> tuple[PaperText, ...]:
         if type(year) is int:
             year = str(year)
         pmid = _str(row["pmid"], path, "pmid")
+        if not _PMID.fullmatch(pmid):
+            raise RunFormatError(f"{path}: 'pmid' is {pmid!r}; expected PMID:<digits>")
         if pmid in seen:
             raise RunFormatError(f"{path}: paper {pmid} appears twice")
         seen.add(pmid)
