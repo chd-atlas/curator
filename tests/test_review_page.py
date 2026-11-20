@@ -753,6 +753,10 @@ const fakeDb = {
 };
 window.claude = { use: async () => fakeDb };
 """
+FILE_FAKE = "window.claude = { use: async () => null };"
+
+# One millisecond per clock read, so that time added after a save is never rounded away.
+TICKING_CLOCK = "{ let t = Date.now(); Date.now = () => ++t; }"
 STORE_DRIVER = """
 (async () => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -763,14 +767,19 @@ STORE_DRIVER = """
     .filter((i) => i !== "triage");
   card(ids[0]).open = true; await wait(50);
   root.querySelector(`.actions[data-id="${ids[0]}"] [data-act="approve"]`).click(); await wait(50);
+  // looking at a decided card again must keep the time it was first opened
+  window.__firstSaved = window.__store["review/" + ids[0]].first_opened_at;
+  card(ids[0]).open = true; await wait(80); card(ids[0]).open = false; await wait(50);
   card(ids[1]).open = true; await wait(50);
   document.getElementById("note-" + ids[1]).value = "check n";
   root.querySelector(`.actions[data-id="${ids[1]}"] [data-act="fix"]`).click(); await wait(50);
   root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await wait(50);
   document.getElementById("finish").click(); await wait(300);
+  const status = document.getElementById("store-state").textContent;
+  document.getElementById("download").click(); await wait(300);
   const pre = document.createElement("pre"); pre.id = "store-dump";
-  pre.textContent = JSON.stringify({ store: window.__store,
-    status: document.getElementById("store-state").textContent });
+  pre.textContent = JSON.stringify({ store: window.__store, download: window.__lastDownload,
+    firstSaved: window.__firstSaved, firstId: ids[0], status });
   document.body.appendChild(pre);
 })();
 """
@@ -782,7 +791,7 @@ def run_in_store_mode(page: Path, *, refuse: bool = False) -> dict[str, Any]:
     harness = page.with_name("store.html")
     refusal = "window.__refuse = true;" if refuse else ""
     harness.write_text(
-        text.replace(marker, f"<script>{refusal}{STORE_FAKE}</script>" + marker)
+        text.replace(marker, f"<script>{refusal}{TICKING_CLOCK}{STORE_FAKE}</script>" + marker)
         + f"<script>{STORE_DRIVER}</script>",
         encoding="utf-8",
     )
@@ -791,6 +800,54 @@ def run_in_store_mode(page: Path, *, refuse: bool = False) -> dict[str, Any]:
     assert match, "the driver wrote no dump"
     dump: dict[str, Any] = json.loads(html.unescape(match.group(1)))
     return dump
+
+
+FILE_DRIVER = """
+(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await wait(300);
+  const root = document.getElementById("root");
+  const card = (id) => root.querySelector(`details.card[data-id="${id}"]`);
+  const id = [...root.querySelectorAll("details.card")].map((c) => c.dataset.id).find((i) => i !== "triage");
+  card(id).open = true; await wait(80);
+  root.querySelector(`.actions[data-id="${id}"] [data-act="approve"]`).click(); await wait(50);
+  document.getElementById("download").click(); await wait(100);
+  const first = window.__lastDownload;
+  card(id).open = true; await wait(80); card(id).open = false; await wait(50);
+  document.getElementById("download").click(); await wait(100);
+  const pre = document.createElement("pre"); pre.id = "file-dump";
+  pre.textContent = JSON.stringify({ first, second: window.__lastDownload });
+  document.body.appendChild(pre);
+})();
+"""
+
+
+def test_looking_at_a_decided_card_again_keeps_the_time_it_was_first_opened(
+    root: Path, stub_atlas: Path
+) -> None:
+    """R-P1-49: without a store, a later look must not restamp first_opened_at (the store's own
+    snapshots would hide that, so the store-mode test cannot catch it)."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    text = page.read_text(encoding="utf-8")
+    marker = '<script type="application/json" id="data">'
+    harness = page.with_name("file.html")
+    harness.write_text(
+        text.replace(marker, f"<script>{FILE_FAKE}</script>" + marker)
+        + f"<script>{FILE_DRIVER}</script>",
+        encoding="utf-8",
+    )
+    # `restore` is the selftest variant that drives nothing itself, so the driver has the page to itself
+    dom = dump_dom(harness, "selftest-restore", budget=8000)
+    match = re.search(r'<pre id="file-dump">(.*?)</pre>', dom, re.S)
+    assert match, "the driver wrote no dump"
+    dump = json.loads(html.unescape(match.group(1)))
+    first = json.loads(dump["first"])["findings"][0]
+    second = json.loads(dump["second"])["findings"][0]
+    assert first["first_opened_at"] < first["decided_at"]
+    assert second["first_opened_at"] == first["first_opened_at"]
+    assert second["active_ms"] > first["active_ms"]
 
 
 def test_a_store_session_converts_and_what_the_page_says_matches_what_it_saved(
@@ -811,6 +868,19 @@ def test_a_store_session_converts_and_what_the_page_says_matches_what_it_saved(
     }
     assert session["reviewer"] == {"name": "E.A.M", "role": "owner"}
     assert isinstance(session["total_active_ms"], int) and "total_ms" not in session
+    # the time a card was first opened is kept across a later look, and precedes its decision
+    assert store["review/" + dump["firstId"]]["first_opened_at"] == dump["firstSaved"]
+    cards = {p[7:]: b for p, b in store.items() if p.startswith("review/")}
+    for card_id, body in cards.items():
+        assert body["first_opened_at"] < body.get("decided_at", "9"), card_id
+    # the store and the download say the same of each decided card, and the cards sum to the session
+    downloaded = json.loads(dump["download"])
+    assert len(downloaded["findings"]) == 2
+    for f in downloaded["findings"]:
+        assert f["active_ms"] == cards[f["id"]]["active_ms"]
+        assert f["first_opened_at"] == cards[f["id"]]["first_opened_at"]
+    assert downloaded["triage"]["active_ms"] == cards["triage"]["active_ms"]
+    assert sum(b["active_ms"] for b in cards.values()) == session["total_active_ms"]
     export = tmp_path / "export"
     for path, body in store.items():
         target = export / f"{path}.json"
