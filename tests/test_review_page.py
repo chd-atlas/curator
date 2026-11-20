@@ -745,7 +745,7 @@ def test_restoring_from_the_browser_takes_only_this_pages_own_current_decisions(
 def test_a_card_touched_before_the_restore_does_not_lose_its_saved_decision(
     root: Path, stub_atlas: Path, act: str, decision: str, note: str, active_ms: int | None
 ) -> None:
-    """Opening a card now creates an entry, so the restore must merge into it, not skip the saved one.
+    """Opening a card now creates an entry: the restore must merge into it, not skip the saved one.
 
     `window.__beforeRestore` (selftest only) runs while the page still awaits the store, which is
     when a real user can open a card whose decision an earlier visit saved in this browser."""
@@ -778,7 +778,8 @@ def test_a_card_touched_before_the_restore_does_not_lose_its_saved_decision(
         "window.__close = () => { card().open = false; };"
         "window.__decide = (act, note) => {"
         f"document.getElementById('note-{G}').value = note;"
-        f"document.querySelector('.actions[data-id=\"{G}\"] [data-act=\"' + act + '\"]').click(); }};"
+        f"document.querySelector('.actions[data-id=\"{G}\"] [data-act=\"' + act + '\"]')"
+        ".click(); };"
         f"{act} }};"
     )
     dom = dump_dom(_persist_page(page, head), "selftest-restore", budget=8000)
