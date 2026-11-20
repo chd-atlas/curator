@@ -867,3 +867,87 @@ def test_the_selftest_publishes_the_text_the_download_made_and_notes_its_approva
     first = selftest_output(dom)["findings"][0]
     assert first["decision"] == "approve" and first["note"] == "selftest"
     assert re.search(r'<pre id="selftest-output"[^>]*>\{\n  "format": 1,\n  "gene"', dom)
+
+
+SAVE_FAKE = """
+window.__saves = [];
+window.claude = { use: async (name) => {
+  if (name !== "downloads") return null;
+  %s
+} };
+"""
+SAVE_DRIVER = """
+(async () => {
+  await new Promise((r) => setTimeout(r, 3000));
+  const pre = document.createElement("pre"); pre.id = "save-dump";
+  pre.textContent = JSON.stringify({ saves: window.__saves,
+    last: window.__lastDownload,
+    status: JSON.parse(document.getElementById("selftest-status").textContent) });
+  document.body.appendChild(pre);
+})();
+"""
+SAVE_ACCEPTS = "return { save: async (r) => { window.__saves.push(r); return { status: 'saved' }; } };"
+SAVE_REFUSES = (
+    "return { save: async (r) => { window.__saves.push(r); throw { code: '%s', message: 'x' }; } };"
+)
+
+
+def run_with_downloads(page: Path, body: str) -> dict[str, Any]:
+    """The selftest page with `claude.use("downloads")` answering ``body``; what it recorded."""
+    marker = '<script type="application/json" id="data">'
+    harness = page.with_name("downloads.html")
+    harness.write_text(
+        page.read_text(encoding="utf-8").replace(
+            marker, f"<script>{SAVE_FAKE % body}</script>" + marker
+        )
+        + f"<script>{SAVE_DRIVER}</script>",
+        encoding="utf-8",
+    )
+    dom = dump_dom(harness, "selftest", budget=8000)
+    match = re.search(r'<pre id="save-dump">(.*?)</pre>', dom, re.S)
+    assert match, "the driver wrote no dump"
+    dump: dict[str, Any] = json.loads(html.unescape(match.group(1)))
+    dump["output"] = selftest_output(dom)
+    return dump
+
+
+def test_download_is_saved_through_the_downloads_capability_and_its_refusal_is_shown(
+    root: Path, stub_atlas: Path
+) -> None:
+    """R-P1-48: claude.ai never lets a page download by itself; `save` is the only way out."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    saved = run_with_downloads(page, SAVE_ACCEPTS)
+    assert len(saved["saves"]) == 1
+    assert saved["saves"][0]["filename"] == "TBX5-review-e-a-m.json"
+    assert saved["saves"][0]["data"] == saved["last"]
+    assert json.loads(saved["saves"][0]["data"]) == saved["output"]
+    assert saved["status"][-1] == "Review saved as TBX5-review-e-a-m.json."
+    for code_ in ("declined", "unavailable"):
+        refused = run_with_downloads(page, SAVE_REFUSES % code_)
+        assert len(refused["saves"]) == 1, "a refusal must not be retried"
+        line = refused["status"][-1]
+        assert line.startswith("The review was not saved: ")
+        assert ("you declined it" in line) is (code_ == "declined")
+        assert ("unavailable in this view" in line) is (code_ == "unavailable")
+        assert not [m for m in refused["status"] if "Review saved" in m]
+
+
+def test_without_the_downloads_capability_the_plain_file_path_still_publishes_the_text(
+    root: Path, stub_atlas: Path
+) -> None:
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    none = run_with_downloads(page, "return null;")
+    assert none["saves"] == [] and none["output"]["format"] == 1
+    assert none["output"] == json.loads(none["last"])
+    assert not [m for m in none["status"] if "Review saved" in m or "not saved" in m]
+
+
+def test_the_page_title_names_the_gene(root: Path, stub_atlas: Path) -> None:
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    assert "<title>TBX5 literature review</title>" in page.read_text(encoding="utf-8")

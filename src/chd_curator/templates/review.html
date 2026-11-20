@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Literature review</title>
+<title>__TITLE__</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap">
@@ -511,14 +511,35 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     out.triage = t && t.decision ? { decision: t.decision, note: t.note || "", active_ms: Math.round(activeMs("triage")), flips: (t.flips || []).map((x) => ({ pmid: x.pmid, to: x.to, note: x.note })) } : null;
     return out;
   }
-  function download() {
+  // claude.use("downloads") resolves to the capability, or to null when this view cannot save
+  // a file; like db, it is given 10 s to answer.
+  async function downloadsCapability() {
+    try {
+      const answer = new Promise((resolve) => setTimeout(() => resolve(null), 10000));
+      return await Promise.race([answer, Promise.resolve(window.claude && window.claude.use ? window.claude.use("downloads") : null)]);
+    } catch (e) { return null; }
+  }
+  function notSaved(e) {
+    const code = e && e.code;
+    return "The review was not saved: " + (code === "declined" ? "you declined it." : "saving a file is unavailable in this view.") +
+      " Choose Download my review to try again.";
+  }
+  async function download() {
     const text = JSON.stringify(decisionsFile(), null, 2) + "\n";
     window.__lastDownload = text;   // the exact text of the file offered, which the selftest publishes
+    const filename = DATA.page.symbol + "-review-" + slug(DATA.reviewer.name) + ".json";
+    // a page in claude.ai cannot download by itself: the downloads capability shows the viewer a prompt
+    const dl = (!SELFTEST || window.claude) ? await downloadsCapability() : null;
+    if (dl) {
+      try { await dl.save({ filename, data: text }); storeState("Review saved as " + filename + "."); }
+      catch (e) { storeState(notSaved(e)); }
+      return;
+    }
     if (SELFTEST) return;           // a headless run must not write a file
     const blob = new Blob([text], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = DATA.page.symbol + "-review-" + slug(DATA.reviewer.name) + ".json";
+    a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
@@ -554,13 +575,13 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const card = (id) => root.querySelector(`details.card[data-id="${CSS.escape(id)}"]`);
     const [first, second] = DATA.findings;
     // what the page offered for download, published for the test; the status log says what it claimed
-    const emit = () => {
-      download();
+    const emit = async () => {
+      await download();
       const out = document.getElementById("selftest-output");
       out.textContent = window.__lastDownload; out.hidden = false;
       document.getElementById("selftest-status").textContent = JSON.stringify(statusLog);
     };
-    if (MODE === "restore") { emit(); return; }   // only what the restore left standing
+    if (MODE === "restore") { await emit(); return; }   // only what the restore left standing
     const STALE_DIGEST = "sha256:" + "9".repeat(64);
     if (MODE.startsWith("stale")) {
       // decisions an older page (or an older browser entry) left behind: another digest, and none at all
@@ -575,7 +596,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       if (MODE === "stale-click") {
         root.querySelector(`.actions[data-id="${CSS.escape(first.id)}"] [data-act="approve"]`).click(); await step();
       }
-      emit();
+      await emit();
       return;
     }
     card(first.id).open = true; await step();
@@ -614,7 +635,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       document.getElementById("flipnote-" + again).value = "selftest two";
       root.querySelector(`[data-record="${CSS.escape(again)}"]`).click(); await step();
     }
-    emit();
+    await emit();
   }
 
   (async () => {
