@@ -33,7 +33,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from chd_curator import archive as archive_mod
-from chd_curator import pubmed, review_page, variantvalidator
+from chd_curator import archive_read, pubmed, review_page, variantvalidator
 from chd_curator.atlas import (
     AtlasError,
     Frame,
@@ -1174,3 +1174,60 @@ def archive_decisions_command(
             f"next: chd-atlas literature apply-review {symbol} --decisions {top / filed.path} "
             f"--by {reviewer['name']} --root {root.resolve()}"
         )
+
+
+@app.command("archive-state")
+def archive_state_command(
+    symbol: str = typer.Argument(..., help="Gene symbol to read."),
+    archive: Path = typer.Option(..., "--archive", help="The review archive checkout."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="Print the full state as JSON."),
+) -> None:
+    """Read what the archive holds for a gene, against the atlas's current digests.
+
+    Prints one line, `<SYMBOL>: <n> findings with verdicts in <k decisions files from m
+    reviewers>; <p> pending fix or ask later, <f> pending flips (archive <commit>)`: `<p>`
+    counts every reviewer's latest fix or later verdict on the finding's current digest (a
+    finding with two such reviewers counts 2) and `<f>` every pending triage flip in every
+    reviewer's latest triage verdict. With `--json` it prints the whole state instead. Exit 2
+    for a refusal (an unusable or dirty archive, a file that fails the schema, is not
+    finished, is for another gene or is misnamed, a non-JSON file under a decisions
+    directory, an unreadable literature file); exit 1 when git fails. Writes nothing.
+    """
+    _require_root(root)
+    cli = _atlas_cli(root, atlas_cli)
+    try:
+        view = archive_read.read_archive(archive, symbol, root)
+        found = digests(root, symbol, cli)
+    except archive_mod.ArchiveError as exc:
+        raise _fail(str(exc), 2) from None
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    except archive_mod.GitError as exc:
+        raise _fail(str(exc), 1) from None
+    if view.gene is not None and view.gene != found.gene:
+        raise _fail(
+            f"the archive holds {symbol} as {view.gene}, but the atlas has it as {found.gene}", 2
+        )
+    lit_path = root / "curation/literature" / f"{symbol}.yaml"
+    try:
+        lit = YAML(typ="safe").load(lit_path.read_text(encoding="utf-8"))
+    except (OSError, YAMLError) as exc:
+        raise _fail(f"{lit_path}: cannot be read as YAML: {exc}", 2) from None
+    entries = lit.get("triage") if isinstance(lit, dict) else None
+    if not isinstance(entries, list):
+        raise _fail(f"{lit_path}: has no triage list", 2)
+    triage = {str(e["pmid"]): str(e["decision"]) for e in entries if isinstance(e, dict)}
+    current = {f.id: f.shown_digest for f in found.findings}
+    out = archive_read.state(view, current, triage)
+    if as_json:
+        typer.echo(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False))
+        return
+    pending = sum(v["pending"] for f in out["findings"] for v in f["verdicts"])
+    flips = sum(fl["pending"] for t in out["triage"]["verdicts"] for fl in t["flips"])
+    typer.echo(
+        f"{symbol}: {len(out['findings'])} findings with verdicts in "
+        f"{archive_read.files_line(view)}; {pending} pending fix or ask later, "
+        f"{flips} pending flips (archive {view.commit})"
+    )
