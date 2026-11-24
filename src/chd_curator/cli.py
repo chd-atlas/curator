@@ -32,6 +32,7 @@ import typer
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, variantvalidator
 from chd_curator.atlas import (
@@ -1231,3 +1232,49 @@ def archive_state_command(
         f"{archive_read.files_line(view)}; {pending} pending fix or ask later, "
         f"{flips} pending flips (archive {view.commit})"
     )
+
+
+_AGREEMENT_SYMBOLS = typer.Argument(
+    None, help="Gene symbols to read; none means every gene directory in the archive."
+)
+
+
+@app.command("agreement")
+def agreement_command(
+    symbols: list[str] | None = _AGREEMENT_SYMBOLS,
+    archive: Path = typer.Option(..., "--archive", help="The review archive checkout."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root (for the decisions schema)."),
+    as_json: bool = typer.Option(False, "--json", help="Print the full report as JSON."),
+) -> None:
+    """Report how often each clinician agrees with the owner, per version of a card.
+
+    A clinician's latest verdict on a version of a card (its shown digest) is paired with the
+    owner's latest on the same version. Each pair is one of: agreed (both approve or both fix),
+    disagreed (one approves, one fixes; the notes are quoted) or with ask later (either side
+    said later). A clinician verdict on a version no owner decisions file covers is unpaired.
+    With no symbol it reads every top-level directory of the archive that is not a
+    dot-directory. `--json` prints the whole report instead. Exit 2 for a refusal (an unusable
+    or dirty archive, a file that fails the schema, is unfinished or is misnamed); exit 1 when
+    git fails. Writes nothing, and the report is printed nowhere else.
+    """
+    _require_root(root)
+    try:
+        top = archive_mod.check_archive(archive)
+        names = list(symbols or [])
+        if not names:
+            names = sorted(
+                p.name for p in top.iterdir() if p.is_dir() and not p.name.startswith(".")
+            )
+        views = [archive_read.read_archive(archive, s, root) for s in names]
+    except archive_mod.ArchiveError as exc:
+        raise _fail(str(exc), 2) from None
+    except archive_mod.GitError as exc:
+        raise _fail(str(exc), 1) from None
+    tallies = agreement_mod.tally(views)
+    if as_json:
+        commit = views[0].commit if views else ""
+        out = agreement_mod.as_json(tallies, commit)
+        typer.echo(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False))
+        return
+    for line in agreement_mod.report(tallies, names):
+        typer.echo(line)

@@ -127,6 +127,16 @@ writes nothing, and refuses (exit 2) an archive with uncommitted changes, a non-
 decisions directory, a file that fails the schema, is unfinished, is misnamed, is for another gene, names one
 finding twice or is a second opinion keyed as the owner, or an archive whose gene for the symbol is not the atlas's.
 
+`chd-curator agreement [SYMBOL ...] --archive <dir> [--root <atlas>] [--json]` reports, for each
+clinician, how often their latest verdict on a version of a card (its shown digest) agrees with the
+owner's latest on the same version: both approve or both fix is agreed, one approve and one fix is
+disagreed (the report quotes both notes), and either side saying later counts as ask later. A
+clinician verdict on a version no owner decisions file covers is unpaired; a later version is never
+set against an earlier one, and triage verdicts are not counted. With no symbol it reads every
+top-level directory of the archive that is not a dot-directory. The report is printed here only: the
+command writes nothing, and `--json` prints the whole report instead. It refuses (exit 2) the same
+archives `archive-state` refuses.
+
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and
