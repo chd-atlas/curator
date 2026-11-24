@@ -339,3 +339,34 @@ def test_the_store_conversion_of_a_filed_download_is_refused_as_a_second_file(
     assert DECISIONS in result.output
     assert git(archive, "rev-parse", "HEAD").strip() == head
     assert len(list((archive / "TBX5" / "r1" / "decisions").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize(
+    "differs",
+    [
+        {"sha": "sha256:" + "c" * 64},
+        {"built_on": "2026-11-19T12:00:01+00:00"},
+        {"name": "Dr X"},
+        {"role": "second_opinion"},
+    ],
+    ids=["literature_sha256", "built_on", "reviewer-name", "reviewer-role"],
+)
+def test_a_decisions_file_is_refused_when_the_filed_page_differs_in_one_field(
+    tmp_path: Path, atlas_root: Path, differs: dict[str, str]
+) -> None:
+    archive = make_archive(tmp_path)
+    file_it(archive, page_html(tmp_path / "p.html"))
+    fields = {"name": "E.A.M", "role": "owner", **differs}
+    doc = decisions_doc(
+        tmp_path / "d.json",
+        finished_at=FINISHED,
+        findings=[],
+        **fields,  # type: ignore[arg-type]
+    )
+    head = git(archive, "rev-parse", "HEAD").strip()
+    result = decide(archive, doc, atlas_root)
+    assert result.exit_code == 2, result.output
+    assert "no page filed" in result.output
+    assert git(archive, "status", "--porcelain") == ""
+    assert git(archive, "rev-parse", "HEAD").strip() == head
+    assert not (archive / "TBX5" / "r1" / "decisions").exists()
