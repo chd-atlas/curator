@@ -270,6 +270,7 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "quotes",
         "review-page",
         "review-decisions",
+        "archive-page",
     }
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS

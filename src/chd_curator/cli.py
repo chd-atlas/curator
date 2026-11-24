@@ -32,6 +32,7 @@ import typer
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from chd_curator import archive as archive_mod
 from chd_curator import pubmed, review_page, variantvalidator
 from chd_curator.atlas import (
     AtlasError,
@@ -1101,3 +1102,34 @@ def review_decisions_command(
         f"seen; {converted.cards} cards on the page"
     )
     typer.echo(str(out))
+
+
+@app.command("archive-page")
+def archive_page_command(
+    symbol: str = typer.Argument(..., help="Gene symbol the page is for."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    page: Path = typer.Option(..., "--page", help="The review page, as it was sent."),
+    archive: Path = typer.Option(..., "--archive", help="The review archive checkout."),
+    artifact: str | None = typer.Option(
+        None, "--artifact", help="The page's claude.ai artifact URL, filed beside it."
+    ),
+) -> None:
+    """File a review page in the review archive, byte for byte, and commit it.
+
+    Append-only: a different file at the same place is refused, an identical one prints
+    `already filed` (and is committed if it was left uncommitted). Prints one line per path,
+    then `committed <sha>` when it committed. Exit 2 for a refusal (an archive that is not the
+    top of a checkout with its marker committed, no `user.name`/`user.email` in the archive's
+    own config, a page for another gene, a bad id or `--artifact`, a different file already
+    filed); exit 1 when git fails or a file cannot be written. Never pushes.
+    """
+    try:
+        filed, sha = archive_mod.file_page(archive, symbol, run, page, artifact)
+    except archive_mod.ArchiveError as exc:
+        raise _fail(str(exc), 2) from None
+    except archive_mod.GitError as exc:
+        raise _fail(str(exc), 1) from None
+    for item in filed:
+        typer.echo(f"{item.state} {item.path}")
+    if sha is not None:
+        typer.echo(f"committed {sha}")

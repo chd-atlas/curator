@@ -96,6 +96,16 @@ and named ("left out, decided on an earlier version: ..."), and the line before 
 what was written, so a wrong `--export` directory shows. The step after is the atlas's
 `chd-atlas literature apply-review <SYMBOL> --decisions <file> --by <name>`.
 
+`chd-curator archive-page <SYMBOL> --run <run id> --page <html> --archive <dir> [--artifact <url>]` files a
+review page, byte for byte, in the review archive: a private git checkout with `.review-archive`
+committed at its top (any other `--archive`, including a subdirectory of one, is refused, exit 2). The
+page lands at `<SYMBOL>/<run id>/pages/<built_on in UTC>--<reviewer>.html`, and `--artifact` (a
+`https://claude.ai/` URL) beside it as `.artifact`. Filing is append-only: a different file at the
+same place is refused (exit 2); an identical one prints `already filed`. What was filed but is
+uncommitted is committed, with only those paths, under the archive's own `user.name` and
+`user.email` (unset: refused before anything is written); the message is `file <SYMBOL> <run id>:
+page`. The command never pushes.
+
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and
