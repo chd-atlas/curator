@@ -149,7 +149,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const DATA = JSON.parse(document.getElementById("data").textContent);
   const OWNER = DATA.reviewer.role === "owner";
   const SELFTEST = location.hash.startsWith("#selftest");
-  const MODE = location.hash.replace(/^#selftest-?/, "");   // selftest variants: noverdict, reflip, unflip, redecide, stale, stale-open, stale-click, persist, restore
+  const MODE = location.hash.replace(/^#selftest-?/, "");   // selftest variants: noverdict, reflip, unflip, redecide, stale, stale-open, stale-click, persist, restore (selftest hook: window.__downloadsTimeoutMs shortens the 10 s wait for downloads)
   // The selftest touches no browser storage, except in `persist` and `restore`, which exist to test it.
   const LIVE_STORAGE = !SELFTEST || MODE === "persist" || MODE === "restore";
   const NOVERDICT = MODE === "noverdict";
@@ -207,8 +207,10 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     : '<p>You are giving a second opinion as <b>' + esc(DATA.reviewer.name) + '</b>. Each card is one finding, drafted by two readers; a variant whose name lies within the checked exons is placed on GRCh38 by VariantValidator. Open a card, check it against the paper, then choose <b>Agree</b>, <b>Needs a fix</b> or <b>Ask later</b>. A note is required for the last two. This page shows no approval state and no other reviewer\'s verdict.</p><p>When you are done, press <b>I\'m done</b> first, then <b>Download my review</b>, then send the file back.</p>')
     + '<p class="meta">Built ' + esc(DATA.page.built_on) + (DATA.page.atlas_commit ? " from atlas " + esc(DATA.page.atlas_commit) + " (the commit the checkout was at; the literature file's own sha256, " + esc(DATA.page.literature_sha256) + ", is what binds the page, and that file may hold uncommitted work)" : " · literature file sha256 " + esc(DATA.page.literature_sha256)) + " · validate: " + esc(DATA.page.validate) + " · reviewer: " + esc(DATA.reviewer.name) + " (" + (OWNER ? "owner" : "second opinion") + ")</p>";
 
+  // a stored value may be a string: a non-finite number counts as 0, and never concatenates
+  function ms(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
   function activeMs(id) {
-    const stored = (state.decisions[id] && state.decisions[id].active_ms) || 0;
+    const stored = ms(state.decisions[id] && state.decisions[id].active_ms);
     const live = openId === id && openSince && document.visibilityState === "visible" ? Date.now() - openSince : 0;
     return stored + (localActive[id] || 0) + live;
   }
@@ -291,7 +293,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     if (decided(f.id)) h += `<span class="chip done">${esc(PAST[d.decision])}</span>`;
     else if (stale(f.id)) h += `<span class="chip warn">${esc(STALE)}</span>`;
     h += approvalChip(f);
-    if (f.n_judged) h += `<span class="chip warn">${f.n_judged} judged</span>`;
+    if (f.n_judged && f.agreement === "judged") h += `<span class="chip warn">${f.n_judged} judged</span>`;
     if (f.n_not_found) h += `<span class="chip bad">${f.n_not_found} quote${f.n_not_found > 1 ? "s" : ""} not found in text</span>`;
     if (f.n_unchecked) h += `<span class="chip warn">${f.n_unchecked} quote${f.n_unchecked > 1 ? "s" : ""} not checked: no text</span>`;
     if (f.source === "abstract") h += '<span class="chip plain">abstract only</span>';
@@ -517,16 +519,23 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   }
   // claude.use("downloads") resolves to the capability, or to null when this view cannot save
   // a file; like db, it is given 10 s to answer.
+  const TIMED_OUT = Symbol("timed out");
   async function downloadsCapability() {
     try {
-      const answer = new Promise((resolve) => setTimeout(() => resolve(null), 10000));
+      const wait = SELFTEST && window.__downloadsTimeoutMs ? window.__downloadsTimeoutMs : 10000;   // selftest only: a test need not wait 10 s
+      const answer = new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), wait));
       return await Promise.race([answer, Promise.resolve(window.claude && window.claude.use ? window.claude.use("downloads") : null)]);
     } catch (e) { return null; }
   }
+  // why a save failed, by the downloads capability's own error code; never a claim that it was saved
   function notSaved(e) {
     const code = e && e.code;
-    return "The review was not saved: " + (code === "declined" ? "you declined it." : "saving a file is unavailable in this view.") +
-      " Choose Download my review to try again.";
+    const why = code === "declined" ? "you declined it."
+      : code === "unavailable" ? "saving a file is unavailable in this view."
+      : code === "too_large" ? "the file is too large to save."
+      : code === "rate_limited" ? "a save prompt is already open or there were too many recent ones; try again shortly."
+      : "the save failed (" + (code || "no error code") + ").";
+    return "The review was not saved: " + why + " Choose Download my review to try again.";
   }
   async function download() {
     const text = JSON.stringify(decisionsFile(), null, 2) + "\n";
@@ -534,7 +543,17 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const filename = DATA.page.symbol + "-review-" + slug(DATA.reviewer.name) + ".json";
     // a page in claude.ai cannot download by itself: the downloads capability shows the viewer a prompt
     const dl = (!SELFTEST || window.claude) ? await downloadsCapability() : null;
-    if (dl) {
+    if (!dl && window.claude) {
+      // on claude.ai the capability resolved null or rejected: this view cannot save, and a Blob link does nothing there
+      storeState("The review was not saved: this view cannot save a file. Open this page as a file on your computer, then choose Download my review.");
+      return;
+    }
+    if (dl === TIMED_OUT && window.claude) {
+      // claude.ai answered nothing, and a plain file link does nothing there: say so, and offer no link
+      storeState("The review was not saved: the page that saves files did not answer in time. Choose Download my review to try again, or open this page as a file on your computer.");
+      return;
+    }
+    if (dl && dl !== TIMED_OUT) {
       try { await dl.save({ filename, data: text }); storeState("Review saved as " + filename + "."); }
       catch (e) { storeState(notSaved(e)); }
       return;
@@ -664,7 +683,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
               const kept = saved.decisions[id], made = state.decisions[id];
               if (!made) { state.decisions[id] = kept; continue; }
               const first = [kept.first_opened_at, made.first_opened_at].filter(Boolean).sort()[0];
-              const merged = made.decision ? { ...made } : { ...kept, active_ms: (kept.active_ms || 0) + (made.active_ms || 0) };
+              const merged = made.decision ? { ...made } : { ...kept, active_ms: ms(kept.active_ms) + ms(made.active_ms) };
               if (first) merged.first_opened_at = first;
               state.decisions[id] = merged;
             }

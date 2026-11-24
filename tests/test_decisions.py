@@ -453,3 +453,17 @@ def test_a_page_download_validates_and_the_real_atlas_applies_it(
     after = literature.read_text(encoding="utf-8")
     assert after.count(f"approved_digest: {digest}") == 1  # the digest the stripped approval had
     assert {i: after.count(i) for i in ids} == others
+
+
+def test_an_export_with_no_finding_documents_still_prints_its_count_line(
+    root: Path, export: Path, page: Path, tmp_path: Path
+) -> None:
+    """A reviewer who decided nothing gets the usual count line, with 0 decisions."""
+    for doc_id in (G, J, A):
+        (export / "review" / f"{doc_id}.json").unlink()
+    out = tmp_path / "decisions.json"
+    code, output = convert(root, export, out)
+    assert code == 0, output
+    assert read(out)["findings"] == []
+    assert "0 decisions: 0 approve, 0 fix, 0 later" in output.splitlines()[-2]
+    assert "3 cards on the page" in output

@@ -225,3 +225,19 @@ def test_a_malformed_run_exits_2_and_writes_nothing(run_copy: RunPaths) -> None:
     assert result.exit_code == 2
     assert "texts.json" in result.output
     assert not run_copy.quotes.exists()
+
+
+@pytest.mark.parametrize("drop", ["id", "publication"])
+def test_a_finding_with_no_id_or_publication_is_refused_not_skipped(
+    run_copy: RunPaths, drop: str
+) -> None:
+    """Its quotes would silently go unchecked (every one 'not checked: no text')."""
+    path = run_copy.root / "curation/literature/TBX5.yaml"
+    text = path.read_text(encoding="utf-8")
+    line = {"id": "  - id: CHDA:LIT:0000903\n", "publication": "    publication: PMID:90000003\n"}[
+        drop
+    ]
+    assert text.count(line) == 1
+    path.write_text(text.replace(line, "  - note: x\n" if drop == "id" else ""), encoding="utf-8")
+    with pytest.raises(RunFormatError, match="no id or no publication"):
+        check_quotes(run_copy)

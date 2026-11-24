@@ -228,8 +228,16 @@ def _chose(d: JudgeDecision) -> str:
 
 
 def _settled_by_rule(d: JudgeDecision) -> bool:
-    """A span-only (``... as_reported``) or whitespace decision is settled by rule, not shown."""
-    return d.field.strip().lower().endswith("as_reported") or "whitespace" in d.rule.lower()
+    """A span-only (``... as_reported``) or whitespace-only decision is settled by rule, not shown.
+
+    Whitespace-only is decided from the two readers' values (equal once every whitespace
+    character is dropped, so ``p.(G84R)`` and ``p. (G84R)`` are one value as well as a run of
+    spaces and a tab), never from the judge's rule text, which may merely mention whitespace
+    while settling a real difference.
+    """
+    if d.field.strip().lower().endswith("as_reported"):
+        return True
+    return "".join(d.first.split()) == "".join(d.second.split())
 
 
 def _shown_quote(check: QuoteCheck) -> dict[str, Any]:
