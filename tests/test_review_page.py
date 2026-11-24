@@ -1080,9 +1080,13 @@ def test_download_is_saved_through_the_downloads_capability_and_its_refusal_is_s
         assert not [m for m in refused["status"] if "Review saved" in m]
 
 
-def test_a_page_opened_as_a_file_keeps_the_plain_file_path_and_publishes_the_text(
+def test_a_page_opened_as_a_file_is_not_given_the_claude_ai_message(
     root: Path, stub_atlas: Path
 ) -> None:
+    """Without window.claude the page shows no saved / not-saved line and still writes its output.
+
+    It does not prove the Blob link's click: a selftest returns before it.
+    """
     code, out = build(root, stub_atlas)
     assert code == 0, out
     page = Path(out.strip().splitlines()[-1])
