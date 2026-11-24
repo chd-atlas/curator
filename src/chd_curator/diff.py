@@ -26,7 +26,9 @@ as sets, because their order carries no meaning: ``methods``, ``variant_classes`
 ``phenotypes``, ``lesion_groups`` and ``cohorts``. ``carriers`` is a mapping and is
 compared by value. Reported values have the set-like lists sorted.
 
-``variants`` is compared as a set of what the paper says about each variant, as in the atlas:
+``variants`` is compared as a set of what the paper says about each variant, as in the atlas
+(except that each variant's ``phenotypes`` are sorted first, as sets; the atlas compares them in
+order, R-P2-22):
 every default of the exported schema's ``Variant`` and ``ReportedNames`` (and of any nested
 object) is filled first, because the atlas compares after a pydantic dump with every default
 written and curator compares plain YAML; then each variant loses ``id``, ``with``,
@@ -217,6 +219,14 @@ def stripped(value: Any) -> Any:
     return value
 
 
+def _phenotypes_sorted(variant: dict[str, Any]) -> dict[str, Any]:
+    """The variant with its ``phenotypes`` sorted: the lesions it is tied to carry no order."""
+    phenotypes = variant.get("phenotypes")
+    if isinstance(phenotypes, list):
+        variant["phenotypes"] = sorted(phenotypes)
+    return variant
+
+
 def _variants(
     finding: Mapping[str, Any], properties: Mapping[str, Any], defs: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
@@ -226,7 +236,7 @@ def _variants(
     except (KeyError, TypeError) as exc:
         raise DiffError("the atlas's gene_literature_file schema has no $defs.Variant") from exc
     listed = _filled(finding, "variants", properties["variants"])
-    filled = (stripped(_fill_object(v, variant_schema, defs)) for v in listed)
+    filled = (_phenotypes_sorted(stripped(_fill_object(v, variant_schema, defs))) for v in listed)
     return sorted(
         ({k: v for k, v in item.items() if k not in _VARIANT_BOOKKEEPING} for item in filled),
         key=lambda item: json.dumps(item, sort_keys=True),
