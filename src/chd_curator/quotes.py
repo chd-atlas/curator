@@ -146,11 +146,15 @@ def _papers_by_finding(run: RunPaths) -> dict[str, str]:
     findings = data.get("findings") if isinstance(data, dict) else None
     if not isinstance(findings, list):
         raise RunFormatError(f"{path}: has no list of findings")
-    return {
-        str(f["id"]): str(f["publication"])
-        for f in findings
-        if isinstance(f, dict) and "id" in f and "publication" in f
-    }
+    papers: dict[str, str] = {}
+    for index, f in enumerate(findings):
+        if not isinstance(f, dict) or not f.get("id") or not f.get("publication"):
+            raise RunFormatError(
+                f"{path}: finding number {index + 1} has no id or no publication, so its "
+                "quotes cannot be checked against a paper"
+            )
+        papers[str(f["id"])] = str(f["publication"])
+    return papers
 
 
 def check_quotes(run: RunPaths) -> tuple[QuoteCheck, ...]:
