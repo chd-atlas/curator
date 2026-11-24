@@ -543,6 +543,11 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const filename = DATA.page.symbol + "-review-" + slug(DATA.reviewer.name) + ".json";
     // a page in claude.ai cannot download by itself: the downloads capability shows the viewer a prompt
     const dl = (!SELFTEST || window.claude) ? await downloadsCapability() : null;
+    if (!dl && window.claude) {
+      // on claude.ai the capability resolved null or rejected: this view cannot save, and a Blob link does nothing there
+      storeState("The review was not saved: this view cannot save a file. Open this page as a file on your computer, then choose Download my review.");
+      return;
+    }
     if (dl === TIMED_OUT && window.claude) {
       // claude.ai answered nothing, and a plain file link does nothing there: say so, and offer no link
       storeState("The review was not saved: the page that saves files did not answer in time. Choose Download my review to try again, or open this page as a file on your computer.");

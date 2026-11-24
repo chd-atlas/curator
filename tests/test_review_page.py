@@ -1080,16 +1080,36 @@ def test_download_is_saved_through_the_downloads_capability_and_its_refusal_is_s
         assert not [m for m in refused["status"] if "Review saved" in m]
 
 
-def test_without_the_downloads_capability_the_plain_file_path_still_publishes_the_text(
+def test_a_page_opened_as_a_file_keeps_the_plain_file_path_and_publishes_the_text(
     root: Path, stub_atlas: Path
 ) -> None:
     code, out = build(root, stub_atlas)
     assert code == 0, out
     page = Path(out.strip().splitlines()[-1])
-    none = run_with_downloads(page, "return null;")
-    assert none["saves"] == [] and none["output"]["format"] == 1
-    assert none["output"] == json.loads(none["last"])
-    assert not [m for m in none["status"] if "Review saved" in m or "not saved" in m]
+    # no window.claude at all: the page was opened as a file, as a selftest does by default
+    dom = dump_dom(page, "selftest", budget=8000)
+    assert selftest_output(dom)["format"] == 1
+    status = re.search(r'<pre id="selftest-status"[^>]*>(.*?)</pre>', dom, re.S)
+    assert status and "Review saved" not in status.group(1) and "not saved" not in status.group(1)
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["return null;", "throw { code: 'unavailable', message: 'x' };"],
+    ids=["null", "rejects"],
+)
+def test_on_claude_ai_a_downloads_capability_that_is_null_or_rejects_says_nothing_was_saved(
+    root: Path, stub_atlas: Path, body: str
+) -> None:
+    """A Blob link does nothing on claude.ai: a null or rejected capability must not fall to it."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    got = run_with_downloads(page, body)
+    line = got["status"][-1]
+    assert line.startswith("The review was not saved: ") and "cannot save a file" in line
+    assert "open this page as a file" in line.lower()
+    assert got["saves"] == [] and not [m for m in got["status"] if "Review saved" in m]
 
 
 def test_the_page_title_names_the_gene(root: Path, stub_atlas: Path) -> None:
