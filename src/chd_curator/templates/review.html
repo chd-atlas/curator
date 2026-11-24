@@ -252,6 +252,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       <div class="vgrid">${kv("zygosity", v.zygosity)}${kv("phase", v.phase)}${kv("carriers", v.carriers)}${kv("lesions tied", v.phenotypes)}${kv("kind", v.kind)}${others}</div>
       ${v.placed ? `<div class="placed">${v.placed_by === "variantvalidator" ? "VariantValidator" : "Recorded in the finding, not by VariantValidator"}: <span class="mono">${esc(v.placed)}</span></div>` : ""}
       ${v.vv_note ? `<div class="placed">${esc(v.vv_note)}</div>` : ""}
+      ${v.reading ? `<div class="placed">${esc(v.reading)}</div>` : ""}
       ${diffs}
       ${quotes(v.quotes)}
     </div>`;

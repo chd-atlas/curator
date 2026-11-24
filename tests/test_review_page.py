@@ -1210,3 +1210,40 @@ def test_a_stored_active_time_that_is_a_string_is_added_not_joined(
     dom = dump_dom(_persist_page(page, head), "selftest-restore", budget=8000)
     got = next(f for f in selftest_output(dom)["findings"] if f["id"] == G)
     assert isinstance(got["active_ms"], int) and low <= got["active_ms"] <= high
+
+
+def test_a_placement_reading_is_rendered_in_its_variant_card_as_text(
+    root: Path, stub_atlas: Path
+) -> None:
+    """The reading a run's normalise.json gives a variant reaches the rendered card, and markup
+    inside it is shown as text. The other findings' cards carry no such line."""
+    reading = "read NM_1 as NM_1.1 (CP-D8: <b>bold</b> & more)"
+    run = root / "local/literature/runs/TBX5/r1"
+    (run / "normalise.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "normalisation": 1,
+                "variants": [
+                    {
+                        "finding": G,
+                        "variant": 1,
+                        "outcome": "placed",
+                        "line": "x",
+                        "reading": reading,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "")
+
+    mine = card_html(dom, G)
+    placed = re.findall(r'<div class="placed">(.*?)</div>', mine, re.S)
+    assert any(plain(p) == reading for p in placed), placed
+    assert "<b>bold</b>" not in mine and "&lt;b&gt;bold&lt;/b&gt;" in mine
+    assert "CP-D8" not in card_html(dom, J)

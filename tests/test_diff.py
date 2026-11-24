@@ -471,3 +471,14 @@ def test_variants_that_differ_only_in_surrounding_whitespace_agree(schema: dict[
     padded = _variant(1, as_reported="variant 1 ", reported={"c": " c.835C>T", "p": "p.R279X\t"})
     result = _pair(schema, {"variants": [_variant(1)]}, {"variants": [padded]})
     assert result.agreed == ("CHDA:LIT:0000001",)
+
+
+def test_variant_phenotypes_in_another_order_agree(schema: dict[str, Any]) -> None:
+    """The lesions a variant is tied to carry no order, as at the finding level."""
+    first = _variant(1, phenotypes=["HP:0001631", "HP:0001629"])
+    second = _variant(1, phenotypes=["HP:0001629", "HP:0001631"])
+    assert _pair(schema, {"variants": [first]}, {"variants": [second]}).agreed == (
+        "CHDA:LIT:0000001",
+    )
+    other = _variant(1, phenotypes=["HP:0001629"])
+    assert _pair(schema, {"variants": [first]}, {"variants": [other]}).fields

@@ -36,6 +36,7 @@ from chd_curator.run import (
     load_comparison,
     load_evidence,
     load_judge,
+    load_normalise,
     load_texts,
 )
 from test_atlas import make_stub
@@ -74,6 +75,7 @@ def test_the_run_paths_are_the_contracts_children() -> None:
         p.quotes,
         p.review_html,
         p.decisions,
+        p.normalise,
     ] == [
         p.dir / n
         for n in (
@@ -85,6 +87,7 @@ def test_the_run_paths_are_the_contracts_children() -> None:
             "quotes.json",
             "review.html",
             "decisions",
+            "normalise.json",
         )
     ]
 
@@ -488,3 +491,55 @@ def test_a_judged_finding_in_two_files_is_an_error(run_copy: RunPaths) -> None:
     shutil.copy(first, second)
     with pytest.raises(RunFormatError, match=r"judge-02\.decisions\.yaml.*CHDA:LIT:0000902.*two"):
         load_judge(run_copy)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d.pop("normalisation"),
+        lambda d: d.update(format=2),
+        lambda d: d.update(extra=1),
+        lambda d: d["variants"][0].update(variant="1"),
+        lambda d: d["variants"][0].update(outcome="done"),
+        lambda d: d["variants"][0].pop("reading"),
+        lambda d: d["variants"][0].update(reading=3),
+        lambda d: d["variants"].append(dict(d["variants"][0])),
+        lambda d: d.update(normalisation="1"),
+        lambda d: d.update(normalisation=True),
+        lambda d: d["variants"][0].update(finding=7),
+        lambda d: d["variants"][0].update(line=7),
+        lambda d: d.update(variants={"a": 1}),
+    ],
+    ids=[
+        "no_key",
+        "format",
+        "extra",
+        "variant_type",
+        "outcome",
+        "no_reading",
+        "reading_type",
+        "repeated",
+        "normalisation_type",
+        "normalisation_bool",
+        "finding_type",
+        "line_type",
+        "variants_not_a_list",
+    ],
+)
+def test_a_malformed_normalise_json_is_refused_naming_the_file(tmp_path: Path, mutate: Any) -> None:
+    run = RunPaths(tmp_path, "TBX5", "r1")
+    run.dir.mkdir(parents=True)
+    assert load_normalise(run) == {}
+    good = {
+        "format": 1,
+        "normalisation": 1,
+        "variants": [
+            {"finding": "F", "variant": 1, "outcome": "placed", "line": "l", "reading": None}
+        ],
+    }
+    run.normalise.write_text(json.dumps(good))
+    assert load_normalise(run) == {("F", 1): None}
+    mutate(good)
+    run.normalise.write_text(json.dumps(good))
+    with pytest.raises(RunFormatError, match="normalise.json"):
+        load_normalise(run)

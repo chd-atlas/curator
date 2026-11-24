@@ -46,6 +46,13 @@ class VariantValidatorError(Exception):
     """VariantValidator could not be reached or its answer was not usable (exit 1 at the CLI)."""
 
 
+class NotFound(VariantValidatorError):
+    """VariantValidator answered HTTP 404 for one description (`place` refuses that variant)."""
+
+
+_NOT_FOUND: Final = "VariantValidator answered HTTP 404 for this description"
+
+
 @dataclass(frozen=True)
 class Placed:
     hgvs_c: str
@@ -102,9 +109,10 @@ def urllib_fetch(request_url: str) -> bytes:
             body: bytes = response.read()
             return body
     except urllib.error.HTTPError as exc:
-        raise VariantValidatorError(
-            f"VariantValidator answered HTTP {exc.code} {exc.reason}"
-        ) from None
+        message = f"VariantValidator answered HTTP {exc.code} {exc.reason}"
+        if exc.code == 404:
+            raise NotFound(message) from None
+        raise VariantValidatorError(message) from None
     except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
         raise VariantValidatorError(
             f"could not reach VariantValidator: {type(exc).__name__}"
@@ -251,7 +259,7 @@ def _read(
 
 def place(
     description: str, transcript: str, fetch: Fetch, strand: str
-) -> tuple[Placed | Refused, Metadata]:
+) -> tuple[Placed | Refused, Metadata | None]:
     """Place `description` on `transcript`, the MANE Select (versioned accession).
 
     A description on the MANE transcript is one request. A description on another transcript
@@ -264,16 +272,27 @@ def place(
     and databases. A refusal names the description it was asked, so a reader can tell the steps
     apart. `strand` is the gene's (``+`` or ``-``, from the atlas's frame), the strand a listed
     ``del<bases>`` is read on; a paper transcript of the same gene has the same one.
+
+    An HTTP 404 (`NotFound`) refuses that variant alone: for the request it came from the
+    refusal names the description asked. The metadata is None when the first request was the
+    one that answered 404, because a 404 carries no versions; a 404 on the second request
+    returns the first answer's. Any other HTTP error raises `VariantValidatorError`.
     """
     if strand not in ("+", "-"):
         raise VariantValidatorError(f"the gene's strand is {strand!r}, not + or -")
     accession = description.split(":", 1)[0]
     if accession == transcript:
-        answer, entry, metadata = _ask(description, transcript, fetch)
+        try:
+            answer, entry, metadata = _ask(description, transcript, fetch)
+        except NotFound:
+            return Refused((_NOT_FOUND,), description), None
         return _read(
             answer, entry, transcript, description, strand, tolerate_automap=True
         ), metadata
-    answer, entry, metadata = _ask(description, accession, fetch)
+    try:
+        answer, entry, metadata = _ask(description, accession, fetch)
+    except NotFound:
+        return Refused((_NOT_FOUND,), description), None
     first = _read(
         answer, entry, accession, description, strand, tolerate_version=True, tolerate_automap=True
     )
@@ -283,7 +302,10 @@ def place(
     genomic = locus.get("hgvs_genomic_description") if locus else None
     if not isinstance(genomic, str) or not genomic:
         return Refused(("VariantValidator gave no genomic description",), description), metadata
-    answer2, entry2, metadata2 = _ask(genomic, transcript, fetch)
+    try:
+        answer2, entry2, metadata2 = _ask(genomic, transcript, fetch)
+    except NotFound:
+        return Refused((_NOT_FOUND,), genomic), metadata
     if metadata2 != metadata:
         raise VariantValidatorError(
             "VariantValidator's versions changed between the two requests for one variant"

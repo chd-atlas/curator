@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from ruamel.yaml import YAML
 
+from chd_curator import review_page
 from chd_curator.atlas import digests
 from chd_curator.review_data import (
     APPROVAL_KEYS,
@@ -956,3 +957,55 @@ def test_a_variant_field_attaches_only_to_a_variant_the_finding_holds(
     field: str, target: int | None
 ) -> None:
     assert _variant_target(field, VARIANTS) == target
+
+
+READING = (
+    "read NM_1 as NM_1.1 (CP-D8: MANE's version is .1; the paper is from 2015, before MANE v1.5)"
+)
+
+
+def _normalise_json(run: RunPaths, *entries: tuple[str, int, str | None]) -> None:
+    run.normalise.write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "normalisation": 1,
+                "variants": [
+                    {"finding": f, "variant": v, "outcome": "placed", "line": "x", "reading": r}
+                    for f, v, r in entries
+                ],
+            }
+        )
+    )
+
+
+def test_the_card_shows_the_placement_reading(run: RunPaths, stub_atlas: Path) -> None:
+    assert card(build(run, stub_atlas), G)["variants"][0]["reading"] is None
+    _normalise_json(run, (G, 1, READING))
+
+    c = card(build(run, stub_atlas), G)
+
+    assert c["variants"][0]["reading"] == READING
+    assert all(
+        v["reading"] is None
+        for f in build(run, stub_atlas)["findings"]
+        if f["id"] != G
+        for v in f["variants"]
+    )
+    assert (
+        "esc(v.reading)"
+        in (Path(review_page.__file__).parent / "templates/review.html").read_text()
+    )
+
+
+@pytest.mark.parametrize(
+    "entry", [(G, 99, None), ("CHDA:LIT:0000999", 1, READING)], ids=["variant", "finding"]
+)
+def test_a_reading_for_an_unknown_variant_is_refused(
+    run: RunPaths, stub_atlas: Path, entry: tuple[str, int, str | None]
+) -> None:
+    _normalise_json(run, (G, 1, READING), entry)
+
+    with pytest.raises(ReviewDataError, match="normalise.json") as raised:
+        build(run, stub_atlas)
+    assert entry[0] in str(raised.value)
