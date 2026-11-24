@@ -1133,3 +1133,44 @@ def archive_page_command(
         typer.echo(f"{item.state} {item.path}")
     if sha is not None:
         typer.echo(f"committed {sha}")
+
+
+@app.command("archive-decisions")
+def archive_decisions_command(
+    symbol: str = typer.Argument(..., help="Gene symbol the decisions are for."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    decisions: Path = typer.Option(..., "--decisions", help="The finished decisions file."),
+    archive: Path = typer.Option(..., "--archive", help="The review archive checkout."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+) -> None:
+    """File a finished decisions file beside the page it was made on, and commit it.
+
+    The file is filed byte for byte as
+    `<SYMBOL>/<run>/decisions/<finished_at in UTC>--<reviewer>.json`.
+    Append-only: a different file at that name is refused (the message names it), an identical
+    one prints `already filed` (and is committed if it was left uncommitted). Prints `filed
+    <path>` or `already filed <path>`, then `committed <sha>` when it committed; for an owner's
+    file the last line is the `chd-atlas literature apply-review` command to run next. Exit 2
+    for a refusal (an unusable archive, no `user.name`/`user.email` in the archive's own config,
+    invalid JSON or a schema error, an unfinished session, another gene, no page filed for the
+    file, a different file already filed); exit 1 when git fails or a file cannot be written.
+    Never pushes.
+    """
+    _require_root(root)
+    try:
+        filed, sha = archive_mod.file_decisions(archive, symbol, run, decisions, root)
+        top = archive_mod.check_archive(archive)
+        doc = json.loads((top / filed.path).read_bytes())
+    except archive_mod.ArchiveError as exc:
+        raise _fail(str(exc), 2) from None
+    except (archive_mod.GitError, OSError) as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"{filed.state} {filed.path}")
+    if sha is not None:
+        typer.echo(f"committed {sha}")
+    reviewer = doc["reviewer"]
+    if reviewer["role"] == "owner":
+        typer.echo(
+            f"next: chd-atlas literature apply-review {symbol} --decisions {top / filed.path} "
+            f"--by {reviewer['name']} --root {root.resolve()}"
+        )

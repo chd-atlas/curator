@@ -106,6 +106,16 @@ uncommitted is committed, with only those paths, under the archive's own `user.n
 `user.email` (unset: refused before anything is written); the message is `file <SYMBOL> <run id>:
 page`. The command never pushes.
 
+`chd-curator archive-decisions <SYMBOL> --run <run id> --decisions <json> --archive <dir> [--root <atlas>]`
+files a finished decisions file, byte for byte, beside the page it was made on, at
+`<SYMBOL>/<run id>/decisions/<finished_at in UTC>--<reviewer>.json`. It is refused (exit 2, nothing
+written) when the file is not valid JSON or fails the atlas's exported schema, its session is not
+finished, it is for another gene, or no page filed under that run matches its `page.built_on`,
+`page.literature_sha256` and reviewer. The same append-only rule applies: a different file at the
+same name is refused and the message names it, an identical one prints `already filed`. The message
+is `file <SYMBOL> <run id>: decisions`. For an owner's file the last line printed is the `chd-atlas
+literature apply-review` command to run next; a second opinion prints none.
+
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and

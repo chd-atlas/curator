@@ -19,14 +19,16 @@ failing for another reason (exit 1).
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, Literal
 
+from chd_curator.atlas import AtlasError, schema_validator
 from chd_curator.decisions import ExportError, page_data
 from chd_curator.fs import write_bytes_atomically
 from chd_curator.review_page import slug
@@ -66,7 +68,7 @@ def check_archive(archive: Path) -> Path:
         raise ArchiveError(f"{refusal} with {MARKER} committed")
     if Path(found.stdout.strip()).resolve() != top:
         raise ArchiveError(f"{archive} is not the top of its git checkout ({found.stdout.strip()})")
-    if _git(top, "ls-files", "--error-unmatch", MARKER).returncode != 0:
+    if _git(top, "cat-file", "-e", f"HEAD:{MARKER}").returncode != 0:
         raise ArchiveError(f"{refusal} with {MARKER} committed")
     return top
 
@@ -223,3 +225,114 @@ def file_page(
     pending = [f.path for f in filed if _uncommitted(top, f.path)]
     sha = commit(top, pending, f"file {symbol} {run}: page") if pending else None
     return filed, sha
+
+
+def filed_page_for(archive: Path, symbol: str, run: str, doc: Mapping[str, Any]) -> Path | None:
+    """The page filed under ``symbol``/``run`` that ``doc`` was made on, relative to ``archive``.
+
+    A page matches when its own ``built_on``, ``literature_sha256``, reviewer name and reviewer
+    role equal the decisions file's ``page.built_on``, ``page.literature_sha256`` and
+    ``reviewer.name`` / ``reviewer.role`` as strings (both come from the page's data, so no
+    normalisation is applied). None when no filed page matches; a filed page whose data cannot
+    be read is refused rather than skipped. With several matches the first by name is returned.
+    """
+    try:
+        info = doc["page"]
+        who = doc["reviewer"]
+        wanted = (
+            str(info["built_on"]),
+            str(info["literature_sha256"]),
+            str(who["name"]),
+            str(who["role"]),
+        )
+    except (KeyError, TypeError) as exc:
+        raise ArchiveError(f"the decisions file lacks {exc}") from exc
+    pages = archive / symbol / run / "pages"
+    if not pages.is_dir():
+        return None
+    for page in sorted(pages.glob("*.html")):
+        found = page_identity(page)
+        if (found.built_on, found.literature_sha256, found.reviewer, found.role) == wanted:
+            return page.relative_to(archive)
+    return None
+
+
+def file_decisions(
+    archive: Path, symbol: str, run: str, decisions: Path, schema_root: Path
+) -> tuple[Filed, str | None]:
+    """File the finished decisions file ``decisions`` beside the page it was made on.
+
+    The file is copied byte for byte to
+    ``<symbol>/<run>/decisions/<finished_at, compact UTC>--<reviewer slug>.json``. Every refusal
+    comes before the first write and before any commit: ids, archive, identity, readable JSON,
+    schema, a finished session, the right gene, a filed page it was made on, and a target that
+    is absent or byte-identical. A different file already at that name is refused, and the
+    message names it. Returns the filed path, the commit sha (None when nothing was
+    uncommitted).
+    """
+    check_id("symbol", symbol)
+    check_id("run id", run)
+    top = check_archive(archive)
+    require_identity(top)
+    try:
+        payload = decisions.read_bytes()
+    except OSError as exc:
+        raise ArchiveError(f"{decisions}: cannot be read: {exc}") from exc
+    try:
+        doc = json.loads(payload)
+    except ValueError as exc:
+        raise ArchiveError(f"{decisions}: is not valid JSON: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise ArchiveError(f"{decisions}: is not a JSON object")
+    try:
+        errors = sorted(
+            f"{'/'.join(map(str, e.path)) or '(file)'}: {e.message}"
+            for e in schema_validator(schema_root, "review_decisions").iter_errors(doc)
+        )
+    except AtlasError as exc:
+        raise ArchiveError(str(exc)) from exc
+    if errors:
+        raise ArchiveError(f"{decisions} fails the schema: {errors[0]}")
+    finished = doc["session"]["finished_at"]
+    if not finished:
+        raise ArchiveError(
+            f"{decisions}: the session is not finished (session.finished_at is empty)"
+        )
+    if doc["symbol"] != symbol:
+        raise ArchiveError(f"{decisions} is for {doc['symbol']}, not {symbol}")
+    page = filed_page_for(top, symbol, run, doc)
+    if page is None:
+        raise ArchiveError(
+            f"no page filed under {symbol}/{run} for {decisions}: file the page it was made on "
+            "with archive-page first"
+        )
+    filed_gene = page_identity(top / page).gene
+    if doc["gene"] != filed_gene:
+        raise ArchiveError(
+            f"{decisions}: gene {doc['gene']} differs from gene {filed_gene} on the filed "
+            f"page {page}"
+        )
+    who = str(doc["reviewer"]["name"])
+    if not slug(who):
+        raise ArchiveError(f"{decisions}: the reviewer name {who!r} has no letters")
+    rel = Path(symbol) / run / "decisions" / f"{compact_utc(finished)}--{slug(who)}.json"
+    target = top / rel
+    new = True
+    if target.exists() or target.is_symlink():
+        try:
+            same = target.is_file() and target.read_bytes() == payload
+        except OSError as exc:
+            raise GitError(f"{rel}: cannot be read: {exc}") from exc
+        if not same:
+            raise ArchiveError(
+                f"the archive already holds {rel} with different content: filing never overwrites"
+            )
+        new = False
+    if new:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_bytes_atomically(target, payload)
+        except OSError as exc:
+            raise GitError(f"cannot write into the archive: {exc}") from exc
+    sha = commit(top, [rel], f"file {symbol} {run}: decisions") if _uncommitted(top, rel) else None
+    return Filed(rel, "filed" if new else "already filed"), sha

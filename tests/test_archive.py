@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner, Result
 
-from archive_helpers import git, make_archive, page_html
+from archive_helpers import decisions_doc, git, make_archive, page_html
 from chd_curator.archive import ArchiveError, check_id, compact_utc
 from chd_curator.cli import app
 
@@ -126,6 +127,14 @@ def _no_marker(tmp: Path) -> Path:
     return repo
 
 
+def _staged_marker(tmp: Path) -> Path:
+    """A checkout with a commit, whose marker is staged but not committed."""
+    repo = _no_marker(tmp)
+    (repo / ".review-archive").write_text("review archive\n", encoding="utf-8")
+    git(repo, "add", "--", ".review-archive")
+    return repo
+
+
 def _subdir(tmp: Path) -> Path:
     sub = make_archive(tmp) / "TBX5"
     sub.mkdir()
@@ -137,6 +146,7 @@ def _subdir(tmp: Path) -> Path:
     [
         ("plain", "not a review archive"),
         ("nomarker", "not a review archive"),
+        ("stagedmarker", "not a review archive"),
         ("subdir", "not the top"),
         ("noidentity", "user.name"),
         ("othergene", "is for GATA4"),
@@ -154,6 +164,8 @@ def test_archive_page_refuses_and_writes_nothing(tmp_path: Path, case: str, phra
         archive = _no_marker(tmp_path)
     elif case == "subdir":
         archive = _subdir(tmp_path)
+    elif case == "stagedmarker":
+        archive = _staged_marker(tmp_path)
     else:
         archive = make_archive(tmp_path, identity=case != "noidentity")
     if case == "othergene":
@@ -171,7 +183,9 @@ def test_archive_page_refuses_and_writes_nothing(tmp_path: Path, case: str, phra
     assert result.exit_code == 2, result.output
     assert phrase in result.output
     if head is not None:
-        assert git(repo, "status", "--porcelain") == ""
+        # the staged marker is the fixture's own change, so only it may remain
+        expected = "A  .review-archive\n" if case == "stagedmarker" else ""
+        assert git(repo, "status", "--porcelain") == expected
         assert git(repo, "rev-parse", "HEAD").strip() == head
     assert not any(p.name == "pages" for p in tmp_path.rglob("pages"))
 
@@ -186,3 +200,142 @@ def test_a_git_failure_is_exit_1(tmp_path: Path) -> None:
     assert result.exit_code == 1, result.output
     assert "git commit failed" in result.output
     assert git(archive, "log", "--format=%s").strip() == "start the archive"
+
+
+DECISIONS = "TBX5/r1/decisions/20261119T130000Z--e-a-m.json"
+FINISHED = "2026-11-19T13:00:00Z"
+
+
+def decide(
+    archive: Path, doc: Path, atlas_root: Path, *, symbol: str = "TBX5", run: str = "r1"
+) -> Result:
+    return runner.invoke(
+        app,
+        [
+            "archive-decisions",
+            symbol,
+            "--run",
+            run,
+            "--decisions",
+            str(doc),
+            "--archive",
+            str(archive),
+            "--root",
+            str(atlas_root),
+        ],
+    )
+
+
+def test_a_finished_review_is_filed_and_the_owner_is_told_the_apply_command(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    file_it(archive, page_html(tmp_path / "p.html"))
+    file_it(archive, page_html(tmp_path / "q.html", name="Dr X", role="second_opinion"))
+    owner = decisions_doc(
+        tmp_path / "o.json", name="E.A.M", role="owner", finished_at=FINISHED, findings=[]
+    )
+    result = decide(archive, owner, atlas_root)
+    assert result.exit_code == 0, result.output
+    assert (archive / DECISIONS).read_bytes() == owner.read_bytes()
+    assert git(archive, "log", "-1", "--format=%s").strip() == "file TBX5 r1: decisions"
+    assert git(archive, "status", "--porcelain") == ""
+    expected = (
+        f"next: chd-atlas literature apply-review TBX5 --decisions {archive.resolve() / DECISIONS} "
+        f"--by E.A.M --root {atlas_root.resolve()}"
+    )
+    lines = result.output.strip().splitlines()
+    assert lines[0] == f"filed {DECISIONS}"
+    assert lines[-1] == expected
+
+    second = decisions_doc(
+        tmp_path / "s.json",
+        name="Dr X",
+        role="second_opinion",
+        finished_at="2026-11-19T14:00:00Z",
+        findings=[],
+    )
+    result = decide(archive, second, atlas_root)
+    assert result.exit_code == 0, result.output
+    assert (archive / "TBX5/r1/decisions/20261119T140000Z--dr-x.json").read_bytes() == (
+        second.read_bytes()
+    )
+    assert "next:" not in result.output
+
+    again = decide(archive, owner, atlas_root)
+    assert again.exit_code == 0 and f"already filed {DECISIONS}" in again.output
+    assert "committed" not in again.output
+    assert again.output.strip().splitlines()[-1] == expected
+
+
+@pytest.mark.parametrize(
+    ("case", "phrase"),
+    [
+        ("format2", "fails the schema"),
+        ("naive", "fails the schema"),
+        ("unfinished", "not finished"),
+        ("othersymbol", "is for GATA4"),
+        ("othergene", "gene"),
+        ("otherrun", "no page filed"),
+        ("notjson", "not valid JSON"),
+    ],
+)
+def test_archive_decisions_refuses_and_writes_nothing(
+    tmp_path: Path, atlas_root: Path, case: str, phrase: str
+) -> None:
+    archive = make_archive(tmp_path)
+    file_it(archive, page_html(tmp_path / "p.html"), run="r2" if case == "otherrun" else "r1")
+    doc = decisions_doc(
+        tmp_path / "d.json", name="E.A.M", role="owner", finished_at=FINISHED, findings=[]
+    )
+    if case == "notjson":
+        doc.write_text("{", encoding="utf-8")
+    else:
+        data = json.loads(doc.read_text(encoding="utf-8"))
+        if case == "format2":
+            data["format"] = 2
+        elif case == "naive":
+            data["findings"] = [dict(_FINDING, decided_at="2026-11-19T13:00:00")]
+        elif case == "unfinished":
+            data["session"]["finished_at"] = None
+        elif case == "othersymbol":
+            data["symbol"] = "GATA4"
+        elif case == "othergene":
+            data["gene"] = "HGNC:4173"
+        doc.write_text(json.dumps(data), encoding="utf-8")
+    head = git(archive, "rev-parse", "HEAD").strip()
+    result = decide(archive, doc, atlas_root)
+    assert result.exit_code == 2, result.output
+    assert phrase in result.output
+    assert git(archive, "status", "--porcelain") == ""
+    assert git(archive, "rev-parse", "HEAD").strip() == head
+    assert not (archive / "TBX5" / "r1" / "decisions").exists()
+
+
+_FINDING = {
+    "id": "F1",
+    "decision": "approve",
+    "decided_at": "2026-11-19T13:00:00Z",
+    "digest": "sha256:" + "b" * 64,
+}
+
+
+def test_the_store_conversion_of_a_filed_download_is_refused_as_a_second_file(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    file_it(archive, page_html(tmp_path / "p.html"))
+    first = decisions_doc(
+        tmp_path / "a.json", name="E.A.M", role="owner", finished_at=FINISHED, findings=[]
+    )
+    assert decide(archive, first, atlas_root).exit_code == 0
+    data = json.loads(first.read_text(encoding="utf-8"))
+    data["session"]["active_ms"] += 1
+    second = tmp_path / "b.json"
+    second.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    head = git(archive, "rev-parse", "HEAD").strip()
+    result = decide(archive, second, atlas_root)
+    assert result.exit_code == 2, result.output
+    assert DECISIONS in result.output
+    assert git(archive, "rev-parse", "HEAD").strip() == head
+    assert len(list((archive / "TBX5" / "r1" / "decisions").glob("*.json"))) == 1
