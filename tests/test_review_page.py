@@ -1007,6 +1007,7 @@ def test_the_selftest_publishes_the_text_the_download_made_and_notes_its_approva
 
 SAVE_FAKE = """
 window.__saves = [];
+window.__downloadsTimeoutMs = 50;
 window.claude = { use: async (name) => {
   if (name !== "downloads") return null;
   %s
@@ -1062,13 +1063,20 @@ def test_download_is_saved_through_the_downloads_capability_and_its_refusal_is_s
     assert saved["saves"][0]["data"] == saved["last"]
     assert json.loads(saved["saves"][0]["data"]) == saved["output"]
     assert saved["status"][-1] == "Review saved as TBX5-review-e-a-m.json."
-    for code_ in ("declined", "unavailable"):
+    for code_, words in {
+        "declined": "you declined it.",
+        "unavailable": "saving a file is unavailable in this view.",
+        "too_large": "the file is too large to save.",
+        "rate_limited": "try again shortly.",
+        "bad_request": "the save failed (bad_request).",
+    }.items():
         refused = run_with_downloads(page, SAVE_REFUSES % code_)
         assert len(refused["saves"]) == 1, "a refusal must not be retried"
         line = refused["status"][-1]
-        assert line.startswith("The review was not saved: ")
-        assert ("you declined it" in line) is (code_ == "declined")
-        assert ("unavailable in this view" in line) is (code_ == "unavailable")
+        assert line.startswith("The review was not saved: ") and words in line
+        # each code gets its own wording, never another's
+        for other, other_words in {"declined": "declined", "unavailable": "unavailable in"}.items():
+            assert (other_words in line) is (other == code_)
         assert not [m for m in refused["status"] if "Review saved" in m]
 
 
@@ -1089,3 +1097,92 @@ def test_the_page_title_names_the_gene(root: Path, stub_atlas: Path) -> None:
     assert code == 0, out
     page = Path(out.strip().splitlines()[-1])
     assert "<title>TBX5 literature review</title>" in page.read_text(encoding="utf-8")
+
+
+def test_a_span_only_card_with_judged_rows_carries_the_chip_of_its_class_only(
+    root: Path, stub_atlas: Path
+) -> None:
+    """Stage B re-review residual 4: 'readers agreed' beside 'N judged' says two opposite things.
+
+    The comparison calls A span-only, so it is agreed; a judge decision on a real field of it
+    (the run is inconsistent, but the card must still say one thing) leaves its row shown.
+    """
+    judge = root / "local/literature/runs/TBX5/r1/judge/judge-01.decisions.yaml"
+    judge.write_text(
+        judge.read_text(encoding="utf-8")
+        + f"""{A}:
+  - field: summary
+    first: "one"
+    second: "two"
+    decision: first
+    value: "one"
+    quote: ""
+    where: ""
+    rule: "Reader 1 states it."
+""",
+        encoding="utf-8",
+    )
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "")
+    chips = re.search(r'<div class="sum-chips">(.*?)</div></summary>', card_html(dom, A), re.S)
+    text = plain(chips.group(1)) if chips else ""
+    assert "readers agreed" in text and "judged" not in text
+
+
+def test_a_downloads_capability_that_never_answers_says_nothing_was_saved(
+    root: Path, stub_atlas: Path
+) -> None:
+    """On claude.ai a Blob link does nothing, so a timeout must not fall through to it silently."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    hang = run_with_downloads(page, "return new Promise(() => {});")
+    line = hang["status"][-1]
+    assert line.startswith("The review was not saved: ") and "did not answer in time" in line
+    assert "open this page as a file" in line and "Download my review to try again" in line
+    assert hang["saves"] == [] and not [m for m in hang["status"] if "Review saved" in m]
+
+
+@pytest.mark.parametrize(
+    "act, low, high",
+    [
+        ("", 4019, 4019 + 3000),
+        ("window.__open(); await wait(60); window.__close(); await wait(10);", 4019, 4019 + 3000),
+    ],
+    ids=["restored", "merged-with-an-opened-card"],
+)
+def test_a_stored_active_time_that_is_a_string_is_added_not_joined(
+    root: Path, stub_atlas: Path, act: str, low: int, high: int
+) -> None:
+    """`"4019" + 0` is "40190": a time kept in storage as text must still count as a number."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    shown = {c["id"]: c["shown_digest"] for c in data_of(page)["findings"]}
+    sha = data_of(page)["page"]["literature_sha256"]
+    saved = {
+        "decisions": {
+            G: {
+                "decision": "approve",
+                "note": "kept",
+                "shown_digest": shown[G],
+                "decided_at": "2026-11-19T10:00:00Z",
+                "active_ms": "4019",
+            }
+        },
+        "session": {"started_at": "2026-11-19T09:00:00.000Z"},
+    }
+    head = (
+        f"localStorage.setItem({json.dumps(f'chd-review:{sha}:owner:e-a-m')},"
+        f"{json.dumps(json.dumps(saved))});"
+        "window.__beforeRestore = async () => {"
+        "const wait = (ms) => new Promise((r) => setTimeout(r, ms));"
+        f"const card = () => document.querySelector('details.card[data-id=\"{G}\"]');"
+        "window.__open = () => { card().open = true; };"
+        "window.__close = () => { card().open = false; };"
+        f"{act} }};"
+    )
+    dom = dump_dom(_persist_page(page, head), "selftest-restore", budget=8000)
+    got = next(f for f in selftest_output(dom)["findings"] if f["id"] == G)
+    assert isinstance(got["active_ms"], int) and low <= got["active_ms"] <= high
