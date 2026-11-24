@@ -1,0 +1,25 @@
+# Synthetic records for the review-page tests: the PMIDs are made up.
+publications:
+  - id: PMID:90000001
+    title: A synthetic Holt-Oram family with a TBX5 frameshift.
+    journal: Journal of synthetic genetics
+    year: 2019
+    authors:
+      - Alpha A
+      - Beta B
+    study_type: family_linkage
+  - id: PMID:90000002
+    title: Two TBX5 missense variants in a compound heterozygous proband.
+    journal: Journal of synthetic genetics
+    year: 2021
+    authors:
+      - Gamma C
+      - Delta D
+    study_type: case_report
+  - id: PMID:90000003
+    title: A TBX5 splice variant in a fetus with a septal defect, abstract only.
+    journal: Synthetic case reports
+    year: 2023
+    authors:
+      - Epsilon E
+    study_type: case_report

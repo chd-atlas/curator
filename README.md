@@ -2,9 +2,12 @@
 
 Literature curation tools for the [CHD atlas](https://github.com/chd-atlas/chd-atlas.github.io).
 `chd-curator` searches PubMed for a published gene, records the hits, adds papers and compares a
-blind second extraction with the first, and writes a drafted gene synthesis. Five Claude Code skills
-drive agents through those steps.
-An agent never approves: a named person does, with `chd-atlas literature review` in the atlas.
+blind second extraction with the first, and writes a drafted gene synthesis. It also checks a
+run's quotes against their papers, builds the review page a person reads, and turns that page's
+saved decisions into the file the atlas applies. Five Claude Code skills drive agents through the
+extraction steps.
+An agent never approves: a named person does, in the atlas, with `chd-atlas literature review` or
+`chd-atlas literature apply-review`.
 
 ## Install
 
@@ -28,11 +31,14 @@ measured here). On an older version, add the marketplace first:
 
 ## Run
 
-Run from the root of an atlas checkout. `search`, `abstracts`, `diff`, `normalise` and `synthesis` ask the atlas about the
-gene by running its CLI, `<root>/.venv/bin/chd-atlas` unless `--atlas-cli` or `CHD_ATLAS_CLI` names
-another; `add-publication` does not. `search`, `add-publication`, `diff`, `normalise` and `synthesis` read the JSON Schemas
-the atlas exports into `<root>/schemas/`, and every file curator writes is checked against them
-first. curator never imports the atlas. The skills read the atlas checkout's
+Run from the root of an atlas checkout. `search`, `abstracts`, `diff`, `normalise`, `synthesis`
+and `review-page` ask the atlas about the gene by running its CLI, `<root>/.venv/bin/chd-atlas`
+unless `--atlas-cli` or `CHD_ATLAS_CLI` names another; `add-publication`, `quotes` and
+`review-decisions` do not. `search`, `add-publication`, `diff`, `normalise`, `synthesis`,
+`review-page` and `review-decisions` read the JSON Schemas the atlas exports into
+`<root>/schemas/`. The records curator writes into `curation/` are checked against them first, and
+so is the decisions file `review-decisions` writes; `quotes.json` and `review.html` are not atlas
+records and no schema checks them. curator never imports the atlas. The skills read the atlas checkout's
 `curator/curator-rules.md`. Their hand-off commands, `.venv/bin/chd-atlas validate` and
 `.venv/bin/chd-atlas literature review <SYMBOL>`, assume the atlas checkout's own `.venv`; adapt
 them if your atlas executable is elsewhere.
@@ -53,6 +59,42 @@ For one published gene:
    settle it: `full_text`, `authors`, `expert` or `atlas_model`. `chd-atlas literature questions`
    lists the open ones. Add `--against <the verifier's file>` to see where the blind pass read a
    finding differently.
+
+### Review a run
+
+`chd-curator quotes <SYMBOL> --run <run id>` checks every quote in a run's `evidence/` and
+`judge/` files against the text of the finding's paper and writes
+`local/literature/runs/<SYMBOL>/<run id>/quotes.json`. A quote whose paper has no text is
+recorded as not checked (`checked: false`, `found: false` in `quotes.json`), never as not
+found.
+
+`chd-curator review-page <SYMBOL> --run <run id> --reviewer <name> [--role owner|second_opinion]
+[--with <decisions.json> ...]` writes the run's review page, one self-contained HTML file:
+`<run>/review.html` for the owner, `<run>/review-<name>.html` for a second opinion (which shows no
+approval state and no other reviewer's verdict; `--with` is for the owner page only, and each file
+must be a format 1 decisions file by a second opinion on the same gene). It refuses to build, exit 1,
+when `chd-atlas validate` reports an error. The page saves two ways: opened as a claude.ai artifact it
+saves to the page's store; opened as a plain file it saves in the browser. A page published as a claude.ai artifact needs the `downloads` capability beside `db`: claude.ai never lets a page download a file itself, so without `downloads` "Download my review" cannot save there (the page says the review was not saved). "Download my review"
+(available at any time) gives a decisions file, which the atlas's `literature apply-review`
+applies, and `review-decisions` below gives one from the store; both leave out a card decided on
+an earlier version of it. "I'm done" marks the review finished; the atlas refuses a file without
+it.
+
+`chd-curator review-decisions <SYMBOL> --run <run id> --export <dir> --out <file> [--page <html>]`
+converts the page's saved decisions into that decisions file without anyone retyping them. When the
+page ran as a claude.ai artifact, Claude exports its store with ArtifactData's out_dir option,
+every document (a `list` pages at 100, and a short export shows in the count line below); the
+command reads `<dir>/review/<id>.json` and `<dir>/session/main.json`, plus the page (default
+`<run>/review.html`) for its provenance, reviewer and each card's digest, and writes the format 1
+file (notes copied byte for byte). The page writes its own identity (literature file sha256, build
+time, reviewer) into `session/main`, and an export that is not that page's is refused. The command
+exits 1 when the reviewer has not pressed "I'm done" or changed a choice after it (press it again),
+and 2 for an export from another page, reviewer or gene, a flip or a seen paper the page does not
+hold, a document for a card not on the page, a decision outside approve|fix|later, or a file failing
+the schema; nothing is written on either. A card decided on an earlier version of it is left out
+and named ("left out, decided on an earlier version: ..."), and the line before the path counts
+what was written, so a wrong `--export` directory shows. The step after is the atlas's
+`chd-atlas literature apply-review <SYMBOL> --decisions <file> --by <name>`.
 
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft

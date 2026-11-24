@@ -42,6 +42,7 @@ def atlas_python() -> Path:
 
 _STUB = """\
 import json
+import os
 import sys
 
 ANSWERS = {
@@ -58,11 +59,42 @@ FRAMES = {
     "TBX5": ("NM_181486.4", "NP_852259.1", "12", "-"),
     "GATA4": ("NM_002052.5", "NP_002043.2", "8", "+"),
 }
+if sys.argv[1] == "validate":
+    if os.environ.get("STUB_VALIDATE_ERRORS"):
+        print("error GEN001 [mirrors/genes.tsv]: stub error")
+        print()
+        print(os.environ["STUB_VALIDATE_ERRORS"] + " error(s), 3 warning(s)")
+        sys.exit(1)
+    print("warning SCP003 [curation/chd_scope.yaml]: stub candidate report")
+    print("warning SCP007 [curation/chd_scope.yaml]: stub Orphanet digest")
+    print()
+    print("0 error(s), 3 warning(s)")
+    sys.exit(0)
 subcommand, symbol = sys.argv[2], sys.argv[3]
 if symbol in REFUSALS:
     print("error: " + REFUSALS[symbol])
     sys.exit(2)
 gene, approved, published = ANSWERS[symbol]
+if subcommand == "digests":
+    if approved != "TBX5":
+        print("error: no literature file for " + approved)
+        sys.exit(2)
+    print(json.dumps({
+        "format": 1, "gene": gene, "symbol": approved,
+        "literature_sha256": "sha256:" + "a" * 64,
+        "findings": [
+            {"id": "CHDA:LIT:0000901", "finding_digest": "sha256:" + "1" * 64,
+             "shown_digest": "sha256:" + "2" * 64, "approved": True, "verified": True,
+             "approval_void": False},
+            {"id": "CHDA:LIT:0000902", "finding_digest": "sha256:" + "3" * 64,
+             "shown_digest": "sha256:" + "4" * 64, "approved": False, "verified": False,
+             "approval_void": False},
+            {"id": "CHDA:LIT:0000903", "finding_digest": "sha256:" + "5" * 64,
+             "shown_digest": "sha256:" + "6" * 64, "approved": True, "verified": False,
+             "approval_void": True},
+        ],
+    }, sort_keys=True))
+    sys.exit(0)
 if subcommand == "frame":
     if approved not in FRAMES:
         print("error: " + approved + " has no MANE Select in the pinned frame")
@@ -87,8 +119,9 @@ STUB_QUERIES = {"TBX5": '("TBX5"[tiab]) AND stub-query', "GATA4": '("GATA4"[tiab
 
 @pytest.fixture
 def stub_atlas(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """An executable standing in for ``chd-atlas``, answering ``literature target`` and
-    ``literature frame``.
+    """An executable standing in for ``chd-atlas``, answering ``literature target``,
+    ``literature frame``, ``literature digests`` (TBX5 only, with made-up digests) and
+    ``validate`` (a summary line of ``0 error(s), 3 warning(s)``).
 
     TBX5 (also typed as its previous symbol HOS) and GATA4 are published, BRCA1 is
     not, and NOPE and MADH7 are refused with the atlas's real messages.
