@@ -21,9 +21,11 @@ from chd_curator.review_data import (
     APPROVAL_KEYS,
     ReviewDataError,
     Reviewer,
+    _settled_by_rule,
+    _variant_target,
     build_review_data,
 )
-from chd_curator.run import RunPaths
+from chd_curator.run import JudgeDecision, RunPaths
 
 FIXTURE = Path(__file__).parent / "fixtures" / "review"
 BUILT_ON = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
@@ -907,3 +909,50 @@ def test_a_clinicians_verdict_on_an_earlier_version_of_a_card_is_not_current(
         ("Bea", True),
         ("Cy", False),
     ]
+
+
+def _decision(**kw: str) -> JudgeDecision:
+    base = {
+        "field": "phenotypes",
+        "first": "a",
+        "second": "b",
+        "decision": "first",
+        "value": "a",
+        "quote": "",
+        "where": "",
+        "rule": "r",
+    }
+    return JudgeDecision(**{**base, **kw})  # type: ignore[arg-type]
+
+
+def test_a_decision_is_settled_by_whitespace_only_when_its_values_differ_only_there() -> None:
+    """The rule's wording is no evidence: a real decision may merely mention whitespace."""
+    mentions = "Whitespace in the phenotype list does not matter, but the second adds a lesion."
+    assert not _settled_by_rule(_decision(first="VSD", second="VSD, ASD", rule=mentions))
+    assert _settled_by_rule(_decision(first="p.(Gly84Arg)", second="p.(Gly84Arg)  ", rule="r"))
+    assert _settled_by_rule(_decision(first="a  b", second="a\tb"))
+    assert _settled_by_rule(_decision(first="p.(G84R)", second="p. (G84R)"))
+    assert not _settled_by_rule(_decision(first="a b", second="a c"))
+    assert _settled_by_rule(_decision(field="variant c.1A>G as_reported", first="x", second="y"))
+
+
+VARIANTS = [{"id": 1, "as_reported": "c.1A>G", "reported": {"p": "p.K1R"}, "phase": "cis"}]
+
+
+@pytest.mark.parametrize(
+    "field, target",
+    [
+        ("variant c.1A>G phase", 1),
+        ("variant c.1A>G reported.p", 1),
+        ("variant 1 phase", 1),
+        # `p.(Lys1Arg)` is no key of the variant: the field names a variant this finding lacks
+        ("variant c.1A>G p.(Lys1Arg) phase", None),
+        ("variant c.1A>G in cis phase", None),
+        ("variant 2 phase", None),
+        ("variant c.1A>G", None),
+    ],
+)
+def test_a_variant_field_attaches_only_to_a_variant_the_finding_holds(
+    field: str, target: int | None
+) -> None:
+    assert _variant_target(field, VARIANTS) == target
