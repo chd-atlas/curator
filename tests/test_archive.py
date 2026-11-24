@@ -278,6 +278,7 @@ def test_a_finished_review_is_filed_and_the_owner_is_told_the_apply_command(
         ("othergene", "gene"),
         ("otherrun", "no page filed"),
         ("notjson", "not valid JSON"),
+        ("twice", "decides CHDA:LIT:0000901 more than once"),
     ],
 )
 def test_archive_decisions_refuses_and_writes_nothing(
@@ -302,6 +303,15 @@ def test_archive_decisions_refuses_and_writes_nothing(
             data["symbol"] = "GATA4"
         elif case == "othergene":
             data["gene"] = "HGNC:4173"
+        elif case == "twice":
+            one = {
+                "id": "CHDA:LIT:0000901",
+                "shown_digest": "sha256:" + "2" * 64,
+                "decision": "approve",
+                "active_ms": 1,
+                "decided_at": "2026-11-19T13:00:00Z",
+            }
+            data["findings"] = [one, dict(one, decided_at="2026-11-19T13:30:00Z")]
         doc.write_text(json.dumps(data), encoding="utf-8")
     head = git(archive, "rev-parse", "HEAD").strip()
     result = decide(archive, doc, atlas_root)

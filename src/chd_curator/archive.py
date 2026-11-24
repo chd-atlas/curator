@@ -265,10 +265,10 @@ def file_decisions(
     The file is copied byte for byte to
     ``<symbol>/<run>/decisions/<finished_at, compact UTC>--<reviewer slug>.json``. Every refusal
     comes before the first write and before any commit: ids, archive, identity, readable JSON,
-    schema, a finished session, the right gene, a filed page it was made on, and a target that
-    is absent or byte-identical. A different file already at that name is refused, and the
-    message names it. Returns the filed path, the commit sha (None when nothing was
-    uncommitted).
+    schema, a finished session, the right gene, no finding decided twice, a filed page it was
+    made on, and a target that is absent or byte-identical. A different file already at that
+    name is refused, and the message names it. Returns the filed path, the commit sha (None
+    when nothing was uncommitted).
     """
     check_id("symbol", symbol)
     check_id("run id", run)
@@ -300,6 +300,10 @@ def file_decisions(
         )
     if doc["symbol"] != symbol:
         raise ArchiveError(f"{decisions} is for {doc['symbol']}, not {symbol}")
+    ids = [f["id"] for f in doc["findings"]]
+    again = sorted({i for i in ids if ids.count(i) > 1})
+    if again:
+        raise ArchiveError(f"{decisions}: decides {again[0]} more than once")
     page = filed_page_for(top, symbol, run, doc)
     if page is None:
         raise ArchiveError(

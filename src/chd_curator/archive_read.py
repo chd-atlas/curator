@@ -5,7 +5,8 @@ refuses the archive (:class:`~chd_curator.archive.ArchiveError`, exit 2) when it
 trusted: uncommitted changes anywhere in the checkout, a file that is not ``.json`` under a
 decisions directory (a skipped file would silently drop a reviewer's verdicts), a file that
 fails the atlas's schema, is not finished, is for another symbol, names another gene than
-the rest, or sits under a name other than ``<finished_at, compact UTC>--<reviewer slug>.json``.
+the rest, names a finding twice, is a second opinion keyed as the owner, or sits under a name
+other than ``<finished_at, compact UTC>--<reviewer slug>.json``.
 
 A reviewer is keyed by role: every owner file is the key ``owner``, and a clinician is
 ``name.strip().casefold()``. "Latest" compares parsed instants, never strings.
@@ -169,7 +170,17 @@ def read_archive(archive: Path, symbol: str, schema_root: Path) -> ArchiveView:
         if len(genes) > 1:
             raise ArchiveError(f"{rel}: the archive holds two genes for {symbol}: {sorted(genes)}")
         name = str(doc["reviewer"]["name"])
-        keys.add(reviewer_key(name, doc["reviewer"]["role"]))
+        key = reviewer_key(name, doc["reviewer"]["role"])
+        if doc["reviewer"]["role"] != "owner" and key == "owner":
+            raise ArchiveError(
+                f"{rel}: the second opinion {name!r} would be keyed as the owner: "
+                "a clinician's name must not read as 'owner'"
+            )
+        ids = [f["id"] for f in doc["findings"]]
+        again = sorted({i for i in ids if ids.count(i) > 1})
+        if again:
+            raise ArchiveError(f"{rel}: decides {again[0]} more than once")
+        keys.add(key)
         expected = f"{compact_utc(finished_text)}--{slug(name)}.json"
         if path.name != expected:
             raise ArchiveError(f"{rel}: the file is named {path.name}, not {expected}")

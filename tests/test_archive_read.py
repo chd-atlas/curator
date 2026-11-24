@@ -212,6 +212,8 @@ def test_later_on_the_current_digest_is_pending(
         ("unfinished", "not finished"),
         ("twogenes", "two genes"),
         ("notjson", "is not a .json file"),
+        ("ownerkey", "keyed as the owner"),
+        ("twice", f"decides {G} more than once"),
     ],
 )
 def test_read_archive_refuses(
@@ -233,6 +235,13 @@ def test_read_archive_refuses(
             other["gene"] = "HGNC:4173"
             second.write_text(json.dumps(other), "utf-8")
         first.write_text(json.dumps(doc), "utf-8")
+    elif case == "ownerkey":
+        first.unlink()
+        put(archive, tmp_path, " Owner", "second_opinion", "2026-11-19T12:00:00Z", f)
+    elif case == "twice":
+        first.unlink()
+        both = [*f, finding(G, "fix", D1, "2026-11-19T12:30:00Z")]
+        put(archive, tmp_path, "E.A.M", "owner", "2026-11-19T12:00:00Z", both)
     elif case == "notjson":
         (first.parent / "notes.txt").write_text("hello", "utf-8")
     commit_all(archive)

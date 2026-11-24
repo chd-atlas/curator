@@ -120,11 +120,12 @@ literature apply-review` command to run next; a second opinion prints none.
 every decisions file filed for the gene and prints one line: how many findings have verdicts, the
 files and reviewers they come from, how many verdicts are pending, how many triage flips are pending
 and the archive's commit. A verdict is pending when it is a reviewer's latest `fix` or `later` on the
-finding's current digest (a finding with two such reviewers counts twice); a flip is pending while the
-literature file still holds the opposite of what it proposes. `--json` prints the whole state. It
+finding's current digest (a finding with two such reviewers counts twice); a flip is pending while its paper is
+still in the literature file's triage and that decision is not yet the flip's `to` (a paper still
+undecided counts, one no longer in triage does not). `--json` prints the whole state. It
 writes nothing, and refuses (exit 2) an archive with uncommitted changes, a non-JSON file under a
-decisions directory, a file that fails the schema, is unfinished, is misnamed or is for another gene,
-or an archive whose gene for the symbol is not the atlas's.
+decisions directory, a file that fails the schema, is unfinished, is misnamed, is for another gene, names one
+finding twice or is a second opinion keyed as the owner, or an archive whose gene for the symbol is not the atlas's.
 
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
