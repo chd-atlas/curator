@@ -191,9 +191,29 @@ def test_agreement_writes_nothing_and_json_names_the_commit(
     assert sorted(Path(".").iterdir()) == cwd_before
 
 
-def test_a_dirty_archive_is_refused(archive: Path, tmp_path: Path, atlas_root: Path) -> None:
+def test_what_is_not_a_clean_archive_is_refused_even_with_no_gene_in_it(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    def run(path: Path) -> Any:
+        return CliRunner().invoke(
+            app, ["agreement", "--archive", str(path), "--root", str(atlas_root)]
+        )
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    refused = run(empty)
+    assert refused.exit_code == 2 and "not a review archive" in refused.output
+    (archive / "stray.txt").write_text("x", encoding="utf-8")
+    dirty = run(archive)
+    assert dirty.exit_code == 2 and "uncommitted" in dirty.output
+    (archive / "stray.txt").unlink()
     put(archive, tmp_path, "E.A.M", "owner", AT, [fnd(G, "approve", D1)])
-    run = CliRunner().invoke(
-        app, ["agreement", "--archive", str(archive), "--root", str(atlas_root)]
+    assert run(archive).exit_code == 2  # a gene directory not yet committed
+    commit(archive)
+    clean = CliRunner().invoke(
+        app, ["agreement", "--archive", str(archive), "--root", str(atlas_root), "--json"]
     )
-    assert run.exit_code == 2
+    assert (
+        json.loads(clean.output)["archive_commit"]
+        == git(archive, "rev-parse", "--short", "HEAD").strip()
+    )

@@ -1259,7 +1259,7 @@ def agreement_command(
     """
     _require_root(root)
     try:
-        top = archive_mod.check_archive(archive)
+        top, commit = archive_read.open_archive(archive)
         names = list(symbols or [])
         if not names:
             names = sorted(
@@ -1272,7 +1272,6 @@ def agreement_command(
         raise _fail(str(exc), 1) from None
     tallies = agreement_mod.tally(views)
     if as_json:
-        commit = views[0].commit if views else ""
         out = agreement_mod.as_json(tallies, commit)
         typer.echo(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False))
         return

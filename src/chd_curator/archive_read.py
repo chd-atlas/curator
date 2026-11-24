@@ -110,9 +110,8 @@ def _verdicts_of(doc: Mapping[str, Any], rel: str, run: str, finished: datetime)
     return out
 
 
-def read_archive(archive: Path, symbol: str, schema_root: Path) -> ArchiveView:
-    """Every verdict filed for ``symbol``, once the archive is a clean checkout of valid files."""
-    check_id("symbol", symbol)
+def open_archive(archive: Path) -> tuple[Path, str]:
+    """The archive's top and short HEAD, once it is a marked checkout with nothing uncommitted."""
     top = check_archive(archive)
     status = _git(top, "status", "--porcelain")
     if status.returncode != 0:
@@ -124,6 +123,13 @@ def read_archive(archive: Path, symbol: str, schema_root: Path) -> ArchiveView:
     head = _git(top, "rev-parse", "--short", "HEAD")
     if head.returncode != 0:
         raise GitError(f"git rev-parse failed: {head.stderr.strip()}")
+    return top, head.stdout.strip()
+
+
+def read_archive(archive: Path, symbol: str, schema_root: Path) -> ArchiveView:
+    """Every verdict filed for ``symbol``, once the archive is a clean checkout of valid files."""
+    check_id("symbol", symbol)
+    top, head = open_archive(archive)
     try:
         validator = schema_validator(schema_root, "review_decisions")
     except AtlasError as exc:
@@ -191,7 +197,7 @@ def read_archive(archive: Path, symbol: str, schema_root: Path) -> ArchiveView:
     return ArchiveView(
         symbol=symbol,
         gene=next(iter(genes)) if genes else None,
-        commit=head.stdout.strip(),
+        commit=head,
         files=len(paths),
         reviewers=len(keys),
         verdicts=tuple(verdicts),
