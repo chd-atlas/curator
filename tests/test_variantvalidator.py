@@ -5,7 +5,9 @@ answers: step one on NM_021005.3, step two on MANE NM_021005.4."""
 
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ import pytest
 from chd_curator import variantvalidator as vv
 from chd_curator.variantvalidator import (
     Metadata,
+    NotFound,
     Placed,
     Refused,
     VariantValidatorError,
@@ -494,3 +497,63 @@ def test_the_plus_strand_check_is_unchanged_and_the_strand_must_be_one_of_two() 
     assert isinstance(refused, Refused)
     with pytest.raises(VariantValidatorError, match="strand"):
         place(DEL, NR2F2, _del_fake(), "?")
+
+
+def _http_error(code: int, reason: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://example.invalid", code, reason, {}, io.BytesIO(b""))  # type: ignore[arg-type]
+
+
+def test_urllib_fetch_raises_notfound_on_a_404_and_a_plain_error_on_any_other_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vv._throttle, "wait", lambda: None)
+    for code, reason in ((404, "Not Found"), (429, "Too Many Requests"), (500, "Server Error")):
+
+        def refuse(*_a: Any, _c: int = code, _r: str = reason, **_k: Any) -> Any:
+            raise _http_error(_c, _r)
+
+        monkeypatch.setattr(vv.urllib.request, "urlopen", refuse)
+        with pytest.raises(vv.VariantValidatorError, match=f"HTTP {code} {reason}") as raised:
+            vv.urllib_fetch("https://example.invalid")
+        assert isinstance(raised.value, NotFound) is (code == 404)
+
+
+def test_a_404_on_the_one_request_refuses_the_variant_and_returns_no_metadata() -> None:
+    def fetch(_url: str) -> bytes:
+        raise NotFound("VariantValidator answered HTTP 404 Not Found")
+
+    result, metadata = place("NM_181486.4:c.1A>G", TBX5, fetch)
+
+    assert result == Refused(("VariantValidator answered HTTP 404 for this description",))
+    assert result.asked == "NM_181486.4:c.1A>G" and metadata is None
+
+
+def test_a_404_on_the_papers_own_transcript_refuses_with_no_metadata() -> None:
+    def fetch(_url: str) -> bytes:
+        raise NotFound("404")
+
+    result, metadata = place(SNV, NR2F2, fetch)
+
+    assert isinstance(result, Refused) and result.asked == SNV and metadata is None
+
+
+def test_a_404_on_the_genomic_request_refuses_naming_it_and_keeps_the_first_answers_metadata() -> (
+    None
+):
+    def fetch(request_url: str) -> bytes:
+        if request_url == url(SNV, OLDER):
+            return (FIXTURES / STEP1).read_bytes()
+        raise NotFound("404")
+
+    result, metadata = place(SNV, NR2F2, fetch)
+
+    assert result == Refused(("VariantValidator answered HTTP 404 for this description",))
+    assert result.asked == GENOMIC and metadata == METADATA
+
+
+def test_a_non_404_http_error_is_not_caught_by_place() -> None:
+    def fetch(_url: str) -> bytes:
+        raise vv.VariantValidatorError("VariantValidator answered HTTP 429 Too Many Requests")
+
+    with pytest.raises(vv.VariantValidatorError, match="429"):
+        place(f"{TBX5}:c.1A>G", TBX5, fetch)

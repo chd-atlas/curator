@@ -26,7 +26,7 @@ import urllib.error
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import typer
 from ruamel.yaml import YAML
@@ -63,7 +63,7 @@ from chd_curator.records import (
     with_verified,
 )
 from chd_curator.review_data import ReviewDataError, Reviewer, build_review_data
-from chd_curator.run import RunFormatError, RunPaths
+from chd_curator.run import RUN_FORMAT, RunFormatError, RunPaths
 from chd_curator.write import (
     WriteRefused,
     refuse_anchors,
@@ -340,6 +340,64 @@ def _unversioned(accession: str) -> str:
     return accession.split(".", 1)[0]
 
 
+# R-P2-3 (CP-D8): "before the MANE release" is before the pinned release's files. The MANE v1.5
+# release files on NCBI's FTP (https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/release_1.5/)
+# are dated 2025-12-04, read on 2026-11-24. A publication holds only a year, so a paper predates
+# them when its year is below this one. A transcript that is `.1` in a later release was `.1` at
+# every earlier date, so repinning the atlas forward leaves this true;
+# `test_the_pinned_mane_release_is_not_older_than_the_constant` fails if the atlas pins below
+# MANE_PINNED_RELEASE.
+MANE_PINNED_RELEASE: Final = "1.5"
+MANE_PINNED_RELEASE_YEAR: Final = 2025
+
+
+def _read_unversioned(
+    reported_transcript: str | None, mane: Frame, paper_year: int | None
+) -> str | None:
+    """MANE's transcript when a paper's unversioned accession is to be read as it (CP-D8).
+
+    That is when the paper's transcript is MANE's accession without a version (a versioned
+    accession never equals it), MANE's version is ``.1``, the paper's year is known and is
+    before the pinned MANE release's year. Otherwise None, and the description keeps the
+    accession the paper wrote. Only the description sent changes; `reported` is never rewritten.
+    """
+    if (
+        reported_transcript is None
+        or reported_transcript != _unversioned(mane.transcript)
+        or not mane.transcript.endswith(".1")
+        or paper_year is None
+        or paper_year >= MANE_PINNED_RELEASE_YEAR
+    ):
+        return None
+    return mane.transcript
+
+
+def _paper_years(root: Path) -> dict[str, int]:
+    """PMID -> year from ``curation/publications.yaml``; a record with no integer year has none.
+
+    A missing, unreadable or malformed file exits 1, because without it CP-D8 would silently
+    never apply.
+    """
+    path = root / "curation" / "publications.yaml"
+    if not path.is_file():
+        raise _fail(f"{path} does not exist; nothing was written", 1)
+    try:
+        data = plain(YAML(typ="safe").load(path.read_bytes()))
+    except (YAMLError, ValueError, OSError) as exc:
+        raise _fail(f"{path} cannot be read: {exc}; nothing was written", 1) from None
+    rows = data.get("publications") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise _fail(f"{path} has no 'publications' list; nothing was written", 1)
+    return {
+        str(row["id"]): row["year"]
+        for row in rows
+        if isinstance(row, dict)
+        and "id" in row
+        and isinstance(row.get("year"), int)
+        and not isinstance(row["year"], bool)
+    }
+
+
 def _on_mane(reported_transcript: str | None, mane: Frame) -> bool:
     """Whether the paper's own `p.` is numbered on MANE: no transcript named, or MANE's."""
     return reported_transcript is None or _unversioned(reported_transcript) in {
@@ -383,8 +441,14 @@ def _decide(
     result: variantvalidator.Placed | variantvalidator.Refused,
     description: str,
     mane: Frame,
+    reading: str | None = None,
 ) -> tuple[dict[str, Any], str]:
-    """The fields to write for one variant, and the line to print about it."""
+    """The fields to write for one variant, and the line to print about it.
+
+    `reading` is the CP-D8 sentence when the description asked was read from an unversioned
+    accession. An unplaced variant's note gains it (R-P2-28), because the description its note
+    names is one the paper never wrote; a placed variant has no field to hold it (R-P2-4).
+    """
     reported: dict[str, Any] = variant.get("reported") or {}
     if isinstance(result, variantvalidator.Placed):
         accession = (
@@ -414,16 +478,22 @@ def _decide(
         )
         note = f"VariantValidator refused {what}: {result.warnings[0]}"
         message = f"unplaced: {result.warnings[0]}"
+    if reading is not None:
+        note += f"; {reading}"
     kept = None
     paper = reported.get("p")
     if (
         isinstance(result, variantvalidator.Refused)
         and paper is not None
-        and _on_mane(reported.get("transcript"), mane)
         and names_a_residue(paper)
     ):
         kept = f"{mane.protein}:p.({three_letter(paper)})"
         message += f"; kept the paper's {kept}, run chd-atlas validate to check its residue"
+        # R-P2-5: the paper names no protein accession and the atlas holds none but MANE's, so a
+        # `p.` the paper numbered on another transcript is kept on MANE's protein, said so.
+        named = reported.get("transcript")
+        if not _on_mane(named, mane):
+            note += f"; the paper's p. is numbered on {named}; kept on {mane.protein}"
     fields = {
         "placement": "unplaced",
         "hgvs_c": None,
@@ -532,16 +602,48 @@ def _duplicate_keys(
     return problems
 
 
+def _entry(
+    finding: Any, variant: Any, outcome: str, line: str, reading: str | None
+) -> dict[str, Any]:
+    return {
+        "finding": finding,
+        "variant": variant,
+        "outcome": outcome,
+        "line": line,
+        "reading": reading,
+    }
+
+
+def _write_run_record(
+    paths: RunPaths, normalisation: int | None, entries: list[dict[str, Any]], failure: str
+) -> None:
+    """Write ``<run>/normalise.json``: the normalisation id this run wrote (None when it asked
+    nothing) and one entry per variant asked or skipped, in file order. `failure` says what the
+    run did to the curated file; it opens the message when the write fails (exit 1)."""
+    record = {"format": RUN_FORMAT, "normalisation": normalisation, "variants": entries}
+    text = json.dumps(record, sort_keys=True, ensure_ascii=False, indent=1) + "\n"
+    try:
+        write_bytes_atomically(paths.normalise, text.encode("utf-8"))
+    except OSError as exc:
+        raise _fail(f"{failure}, but {paths.normalise} was not written: {exc}", 1) from None
+
+
 @app.command("normalise")
 def normalise(
     symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
     root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    run_name: str | None = typer.Option(
+        None, "--run", help="A run id: also write <run>/normalise.json for the review page."
+    ),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
     """Place each `mane` variant the paper named by its c. on the MANE frame, with VariantValidator.
 
     Fills hgvs_c, hgvs_p and grch38, or marks the variant unplaced and pending review, and
-    records the run. Never touches an approval or verified_by.
+    records the run. Never touches an approval or verified_by. A variant VariantValidator
+    answers 404 for is refused alone. With --run, writes <run>/normalise.json, one entry per
+    variant asked or skipped, after the curated file when one is written (and refuses, exit 2,
+    a run that already holds one).
     """
     _require_root(root)
     try:
@@ -549,6 +651,18 @@ def normalise(
         validator = schema_validator(root, "gene_literature_file")
     except AtlasError as exc:
         raise _fail(str(exc), 2) from None
+    paths: RunPaths | None = None
+    if run_name is not None:
+        paths = RunPaths(root, mane.symbol, run_name)
+        if Path(run_name).name != run_name or run_name in ("", ".", "..") or not paths.dir.is_dir():
+            raise _fail(f"{paths.dir} is not a run directory; nothing was written", 2)
+        if paths.normalise.exists():
+            raise _fail(
+                f"{paths.normalise} exists: this run was already normalised; use a new run "
+                "id; nothing was written",
+                2,
+            )
+    years = _paper_years(root)
     path = literature_path(root, mane.symbol)
     if not path.is_file():
         raise _fail(f"{path} does not exist", 2)
@@ -565,6 +679,7 @@ def normalise(
     changes: dict[tuple[str, int], dict[str, Any]] = {}
     lines: list[str] = []
     skipped: list[str] = []
+    entries: list[dict[str, Any]] = []
     metadata: variantvalidator.Metadata | None = None
     for finding in findings:
         for raw_variant in finding.get("variants") or []:
@@ -578,37 +693,63 @@ def normalise(
             ):
                 continue
             if variant.get("kind") != "snv_indel":
-                skipped.append(
+                skip = (
                     f"{finding['id']} variant {variant['id']} ({variant['as_reported']}): skipped, "
                     f"kind {variant.get('kind')} is not snv_indel (the atlas refuses a mane "
                     "variant of that kind, LIT022)"
                 )
+                skipped.append(skip)
+                entries.append(_entry(finding["id"], variant["id"], "skipped", skip, None))
                 continue
-            description = f"{reported.get('transcript') or mane.transcript}:{reported['c']}"
+            named = reported.get("transcript")
+            year = years.get(str(finding.get("publication")))
+            as_mane = _read_unversioned(named, mane, year)
+            reading = (
+                f"read {named} as {as_mane} (CP-D8: MANE's version is .1; the paper is from "
+                f"{year}, before MANE v{MANE_PINNED_RELEASE})"
+                if as_mane is not None
+                else None
+            )
+            description = f"{as_mane or named or mane.transcript}:{reported['c']}"
             try:
                 result, seen = variantvalidator.place(
                     description, mane.transcript, _vv_fetch, mane.strand
                 )
             except variantvalidator.VariantValidatorError as exc:
                 raise _fail(f"{exc}; nothing was written", 1) from None
-            if metadata is not None and seen != metadata:
-                raise _fail(
-                    "VariantValidator's versions changed during the run; nothing was written", 1
-                )
-            metadata = seen
-            fields, message = _decide(variant, result, description, mane)
+            if seen is not None:  # a 404 carries no versions
+                if metadata is not None and seen != metadata:
+                    raise _fail(
+                        "VariantValidator's versions changed during the run; nothing was written",
+                        1,
+                    )
+                metadata = seen
+            fields, message = _decide(variant, result, description, mane, reading)
+            if reading is not None:
+                message += f"; {reading}"
             changes[(str(finding["id"]), variant["id"])] = fields
-            lines.append(
-                f"{finding['id']} variant {variant['id']} ({variant['as_reported']}): {message}"
-            )
-    if metadata is None:
+            line = f"{finding['id']} variant {variant['id']} ({variant['as_reported']}): {message}"
+            lines.append(line)
+            outcome = "unplaced" if fields.get("placement") == "unplaced" else "placed"
+            entries.append(_entry(finding["id"], variant["id"], outcome, line, reading))
+    if not changes:
         for line in skipped:
             typer.echo(line)
         typer.echo(
             "no variant was asked about: none is a snv_indel placed `mane` with a reported c. "
             "and no normalisation"
         )
+        if paths is not None:
+            _write_run_record(
+                paths, None, entries, "no variant was asked, so the curated file is unchanged"
+            )
         return
+    if metadata is None:
+        raise _fail(
+            "VariantValidator answered 404 for every variant asked, so no request carried its "
+            "versions to record; nothing was written",
+            1,
+        )
     problems = _duplicate_keys(findings, changes)
     if problems:
         raise _fail("\n".join(problems) + "\nnothing was written", 2)
@@ -638,6 +779,8 @@ def normalise(
             f"it with: chd-atlas literature review {mane.symbol} --approve {finding_id} "
             "--by <name>"
         )
+    if paths is not None:
+        _write_run_record(paths, run_id, entries, "the curated file was written")
     typer.echo(
         f"asked about {len(lines)} variant(s) in {path} as run {run_id}; run chd-atlas validate"
     )

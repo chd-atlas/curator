@@ -111,7 +111,15 @@ VariantValidator REST service (at most one request a second, the only network us
 fills `hgvs_c`, `hgvs_p` and `grch38` and records the run under `normalisations`. A variant
 VariantValidator refuses, or whose predicted `p.` disagrees with the paper's, becomes `unplaced` and
 `pending_review` with a note naming why; it never touches an approval or `verified_by`. A network
-failure writes nothing (exit 1); two variants the atlas would refuse as one name repeated (the same
+failure writes nothing (exit 1), but an HTTP 404 refuses that one variant (unplaced, pending review). A 404 on a
+variant's first request carries no versions to record: if every variant asked is such a 404, nothing is written
+(exit 1). A 404 on the second (genomic) request keeps the first answer's metadata, so that run is recorded. A variant whose paper named another transcript, and which
+VariantValidator refused, keeps the paper's `p.` on MANE's protein when `p.` names a residue, and its note says so. A paper's unversioned
+accession that is MANE's, from a paper published before 2025 where MANE's version is `.1`, is read as
+MANE's (CP-D8): the reading is printed, and a variant that ends unplaced carries it in its `review_note`. `--run <run id>`
+also writes `<run>/normalise.json` (one entry per variant asked or skipped, with that reading) for the review page;
+the run directory must exist, and must not already hold a `normalise.json` (exit 2 otherwise, before any request). A
+missing or malformed `curation/publications.yaml` (where the paper's year is read) exits 1 and writes nothing. Two variants the atlas would refuse as one name repeated (the same
 `grch38`, in one genotype context or one `with` group, ruling D16') write nothing either (exit 2). Run `chd-atlas validate` after it: the atlas, not curator,
 checks a refused variant's kept residue. Editing a finding's variants changes its approval digest, so
 re-approve it afterwards.

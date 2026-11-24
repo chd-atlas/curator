@@ -4,9 +4,11 @@ is refused for a reference mismatch. The network is never reached."""
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -18,12 +20,14 @@ from typer.testing import CliRunner, Result
 from chd_curator import cli
 from chd_curator.atlas import Frame
 from chd_curator.cli import app
-from chd_curator.variantvalidator import VariantValidatorError, url
+from chd_curator.variantvalidator import NotFound, VariantValidatorError, url
+from chd_curator.write import WriteRefused
 
 runner = CliRunner()
 FIXTURES = Path(__file__).parent / "fixtures" / "variantvalidator"
 TBX5 = "NM_181486.4"
 
+CID = "CHDA:LIT:0000001"
 HEAD = """\
 # Curator's head comment -- must survive every write.
 gene: HGNC:11604
@@ -115,6 +119,7 @@ C998 = "tbx5_c998_warning.json"
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
     (tmp_path / "curation" / "literature").mkdir(parents=True)
+    (tmp_path / "curation" / "publications.yaml").write_text("publications: []\n")
     (tmp_path / "schemas").symlink_to(Path(os.environ["CHD_ATLAS_ROOT"]) / "schemas")
     return tmp_path
 
@@ -326,16 +331,17 @@ def test_the_agree_rule_exempts_what_the_atlas_exempts(
     assert one.get("hgvs_p") == hgvs_p
 
 
-def test_a_refused_variant_on_another_transcript_keeps_no_hgvs_p(
+def test_a_refused_variant_on_another_transcript_keeps_the_papers_p_on_mane(
     stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D18's gate: the paper's residue number is kept only where the paper numbered on MANE."""
+    """R-P2-5: the paper's residue is kept on MANE's protein, and the note says whose numbering."""
     path = _write(
         root,
         literature(
             variant(1, "c.998G>T", "p.D111Y", transcript="NM_000192.3"),
             variant(2, "c.998G>T", "p.D111Y", transcript="NM_181486.5"),
-            variant(3, "c.998G>T", "p.?"),
+            variant(3, "c.998G>T", "p.?", transcript="NM_000192.3"),
+            variant(4, "c.998G>T", "p.D111Y"),
         ),
     )
     answer = (FIXTURES / C998).read_bytes()
@@ -345,10 +351,16 @@ def test_a_refused_variant_on_another_transcript_keeps_no_hgvs_p(
 
     assert result.exit_code == 0, result.stdout
     got = _variants(path)
-    assert [got[i]["placement"] for i in (1, 2, 3)] == ["unplaced"] * 3
-    assert "hgvs_p" not in got[1]
-    assert got[2]["hgvs_p"] == "NP_852259.1:p.(Asp111Tyr)"  # a version-less match counts
-    assert "hgvs_p" not in got[3]  # names no residue: nothing to keep
+    assert [got[i]["placement"] for i in (1, 2, 3, 4)] == ["unplaced"] * 4
+    assert got[1]["hgvs_p"] == "NP_852259.1:p.(Asp111Tyr)"
+    assert got[1]["review_note"].endswith(
+        "; the paper's p. is numbered on NM_000192.3; kept on NP_852259.1"
+    )
+    # On MANE (a version-less match counts, or no transcript named): kept, with no such note.
+    for i in (2, 4):
+        assert got[i]["hgvs_p"] == "NP_852259.1:p.(Asp111Tyr)"
+        assert "numbered on" not in got[i]["review_note"]
+    assert "hgvs_p" not in got[3]  # names no residue: nothing to keep, so nothing to say
 
 
 def test_two_variants_normalising_to_one_key_write_nothing_and_exit_2(
@@ -920,3 +932,497 @@ def test_a_listed_deletion_is_read_on_the_frames_strand_through_normalise(
     one = _variants(path)[1]
     assert one["placement"] == "mane" and one["hgvs_c"] == f"{TBX5}:c.905del"
     assert one["grch38"] == "12:114366241:CT:C"
+
+
+# --- R-P2-23..25: a 404, CP-D8's .1 and the run record ---------------------------------------
+
+
+def _run_dir(root: Path, name: str = "r1") -> Path:
+    path = root / "local" / "literature" / "runs" / "TBX5" / name
+    path.mkdir(parents=True)
+    return path
+
+
+def _with_run(stub: Path, root: Path, name: str = "r1") -> Result:
+    return runner.invoke(
+        app, ["normalise", "TBX5", "--root", str(root), "--atlas-cli", str(stub), "--run", name]
+    )
+
+
+def _by_url(answers: dict[str, bytes | Exception]) -> Callable[[str], bytes]:
+    """A fetch answering each description's URL with bytes, or raising the given error."""
+    table = {url(d, t): a for (d, t), a in answers.items()}  # type: ignore[misc]
+    asked: list[str] = []
+
+    def fetch(request_url: str) -> bytes:
+        asked.append(request_url)
+        answer = table[request_url]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    fetch.asked = asked  # type: ignore[attr-defined]
+    return fetch
+
+
+def test_a_404_refuses_that_variant_and_places_the_others(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(
+        root, literature(variant(1, "c.998G>T", "p.D111Y"), variant(2, "c.835C>T", "p.R279X"))
+    )
+    fetch = _by_url(
+        {
+            (f"{TBX5}:c.998G>T", TBX5): NotFound("VariantValidator answered HTTP 404 Not Found"),
+            (f"{TBX5}:c.835C>T", TBX5): (FIXTURES / C835).read_bytes(),
+        }
+    )
+    monkeypatch.setattr(cli, "_vv_fetch", fetch)
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 0, result.stdout
+    one, two = _variants(path)[1], _variants(path)[2]
+    assert one["placement"] == "unplaced" and one["review_status"] == "pending_review"
+    assert one["review_note"] == (
+        f"VariantValidator refused {TBX5}:c.998G>T: "
+        "VariantValidator answered HTTP 404 for this description"
+    )
+    assert two["placement"] == "mane" and two["hgvs_c"] == f"{TBX5}:c.835C>T"
+    assert one["normalisation"] == two["normalisation"] == 1
+
+
+def test_a_429_still_aborts_and_writes_nothing(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = literature(variant(1, "c.835C>T", "p.R279X"), variant(2, "c.998G>T", "p.D111Y"))
+    path = _write(root, text)
+    run = _run_dir(root)
+    monkeypatch.setattr(
+        cli,
+        "_vv_fetch",
+        _by_url(
+            {
+                (f"{TBX5}:c.835C>T", TBX5): (FIXTURES / C835).read_bytes(),
+                (f"{TBX5}:c.998G>T", TBX5): VariantValidatorError(
+                    "VariantValidator answered HTTP 429 Too Many Requests"
+                ),
+            }
+        ),
+    )
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 1
+    assert "HTTP 429" in result.stdout and "nothing was written" in result.stdout
+    assert path.read_text() == text
+    assert not (run / "normalise.json").exists()
+
+
+def test_when_every_variant_asked_is_a_404_nothing_is_written_and_the_run_says_why(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-23: a 404 carries no versions, so there is nothing to record a normalisation with."""
+    text = literature(variant(1, "c.998G>T", "p.D111Y"))
+    path = _write(root, text)
+    run = _run_dir(root)
+    monkeypatch.setattr(
+        cli,
+        "_vv_fetch",
+        _by_url({(f"{TBX5}:c.998G>T", TBX5): NotFound("VariantValidator answered HTTP 404")}),
+    )
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 1
+    assert "answered 404 for every variant asked" in result.stdout
+    assert path.read_text() == text
+    assert not (run / "normalise.json").exists()
+
+
+def test_a_404_on_the_genomic_request_refuses_that_variant_and_the_first_answers_versions_stand(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetch = _by_url(
+        {
+            ("NM_021005.3:c.288C>A", "NM_021005.3"): (FIXTURES / "nr2f2_v3_c288.json").read_bytes(),
+            ("NC_000015.10:g.96332393C>A", NR2F2_FRAME.transcript): NotFound("HTTP 404"),
+        }
+    )
+    path = _nr2f2(root, monkeypatch, "p.C96X", fetch)
+
+    one = _first_variant(path)
+    assert one["placement"] == "unplaced" and one["normalisation"] == 1
+    assert (
+        "NC_000015.10:g.96332393C>A, the genomic form of NM_021005.3:c.288C>A" in one["review_note"]
+    )
+    assert "HTTP 404 for this description" in one["review_note"]
+    assert len(YAML(typ="safe").load(path.read_text())["normalisations"]) == 1
+
+
+MANE1 = Frame("HGNC:11604", "TBX5", "NM_181486.1", "NP_852259.1", "-")
+READING = (
+    "read NM_181486 as NM_181486.1 (CP-D8: MANE's version is .1; the paper is from 2015, "
+    "before MANE v1.5)"
+)
+
+
+def _publications(root: Path, year: int | None) -> None:
+    row = "  - id: PMID:8988165\n" + (f"    year: {year}\n" if year is not None else "")
+    (root / "curation" / "publications.yaml").write_text("publications:\n" + row)
+
+
+def _mane1_answer() -> bytes:
+    """The c.835 fixture as if MANE's TBX5 transcript were NM_181486.1."""
+    return (FIXTURES / C835).read_bytes().replace(b"NM_181486.4", b"NM_181486.1")
+
+
+def test_an_unversioned_mane_transcript_from_before_the_release_is_read_as_dot_one(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(root, literature(variant(1, "c.835C>T", "p.R279X", transcript="NM_181486")))
+    _publications(root, 2015)
+    run = _run_dir(root)
+    fetch = _by_url({("NM_181486.1:c.835C>T", "NM_181486.1"): _mane1_answer()})
+    monkeypatch.setattr(cli, "frame", lambda *_: MANE1)
+    monkeypatch.setattr(cli, "_vv_fetch", fetch)
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 0, result.stdout
+    assert fetch.asked == [url("NM_181486.1:c.835C>T", "NM_181486.1")]  # type: ignore[attr-defined]
+    assert f"{READING}" in result.stdout
+    one = _variants(path)[1]
+    assert one["placement"] == "mane" and one["hgvs_c"] == "NM_181486.1:c.835C>T"
+    assert one["reported"]["transcript"] == "NM_181486"  # what the paper wrote is never rewritten
+    record = json.loads((run / "normalise.json").read_text())
+    assert record["normalisation"] == 1
+    assert [v["reading"] for v in record["variants"]] == [READING]
+    assert record["variants"][0]["outcome"] == "placed"
+
+
+@pytest.mark.parametrize(
+    ("transcript", "year", "frame_transcript", "first_request"),
+    [
+        ("NM_181486", 2025, "NM_181486.1", ("NM_181486", "NM_181486")),
+        ("NM_181486", None, "NM_181486.1", ("NM_181486", "NM_181486")),
+        ("NM_181486", 2015, "NM_181486.2", ("NM_181486", "NM_181486")),
+        ("NM_000192", 2015, "NM_181486.1", ("NM_000192", "NM_000192")),
+        ("NM_181486.1", 2015, "NM_181486.1", ("NM_181486.1", "NM_181486.1")),
+    ],
+    ids=[
+        "year_not_before_the_release",
+        "year_unknown",
+        "mane_not_at_dot_one",
+        "not_manes_accession",
+        "paper_wrote_a_version",
+    ],
+)
+def test_the_reading_is_refused_unless_every_condition_holds(
+    stub_atlas: Path,
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transcript: str,
+    year: int | None,
+    frame_transcript: str,
+    first_request: tuple[str, str],
+) -> None:
+    """The conditions: the paper's accession is MANE's, unversioned; MANE is at `.1`; the paper's
+    year is known; and it is before MANE_PINNED_RELEASE_YEAR. Break any one and the first request
+    is the description as the paper wrote it, then the run stops."""
+    _write(root, literature(variant(1, "c.835C>T", "p.R279X", transcript=transcript)))
+    _publications(root, year)
+    asked: list[str] = []
+
+    def fetch(request_url: str) -> bytes:
+        asked.append(request_url)
+        raise VariantValidatorError("stop here")
+
+    monkeypatch.setattr(
+        cli, "frame", lambda *_: dataclasses.replace(MANE1, transcript=frame_transcript)
+    )
+    monkeypatch.setattr(cli, "_vv_fetch", fetch)
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 1
+    assert asked == [url(f"{first_request[0]}:c.835C>T", first_request[1])]
+
+
+def test_the_pinned_mane_release_is_not_older_than_the_constant() -> None:
+    """R-P2-3: MANE_PINNED_RELEASE_YEAR is that release's year; an older pin would make it false."""
+    package = json.loads(
+        (Path(os.environ["CHD_ATLAS_ROOT"]) / "mirrors/packages/mane_select.json").read_text()
+    )
+    assert _release(package["version"]) >= _release(cli.MANE_PINNED_RELEASE)
+
+
+def _release(version: str) -> tuple[int, ...]:
+    """The leading dotted numeric part of a feeds version: ``1.5-r2`` reads as ``(1, 5)``."""
+    match = re.match(r"\d+(\.\d+)*", version)
+    assert match, version
+    return tuple(int(part) for part in match.group().split("."))
+
+
+def test_a_release_reads_its_leading_dotted_number() -> None:
+    assert _release("1.5") == (1, 5)
+    assert _release("1.5-r2") == (1, 5)
+    assert _release("1.10") == (1, 10) and _release("1.10") > _release("1.5")
+
+
+def test_a_run_record_lists_every_variant_asked_or_skipped_in_file_order(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skipped = variant(2, "c.1A>G", None).replace("kind: snv_indel", "kind: cnv")
+    path = _write(
+        root,
+        literature(variant(1, "c.835C>T", "p.R279X"), skipped, variant(3, "c.998G>T", "p.D111Y")),
+    )
+    run = _run_dir(root)
+    monkeypatch.setattr(
+        cli, "_vv_fetch", fixture_for({f"{TBX5}:c.835C>T": C835, f"{TBX5}:c.998G>T": C998})
+    )
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 0, result.stdout
+    text = (run / "normalise.json").read_text()
+    record = json.loads(text)
+    assert text == json.dumps(record, sort_keys=True, ensure_ascii=False, indent=1) + "\n"
+    assert record["format"] == 1 and record["normalisation"] == 1
+    assert [(v["variant"], v["outcome"], v["reading"]) for v in record["variants"]] == [
+        (1, "placed", None),
+        (2, "skipped", None),
+        (3, "unplaced", None),
+    ]
+    assert {v["finding"] for v in record["variants"]} == {"CHDA:LIT:0000001"}
+    assert "variant 3 (variant 3): unplaced:" in record["variants"][2]["line"]
+    assert "normalisation" in _variants(path)[1]
+
+
+def test_a_run_that_asks_nothing_still_writes_its_record_with_a_null_normalisation(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skipped = variant(1, "c.1A>G", None).replace("kind: snv_indel", "kind: cnv")
+    text = literature(skipped)
+    path = _write(root, text)
+    run = _run_dir(root)
+    monkeypatch.setattr(cli, "_vv_fetch", lambda _u: pytest.fail("no request expected"))
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 0
+    assert path.read_text() == text
+    record = json.loads((run / "normalise.json").read_text())
+    assert record["normalisation"] is None
+    assert [(v["variant"], v["outcome"]) for v in record["variants"]] == [(1, "skipped")]
+
+
+def test_a_run_directory_that_does_not_exist_is_refused_before_any_request(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = literature(variant(1, "c.835C>T", "p.R279X"))
+    path = _write(root, text)
+    monkeypatch.setattr(cli, "_vv_fetch", lambda _u: pytest.fail("no request expected"))
+
+    _run_dir(root)
+    for name in ("nope", "../TBX5/r1"):  # the second exists, reached through a parent
+        result = _with_run(stub_atlas, root, name)
+        assert result.exit_code == 2
+        assert "is not a run directory" in result.stdout
+    assert path.read_text() == text
+    assert not (root / "local/literature/runs/TBX5/nope").exists()
+
+
+def test_a_refusal_before_any_write_leaves_no_run_record(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two variants with one name are refused (exit 2) before the curated file is written, and
+    no run record is written either."""
+    text = literature(variant(1, "c.835C>T", "p.R279X"), variant(2, "c.835C>T", "p.R279X"))
+    path = _write(root, text)
+    run = _run_dir(root)
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for({f"{TBX5}:c.835C>T": C835}))
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 2
+    assert path.read_text() == text
+    assert not (run / "normalise.json").exists()
+
+
+def test_a_curated_write_that_is_refused_leaves_no_run_record(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`write_literature` itself refusing (the file changed, a schema error) exits 2, and the
+    record, which follows that write, is never written."""
+    text = literature(variant(1, "c.835C>T", "p.R279X"))
+    path = _write(root, text)
+    run = _run_dir(root)
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for({f"{TBX5}:c.835C>T": C835}))
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise WriteRefused("the write was refused")
+
+    monkeypatch.setattr(cli, "write_literature", refuse)
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 2
+    assert "the write was refused" in result.stdout
+    assert path.read_text() == text
+    assert not (run / "normalise.json").exists()
+
+
+def test_a_run_record_that_cannot_be_written_says_the_curated_file_was(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(root, literature(variant(1, "c.835C>T", "p.R279X")))
+    run = _run_dir(root)
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for({f"{TBX5}:c.835C>T": C835}))
+
+    def refuse(_path: Path, _payload: bytes) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "write_bytes_atomically", refuse)
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 1
+    assert (
+        f"the curated file was written, but {run / 'normalise.json'} was not written: disk full"
+        in (result.stdout.replace("\n", ""))
+    )
+    assert _variants(path)[1]["placement"] == "mane"
+    assert f"{CID} variant 1 (variant 1): placed {TBX5}:c.835C>T" in result.stdout  # F3
+
+
+def test_a_run_record_that_cannot_be_written_when_nothing_was_asked_says_the_file_is_unchanged(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = literature(variant(1, "c.1A>G", None).replace("kind: snv_indel", "kind: cnv"))
+    path = _write(root, text)
+    run = _run_dir(root)
+
+    def refuse(_path: Path, _payload: bytes) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "write_bytes_atomically", refuse)
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 1
+    assert (
+        f"no variant was asked, so the curated file is unchanged, but {run / 'normalise.json'} "
+        "was not written: disk full"
+    ) in result.stdout.replace("\n", "")
+    assert path.read_text() == text
+
+
+def test_a_second_run_on_one_run_id_is_refused_before_any_request_and_changes_nothing(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-27: the first run's readings must not be erased by a second one."""
+    path = _write(root, literature(variant(1, "c.835C>T", "p.R279X")))
+    run = _run_dir(root)
+    monkeypatch.setattr(cli, "_vv_fetch", fixture_for({f"{TBX5}:c.835C>T": C835}))
+    assert _with_run(stub_atlas, root).exit_code == 0
+    record, curated = (run / "normalise.json").read_bytes(), path.read_bytes()
+    monkeypatch.setattr(cli, "_vv_fetch", lambda _u: pytest.fail("no request expected"))
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 2
+    assert "already normalised" in result.stdout and "normalise.json" in result.stdout
+    assert (run / "normalise.json").read_bytes() == record
+    assert path.read_bytes() == curated
+
+
+def test_a_placed_variant_then_a_404_keeps_the_first_answers_versions(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 404 carries no versions; it must not reset or contradict those the first answer set."""
+    path = _write(
+        root, literature(variant(1, "c.835C>T", "p.R279X"), variant(2, "c.998G>T", "p.D111Y"))
+    )
+    fetch = _by_url(
+        {
+            (f"{TBX5}:c.835C>T", TBX5): (FIXTURES / C835).read_bytes(),
+            (f"{TBX5}:c.998G>T", TBX5): NotFound("VariantValidator answered HTTP 404 Not Found"),
+        }
+    )
+    monkeypatch.setattr(cli, "_vv_fetch", fetch)
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 0, result.stdout
+    one, two = _variants(path)[1], _variants(path)[2]
+    assert one["placement"] == "mane" and one["normalisation"] == 1
+    assert two["placement"] == "unplaced" and two["review_status"] == "pending_review"
+    runs = YAML(typ="safe").load(path.read_text())["normalisations"]
+    assert len(runs) == 1 and runs[0]["version"] and runs[0]["vvta"]
+
+
+def test_a_refused_variant_read_under_cp_d8_keeps_the_reading_in_its_note(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-28: the note names NM_181486.1:c.998G>T, which the paper never wrote."""
+    path = _write(root, literature(variant(1, "c.998G>T", "p.D111Y", transcript="NM_181486")))
+    _publications(root, 2015)
+    answer = (FIXTURES / C998).read_bytes().replace(b"NM_181486.4", b"NM_181486.1")
+    monkeypatch.setattr(cli, "frame", lambda *_: MANE1)
+    monkeypatch.setattr(
+        cli, "_vv_fetch", _by_url({("NM_181486.1:c.998G>T", "NM_181486.1"): answer})
+    )
+
+    result = _normalise(stub_atlas, root)
+
+    assert result.exit_code == 0, result.stdout
+    one = _variants(path)[1]
+    assert one["placement"] == "unplaced"
+    assert one["review_note"].startswith("VariantValidator refused NM_181486.1:c.998G>T:")
+    assert one["review_note"].endswith(f"; {READING}")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [None, "publications: {a: 1}\n", "- not a mapping\n", "publications: [unclosed\n"],
+    ids=["missing", "not_a_list", "not_a_mapping", "unreadable"],
+)
+def test_a_missing_or_malformed_publications_file_exits_1_and_writes_nothing(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch, text: str | None
+) -> None:
+    """Without it CP-D8 would silently never apply."""
+    literature_text = literature(variant(1, "c.835C>T", "p.R279X"))
+    path = _write(root, literature_text)
+    run = _run_dir(root)
+    publications = root / "curation" / "publications.yaml"
+    if text is None:
+        publications.unlink()
+    else:
+        publications.write_text(text)
+    monkeypatch.setattr(cli, "_vv_fetch", lambda _u: pytest.fail("no request expected"))
+
+    result = _with_run(stub_atlas, root)
+
+    assert result.exit_code == 1
+    assert "publications.yaml" in result.stdout and "nothing was written" in result.stdout
+    assert path.read_text() == literature_text
+    assert not (run / "normalise.json").exists()
+
+
+@pytest.mark.parametrize("name", ["..", "."])
+def test_a_run_named_dot_or_dot_dot_is_refused_and_nothing_is_written(
+    stub_atlas: Path, root: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    text = literature(variant(1, "c.835C>T", "p.R279X"))
+    path = _write(root, text)
+    _run_dir(root)
+    monkeypatch.setattr(cli, "_vv_fetch", lambda _u: pytest.fail("no request expected"))
+
+    result = _with_run(stub_atlas, root, name)
+
+    assert result.exit_code == 2
+    assert "is not a run directory" in result.stdout
+    assert path.read_text() == text
+    assert not list((root / "local/literature/runs").rglob("normalise.json"))

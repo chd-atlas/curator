@@ -79,6 +79,10 @@ class RunPaths:
         return self.dir / "review.html"
 
     @property
+    def normalise(self) -> Path:
+        return self.dir / "normalise.json"
+
+    @property
     def decisions(self) -> Path:
         return self.dir / "decisions"
 
@@ -271,6 +275,48 @@ def load_comparison(p: RunPaths) -> Comparison:
         span_only=_str_list(data["span_only"], path, "span_only"),
         differs={str(k): _str_list(v, path, "differs") for k, v in data["differs"].items()},
     )
+
+
+_NORMALISE_KEYS: Final = frozenset({"format", "normalisation", "variants"})
+_NORMALISE_VARIANT_KEYS: Final = frozenset({"finding", "variant", "outcome", "line", "reading"})
+_OUTCOMES: Final = ("placed", "unplaced", "skipped")
+
+
+def load_normalise(p: RunPaths) -> dict[tuple[str, int], str | None]:
+    """The run's ``normalise.json`` as ``(finding id, variant id) -> reading`` (None when the
+    variant carries none); an empty mapping when the run has no such file."""
+    path = p.normalise
+    if not path.is_file():
+        return {}
+    data = _keys(_read_json(path), _NORMALISE_KEYS, path, "the file")
+    _check_format(data, path)
+    normalisation = data["normalisation"]
+    if normalisation is not None and (
+        not isinstance(normalisation, int) or isinstance(normalisation, bool)
+    ):
+        raise RunFormatError(
+            f"{path}: 'normalisation' is not an integer or null: {normalisation!r}"
+        )
+    entries = data["variants"]
+    if not isinstance(entries, list):
+        raise RunFormatError(f"{path}: 'variants' is not a list")
+    readings: dict[tuple[str, int], str | None] = {}
+    for entry in entries:
+        entry = _keys(entry, _NORMALISE_VARIANT_KEYS, path, "a 'variants' entry")
+        finding = _str(entry["finding"], path, "finding")
+        variant = entry["variant"]
+        if not isinstance(variant, int) or isinstance(variant, bool):
+            raise RunFormatError(f"{path}: 'variant' is not an integer: {variant!r}")
+        if entry["outcome"] not in _OUTCOMES:
+            raise RunFormatError(
+                f"{path}: 'outcome' is not one of {_OUTCOMES}: {entry['outcome']!r}"
+            )
+        _str(entry["line"], path, "line")
+        if (finding, variant) in readings:
+            raise RunFormatError(f"{path}: lists {finding} variant {variant} twice")
+        reading = entry["reading"]
+        readings[(finding, variant)] = None if reading is None else _str(reading, path, "reading")
+    return readings
 
 
 def load_judge(p: RunPaths) -> dict[str, tuple[JudgeDecision, ...]]:

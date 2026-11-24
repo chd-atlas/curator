@@ -22,6 +22,9 @@ files or the evidence files. Other findings of the literature file are outside t
 ``apply-review`` never touches them. A card's ``agreement`` comes from that comparison, not
 from the judge files: ``agreed`` (listed ``agreed`` or ``span_only``), ``judged`` (listed in
 ``differs``, which must then have judge decisions) or ``one_reader`` (covered, in no list).
+When the run holds ``normalise.json`` (written by ``chd-curator normalise --run``), a variant
+card carries that variant's ``reading`` (None when it has none); an entry naming a finding or
+variant the literature file does not hold is refused.
 Nothing here iterates a ``set`` into the output; every list is built in a stated order.
 """
 
@@ -48,6 +51,7 @@ from chd_curator.run import (
     load_comparison,
     load_evidence,
     load_judge,
+    load_normalise,
     load_texts,
 )
 
@@ -352,6 +356,7 @@ def _variant_card(
     decisions: Sequence[tuple[JudgeDecision, QuoteCheck | None]],
     evidence: Sequence[QuoteCheck],
     hpo: Mapping[str, str],
+    reading: str | None = None,
 ) -> dict[str, Any]:
     with_text = ""
     if v.get("with") is not None or v.get("phase") is not None:
@@ -401,6 +406,7 @@ def _variant_card(
         # every other placement's hgvs_p is the agent's own, so it is labelled as recorded
         "placed_by": "variantvalidator" if v.get("placement") == "mane" else "recorded",
         "vv_note": note,
+        "reading": reading,
         "others": others_rows,
         "keys_shown": sorted(direct + [r["name"] for r in others_rows]),
         "state": "judged" if decisions else "agreed",
@@ -430,6 +436,7 @@ def _finding_card(
     paper: _Paper,
     pubs: Mapping[str, Mapping[str, Any]],
     hpo: Mapping[str, str],
+    readings: Mapping[int, str | None],
 ) -> dict[str, Any]:
     pmid = str(f["publication"])
     abstract_only = source == "abstract" or f.get("review_status") == "not_accessible"
@@ -530,6 +537,7 @@ def _finding_card(
             on_variant.get(int(v["id"]), []),
             ev_variant.get(int(v["id"]), []),
             hpo,
+            readings.get(int(v["id"])),
         )
         for v in variants
     ]
@@ -690,6 +698,20 @@ def build_review_data(
     checks = check_quotes(run)
     by_digest = {d.id: d for d in digests.findings}
     held = {str(f["id"]) for f in lit["findings"]}
+    normalise = load_normalise(run)
+    unknown = sorted(
+        (fid, vid)
+        for fid, vid in normalise
+        if not any(
+            str(f["id"]) == fid and any(v.get("id") == vid for v in f.get("variants") or [])
+            for f in lit["findings"]
+        )
+    )
+    if unknown:
+        raise ReviewDataError(
+            f"{run.normalise}: names {unknown[0][0]} variant {unknown[0][1]}, which "
+            f"{lit_path} does not hold (all such pairs: {unknown})"
+        )
     covered = _covered(comparison, judge, evidence)
     stray = sorted(covered - held)
     if stray:
@@ -752,6 +774,7 @@ def build_review_data(
                 paper=paper,
                 pubs=pubs,
                 hpo=hpo,
+                readings={vid: r for (nf, vid), r in normalise.items() if nf == fid},
             )
         )
     cards.sort(key=lambda c: (_GROUP_ORDER[c["group"]], -c["n_judged"], c["id"]))
