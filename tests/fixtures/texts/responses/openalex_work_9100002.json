@@ -1,0 +1,7 @@
+{"id": "https://openalex.org/W9100002", "doi": "https://doi.org/10.9999/synthetic.0002",
+ "best_oa_location": {"is_oa": true, "landing_page_url": "https://repo.example.org/record/2", "pdf_url": "https://repo.example.org/files/2.pdf", "license": "cc-by", "source": {"display_name": "Synthetic Repository"}},
+ "locations": [
+  {"is_oa": true, "landing_page_url": "https://repo.example.org/record/2", "pdf_url": "https://repo.example.org/files/2.pdf", "license": "cc-by"},
+  {"is_oa": false, "landing_page_url": "https://closed.example.com/article/2", "pdf_url": null, "license": null},
+  {"is_oa": true, "landing_page_url": "https://preprints.example.net/abs/2", "pdf_url": null, "license": null}
+ ]}

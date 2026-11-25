@@ -1,0 +1,4 @@
+{"version": "6.9", "hitCount": 1, "request": {"queryString": "EXT_ID:9100002 AND SRC:MED"},
+ "resultList": {"result": [{"id": "9100002", "source": "MED", "pmid": "9100002",
+  "doi": "10.9999/synthetic.0002", "title": "A closed synthetic report", "pubYear": "1999",
+  "isOpenAccess": "N", "inEPMC": "N", "inPMC": "N"}]}}
