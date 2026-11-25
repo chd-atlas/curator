@@ -218,6 +218,31 @@ Run `.venv/bin/chd-atlas validate` after each step.
 `NCBI_API_KEY` is optional, read from the environment only and never written to a file.
 `search`, `abstracts`, `add-publication` and `normalise` need the network.
 
+### Keep reviews: the review archive
+
+The review archive is a private git repository, your checkout of it passed as `--archive`. Every
+review page is filed in it as sent and every decisions file as received. Later owner pages read it
+(`review-page --archive`), and `agreement` measures how often each clinician agrees with you. The
+owner sends and receives; a session never contacts a clinician.
+
+- **Send by file (the default).** The session builds the clinician's page (`review-page --role
+  second_opinion --reviewer <name>`), files it with `archive-page`, and gives you the path; you email
+  it. The page states what the archive keeps, in a notice above its save buttons, and never reads
+  the archive.
+- **On claude.ai, for an invited clinician with an account (not yet measured).** The session
+  publishes the clinician's page as its own private artifact, with the `db` and `downloads`
+  capabilities, and files it with `archive-page --artifact <url>`. You invite the clinician from the
+  Share menu. On their "I'm done" the session exports the store, converts it with
+  `review-decisions` and files the result. Whether an invited editor can write to the store, and
+  what a signed-out or view-only visitor sees, have not been measured.
+- **Receive and file.** You give the session the returned file; it files it with `archive-decisions`
+  and pushes the archive (the commands never push). For your own review, `archive-decisions` prints
+  the `chd-atlas literature apply-review` command to run next. A store export is converted and not
+  kept.
+- **Remove.** On a clinician's request, `archive-redact --name <name> --archive <dir>` lists what it
+  would delete and redact; `--apply` does it and commits. Rewriting the archive's history and
+  republishing your claude.ai copies follow the steps it prints, on your word.
+
 ## Develop
 
 curator's tests run against a real atlas checkout and stop if any of these is unset:
