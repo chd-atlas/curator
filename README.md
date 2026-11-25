@@ -200,6 +200,44 @@ The files are written in this order: `evidence/` and `merge.json`; the id regist
 `publications.yaml`; the literature file. A crash part-way leaves `merge.json` in place, so a
 re-run is refused until the curator removes it.
 
+### Compare a run's two readings
+
+`chd-curator compare <SYMBOL> --run <run id> [--root .] [--atlas-cli PATH]` sets the blind reader's
+`verify/batch-NN.findings.yaml` against what `merge` wrote and writes `comparison.json` and, for
+each batch with anything to judge, `judging/judge-NN.md`. It needs `merge.json`, and a verify file
+for every batch of `batches.json` (and for none other). Both passes go through the notation rules
+before they are compared. In a run planned `--mode new` the first pass is the findings of the
+literature file that `merge.json` numbered; they pair with the blind pass's findings by
+(publication, design, cohorts) within a batch. A key several findings share is never paired by
+that rule; such findings pair only where exactly one finding on each side is identical to the
+other in every compared field, span and review mark, and every other one is listed as only in the
+first pass or only in the blind pass. In a `--mode backfill` run the blind pass is
+`findings: {<finding id>: {<field>: <value>}}`: each finding pairs with itself, the blind copy
+being the finding as merged with each declared field replaced by the blind reader's value, or
+removed when the blind reader gave none; a finding neither reader filled in a declared field is in
+no list.
+
+A pair is agreed; span only when its only difference is a variant's `as_reported` span
+(the first pass's span stays); or differs, with the names of its differing fields. The order
+of a variant's phenotypes and the notation rules' fixes are never differences. Review marks
+(`review_status` and `review_settled_by` of the finding and of each variant) are compared as one
+pseudo-field, `review marks`; `review_note` is not compared. A pair that differs in the span and
+another field lists only the other field. A backfill that declares a field the comparison never
+reads (`summary`, `locators`, the review fields) is refused, because every difference in it would
+read as agreement. A manifest names, for each differing pair and each unpaired finding, the paper's
+text, abstract and supplement paths (absolute), each differing field as
+`<field>: first <json> | second <json>`, and both findings as YAML, the first as merged and
+without its approval. Example output: `compared 3 pairs: 1 agreed, 1 span only, 1 differ; 0 only
+in the first pass, 1 only in the blind pass`.
+
+It exits 2, writing nothing, when the judges have written anything (a `judge/*.decisions.yaml` or
+a `judging/*.findings.yaml`), the run has no `merge.json`, a verify file is missing, misnamed or
+for a batch the plan lacks, a blind finding cites a paper its batch does not read, a blind id
+appears in two batches, a blind finding does not satisfy the atlas's `Finding` schema, or a backfill
+names an id outside its batch or an undeclared field. A re-run is otherwise allowed, so a
+corrected verify file can be compared again: it removes the `judging/judge-*.md` files an earlier
+run wrote, writes the new ones and `comparison.json` last. It exits 1 on an OS error.
+
 ### Review a run
 
 `chd-curator quotes <SYMBOL> --run <run id>` checks every quote in a run's `evidence/` and

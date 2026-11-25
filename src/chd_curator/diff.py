@@ -49,7 +49,7 @@ import copy
 import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 from jsonschema import Draft202012Validator
@@ -160,13 +160,15 @@ class FindingDiff:
     ``only_first`` / ``only_second``: ids with no partner (including every finding
     of an ambiguous key). ``agreed``: first-pass ids paired with a finding that
     has no field difference. ``fields``: first-pass id -> its differences,
-    sorted by field name, only for paired findings that differ.
+    sorted by field name, only for paired findings that differ. ``pairs``: every paired
+    first-pass id -> the id of its partner.
     """
 
     only_first: tuple[str, ...]
     only_second: tuple[str, ...]
     agreed: tuple[str, ...]
     fields: dict[str, list[FieldDifference]]
+    pairs: dict[str, str] = field(default_factory=dict)
 
 
 def _filled(finding: Mapping[str, Any], name: str, prop: Mapping[str, Any]) -> Any:
@@ -227,18 +229,31 @@ def _phenotypes_sorted(variant: dict[str, Any]) -> dict[str, Any]:
     return variant
 
 
+def normalise_variant(
+    variant: Mapping[str, Any], schema: Mapping[str, Any], defs: Mapping[str, Any]
+) -> dict[str, Any]:
+    """One variant as `diff_findings` compares it: defaults filled, strings stripped,
+    ``phenotypes`` sorted, bookkeeping dropped. ``schema`` is ``$defs.Variant``."""
+    filled = _phenotypes_sorted(stripped(_fill_object(variant, schema, defs)))
+    return {k: v for k, v in filled.items() if k not in _VARIANT_BOOKKEEPING}
+
+
+def variant_schema(defs: Mapping[str, Any]) -> Mapping[str, Any]:
+    try:
+        schema = defs["Variant"]
+        schema["properties"]
+    except (KeyError, TypeError) as exc:
+        raise DiffError("the atlas's gene_literature_file schema has no $defs.Variant") from exc
+    return schema  # type: ignore[no-any-return]
+
+
 def _variants(
     finding: Mapping[str, Any], properties: Mapping[str, Any], defs: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    try:
-        variant_schema = defs["Variant"]
-        variant_schema["properties"]
-    except (KeyError, TypeError) as exc:
-        raise DiffError("the atlas's gene_literature_file schema has no $defs.Variant") from exc
+    schema = variant_schema(defs)
     listed = _filled(finding, "variants", properties["variants"])
-    filled = (_phenotypes_sorted(stripped(_fill_object(v, variant_schema, defs))) for v in listed)
     return sorted(
-        ({k: v for k, v in item.items() if k not in _VARIANT_BOOKKEEPING} for item in filled),
+        (normalise_variant(v, schema, defs) for v in listed),
         key=lambda item: json.dumps(item, sort_keys=True),
     )
 
@@ -263,12 +278,20 @@ def diff_findings(
     first: Sequence[Mapping[str, Any]],
     second: Sequence[Mapping[str, Any]],
     literature_schema: Mapping[str, Any],
+    *,
+    by_id: bool = False,
 ) -> FindingDiff:
+    """Pair `first` with `second` and compare the pairs.
+
+    Findings pair by their key (see the module docstring); with ``by_id`` they pair by ``id``
+    instead, for two copies of the same finding."""
     names = compared_fields(literature_schema)
     properties = finding_schema(literature_schema)["properties"]
     defs = literature_schema["$defs"]
 
     def key(finding: Mapping[str, Any]) -> _Key:
+        if by_id:
+            return (str(finding["id"]), "", ())
         cohorts = _filled(finding, "cohorts", properties["cohorts"])
         return (str(finding["publication"]), str(finding["design"]), tuple(sorted(cohorts)))
 
@@ -280,11 +303,13 @@ def diff_findings(
     only_first: list[str] = []
     agreed: list[str] = []
     fields: dict[str, list[FieldDifference]] = {}
+    pairs: dict[str, str] = {}
     for finding in sorted(first, key=lambda f: str(f["id"])):
         k = key(finding)
         if k not in pairable:
             only_first.append(str(finding["id"]))
             continue
+        pairs[str(finding["id"])] = str(partner[k]["id"])
         mine = _values(finding, names, properties, defs)
         theirs = _values(partner[k], names, properties, defs)
         differences = [(n, mine[n], theirs[n]) for n in names if mine[n] != theirs[n]]
@@ -293,4 +318,4 @@ def diff_findings(
         else:
             agreed.append(str(finding["id"]))
     only_second = sorted(str(f["id"]) for f in second if key(f) not in pairable)
-    return FindingDiff(tuple(only_first), tuple(only_second), tuple(agreed), fields)
+    return FindingDiff(tuple(only_first), tuple(only_second), tuple(agreed), fields, pairs)

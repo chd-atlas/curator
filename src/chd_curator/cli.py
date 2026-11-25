@@ -37,6 +37,7 @@ from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, sources, variantvalidator
 from chd_curator import batch as batch_module
+from chd_curator import compare as compare_module
 from chd_curator import merge as merge_module
 from chd_curator import texts as texts_module
 from chd_curator.atlas import (
@@ -1095,6 +1096,37 @@ def merge(
     except (PubMedError, urllib.error.URLError, OSError) as exc:
         raise _fail(_redact(str(exc), key), 1) from None
     typer.echo(line)
+
+
+@app.command("compare")
+def compare(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Compare a merged run's blind pass with its first pass and write the judges' manifests.
+
+    Writes comparison.json and judging/judge-NN.md for each batch with something to judge. A
+    re-run replaces the manifests, so a corrected verify file can be compared again. Exit 2,
+    nothing written, when the judges have already written decisions or findings, the run has no
+    merge.json, or a batch's blind pass is missing, misplaced or inconsistent. Exit 1 on an OS
+    error.
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        paths = RunPaths(root, symbol, run)
+        prepared = compare_module.prepare(paths, approved)
+    except (AtlasError, compare_module.CompareError, RunFormatError, DiffError) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    try:
+        compare_module.write_outputs(paths, prepared)
+    except OSError as exc:
+        raise _fail(f"{paths.dir}: cannot be written: {exc}", 1) from None
+    typer.echo(compare_module.summary(prepared.comparison))
 
 
 def _atlas_commit(root: Path) -> str | None:

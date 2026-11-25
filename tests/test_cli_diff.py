@@ -556,6 +556,7 @@ def test_the_cli_has_no_command_or_option_that_approves() -> None:
         "quotes",
         "batch",
         "merge",
+        "compare",
         "review-page",
         "review-decisions",
         "archive-page",
