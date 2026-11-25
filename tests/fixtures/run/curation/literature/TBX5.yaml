@@ -4,10 +4,19 @@ searches:
     source: pubmed
     query: ("TBX5"[tiab]) AND stub-query
     run_on: 2026-11-19
-    hits: 1
-    new_hits: 1
+    hits: 4
+    new_hits: 4
 triage:
   - pmid: PMID:91000001
+    search: 1
+    decision: included
+  - pmid: PMID:91000002
+    search: 1
+    decision: included
+  - pmid: PMID:91000003
+    search: 1
+    decision: included
+  - pmid: PMID:91000004
     search: 1
     decision: included
 findings:
@@ -40,4 +49,4 @@ findings:
     verified_by: agent:literature-verify/claude-opus-5-5
     approved_by: E.A.M
     approved_on: 2026-11-19
-    approved_digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+    approved_digest: sha256:da89e4f29593f9c5f6d69e21c6ab229d68deb4aff156edccbbc6d9554f061c53

@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from ruamel.yaml import YAML
 
-from chd_curator.atlas import plain, schema_validator
+from chd_curator.atlas import digests, plain, schema_validator
 from chd_curator.notation import NotationChange
 from chd_curator.run import (
     AssembleRecord,
@@ -34,13 +34,21 @@ from chd_curator.run import (
     load_merge,
     load_papers,
     load_pass,
+    load_texts,
     write_assemble,
     write_batches,
     write_comparison,
     write_evidence,
     write_merge,
 )
-from run_fixture import RUN_FIXTURE, copy_run_fixture, run_paths
+from run_fixture import (
+    JUDGE_FIXTURE,
+    RUN_FIXTURE,
+    atlas_digest_root,
+    copy_judge_round,
+    copy_run_fixture,
+    run_paths,
+)
 
 R = RUN_FIXTURE / "local/literature/runs/TBX5/r1"
 
@@ -48,10 +56,11 @@ R = RUN_FIXTURE / "local/literature/runs/TBX5/r1"
 def test_the_fixture_is_tracked_by_git() -> None:
     import subprocess
 
-    listed = subprocess.run(
-        ["git", "ls-files", str(RUN_FIXTURE)], capture_output=True, text=True, check=True
-    ).stdout.split()
-    assert len(listed) == len([f for f in RUN_FIXTURE.rglob("*") if f.is_file()]) > 0
+    for fixture in (RUN_FIXTURE, JUDGE_FIXTURE):
+        listed = subprocess.run(
+            ["git", "ls-files", str(fixture)], capture_output=True, text=True, check=True
+        ).stdout.split()
+        assert len(listed) == len([f for f in fixture.rglob("*") if f.is_file()]) > 0
 
 
 def test_the_new_paths_are_the_contracts_children() -> None:
@@ -62,47 +71,161 @@ def test_the_new_paths_are_the_contracts_children() -> None:
     ] + [Path("/r/local/literature/runs/TBX5/r1/verify")]
 
 
-def test_the_fixture_loads_as_literal_objects() -> None:
+def test_the_fixture_loads_as_literal_objects(tmp_path: Path) -> None:
     p = run_paths()
     assert load_batches(p) == BatchPlan(
         "new",
         (),
-        400000,
+        354,
         (
-            Batch("01", ("PMID:91000001",), (), 150),
-            Batch("02", ("PMID:91000002",), (), 90),
+            Batch("01", ("PMID:91000002",), (), 283),
+            Batch("02", ("PMID:91000003", "PMID:91000004"), (), 354),
         ),
     )
-    assert load_comparison(p) == Comparison(
-        {"CHDA:LIT:0901001": "CHDA:LIT:0801001", "CHDA:LIT:0901002": "CHDA:LIT:0801002"},
-        ("CHDA:LIT:0901001",),
-        (),
-        {"CHDA:LIT:0901002": ("phenotypes",)},
-        (),
-        ("CHDA:LIT:0801003",),
+    assert [t.pmid for t in load_texts(p)] == [f"PMID:9100000{n}" for n in (1, 2, 3, 4)]
+    assert load_papers(R / "extract/batch-02.papers.json") == (
+        PaperOutcome("PMID:91000003", "case_report", "abstract only", None),
+        PaperOutcome(
+            "PMID:91000004",
+            None,
+            "",
+            ("not_human_genetics", "A mouse model; no human carrier is reported."),
+        ),
     )
-    assert load_papers(R / "extract/batch-01.papers.json") == (
-        PaperOutcome("PMID:91000001", "family_linkage", "full text and abstract", None),
+    first, second = load_pass(R / "extract/batch-01.findings.yaml")
+    assert (first["id"], first["design"], first["screened"]) == (
+        "CHDA:LIT:0901001",
+        "case_report",
+        1,
     )
-    assert load_pass(R / "verify/batch-02.findings.yaml") == [
-        {
-            "id": "CHDA:LIT:0801002",
-            "publication": "PMID:91000002",
-            "design": "case_report",
-            "summary": "A synthetic finding.",
-        },
-        {
-            "id": "CHDA:LIT:0801003",
-            "publication": "PMID:91000002",
-            "design": "functional_only",
-            "summary": "A second synthetic finding the first reader did not report.",
-        },
+    assert (second["id"], second["design"], second["screened"]) == (
+        "CHDA:LIT:0901002",
+        "family_segregation",
+        1,
+    )
+    assert [f["id"] for f in load_pass(R / "verify/batch-01.findings.yaml")] == [
+        "CHDA:LIT:0801001",
+        "CHDA:LIT:0801002",
+        "CHDA:LIT:0801003",
     ]
     assert load_evidence_file(R / "extract/batch-02.evidence.yaml") == {
-        "CHDA:LIT:0901002": (Quote("design", "Synthetic case report of a proband", "Abstract"),)
+        "CHDA:LIT:0902001": (
+            Quote("design", "Exome sequencing of a fetus with an atrial septal defect", "Abstract"),
+            Quote(
+                "variant 1 as_reported",
+                "a heterozygous TBX5 splice-donor variant, c.700+1G>A",
+                "Abstract",
+            ),
+        )
     }
-    assert list(load_judge(p)) == ["CHDA:LIT:0901002"]
-    assert load_merge(p) is None and load_assemble(p) is None
+    # The run stops just before merge: nothing a later command writes is in it.
+    assert sorted(f.name for f in p.dir.iterdir()) == [
+        "batches.json",
+        "extract",
+        "texts.json",
+        "verify",
+    ]
+    assert load_merge(p) is None and load_assemble(p) is None and load_judge(p) == {}
+    assert load_comparison(p) == Comparison({}, (), (), {})
+
+
+def test_the_judge_round_copies_into_a_run_and_loads_under_the_final_ids(tmp_path: Path) -> None:
+    p = copy_run_fixture(tmp_path)
+    copy_judge_round(p)
+    assert {k: [d.decision for d in v] for k, v in load_judge(p).items()} == {
+        "CHDA:LIT:0009003": ["second"],
+        "CHDA:LIT:0701001": ["second"],
+    }
+    assert [f["id"] for f in load_pass(p.judging / "judge-01.findings.yaml")] == [
+        "CHDA:LIT:0009003",
+        "CHDA:LIT:0701001",
+    ]
+
+
+def _passes() -> list[Path]:
+    return sorted(
+        [*R.glob("*/*.findings.yaml"), *(JUDGE_FIXTURE / "judging").glob("*.findings.yaml")]
+    )
+
+
+@pytest.mark.parametrize("path", _passes(), ids=lambda p: f"{p.parent.name}/{p.name}")
+def test_every_agent_finding_in_the_fixture_is_a_complete_unapproved_schema_valid_finding(
+    atlas_root: Path, path: Path
+) -> None:
+    findings = load_pass(path)
+    assert findings
+    schema = schema_validator(atlas_root, "gene_literature_file")
+    for finding in findings:
+        wrapped = {
+            "gene": "HGNC:11604",
+            "searches": [
+                {
+                    "id": 1,
+                    "source": "pubmed",
+                    "query": "q",
+                    "run_on": "2026-11-19",
+                    "hits": 1,
+                    "new_hits": 1,
+                }
+            ],
+            "triage": [],
+            "findings": [finding],
+        }
+        assert [e.message for e in schema.iter_errors(wrapped)] == []
+        assert finding["extracted_by"].startswith("agent:literature-")
+        assert not {"verified_by", "approved_by", "approved_on", "approved_digest"} & set(finding)
+
+
+def test_the_two_readers_differ_exactly_where_the_comparison_cases_need(tmp_path: Path) -> None:
+    ex = {f["id"]: f for f in load_pass(R / "extract/batch-01.findings.yaml")}
+    ve = {f["id"]: f for f in load_pass(R / "verify/batch-01.findings.yaml")}
+    ex |= {f["id"]: f for f in load_pass(R / "extract/batch-02.findings.yaml")}
+    ve |= {f["id"]: f for f in load_pass(R / "verify/batch-02.findings.yaml")}
+
+    def differing(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
+        return sorted(
+            k
+            for k in a.keys() | b.keys()
+            if k not in ("id", "extracted_by") and a.get(k) != b.get(k)
+        )
+
+    assert differing(ex["CHDA:LIT:0901001"], ve["CHDA:LIT:0801001"]) == []
+    assert differing(ex["CHDA:LIT:0901002"], ve["CHDA:LIT:0801002"]) == ["screened"]
+    assert differing(ex["CHDA:LIT:0902001"], ve["CHDA:LIT:0802001"]) == ["variants"]
+    v1, v2 = ex["CHDA:LIT:0902001"]["variants"][0], ve["CHDA:LIT:0802001"]["variants"][0]
+    assert {k for k in v1 if v1[k] != v2[k]} == {"as_reported"}
+    assert "CHDA:LIT:0801003" in ve and ve["CHDA:LIT:0801003"]["publication"] == "PMID:91000002"
+    assert len({f["extracted_by"] for f in ve.values()}) == 1
+    assert {f["extracted_by"] for f in ve.values()} != {f["extracted_by"] for f in ex.values()}
+
+
+def test_every_quote_in_the_fixture_is_a_verbatim_substring_of_the_text_it_cites() -> None:
+    texts = {t.pmid: t for t in load_texts(run_paths())}
+    for side in ("extract", "verify"):
+        for ev in sorted((R / side).glob("*.evidence.yaml")):
+            by_id = {
+                f["id"]: f["publication"]
+                for f in load_pass(ev.with_name(ev.name.replace("evidence", "findings")))
+            }
+            for finding_id, quotes in load_evidence_file(ev).items():
+                t = texts[by_id[finding_id]]
+                body = " ".join(
+                    f.read_text(encoding="utf-8")
+                    for f in [t.text, t.abstract, *t.supplements]
+                    if f is not None
+                )
+                for quote in quotes:
+                    assert quote.quote in body, (ev.name, finding_id, quote.quote)
+
+
+def test_the_atlas_reads_the_curated_finding_as_approved_and_not_void(
+    tmp_path: Path, atlas_root: Path, atlas_cli: Path
+) -> None:
+    """The approval digest is the atlas's own: see ``run_fixture.py`` for the command."""
+    result = digests(atlas_digest_root(tmp_path, atlas_root), "TBX5", atlas_cli)
+    assert [(f.id, f.approved, f.approval_void) for f in result.findings] == [
+        ("CHDA:LIT:0009001", True, False)
+    ]
 
 
 def test_papers_accept_both_shapes_and_refuse_everything_else(tmp_path: Path) -> None:
@@ -307,6 +430,7 @@ def test_an_unknown_or_malformed_key_in_a_run_file_is_refused_naming_file_and_ke
     tmp_path: Path, file: str, change: Any, expected: str
 ) -> None:
     p = copy_run_fixture(tmp_path)
+    write_comparison(p, COMPARISON)
     target = p.dir / file
     _edit(target, change)
     with pytest.raises(RunFormatError, match=expected) as caught:
@@ -316,6 +440,7 @@ def test_an_unknown_or_malformed_key_in_a_run_file_is_refused_naming_file_and_ke
 
 def test_comparison_without_the_optional_keys_loads_them_empty(tmp_path: Path) -> None:
     p = copy_run_fixture(tmp_path)
+    write_comparison(p, COMPARISON)
     _edit(p.comparison, lambda d: (d.pop("only_first"), d.pop("only_second")))
     c = load_comparison(p)
     assert (c.only_first, c.only_second) == ((), ())

@@ -1,1 +1,4 @@
-Synthetic case report of a proband with a septal defect and a TBX5 missense variant.
+Two synthetic TBX5 variants in a proband and a family
+Year: 2021
+Publication types: Case Reports
+We report a proband with a ventricular septal defect who was compound heterozygous for c.100C>T, p.(Arg34Ter) and c.250G>A, p.(Gly84Arg) in TBX5.

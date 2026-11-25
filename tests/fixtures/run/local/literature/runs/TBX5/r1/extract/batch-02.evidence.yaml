@@ -1,2 +1,7 @@
-CHDA:LIT:0901002:
-  - {field: design, quote: "Synthetic case report of a proband", where: "Abstract"}
+CHDA:LIT:0902001:
+- field: design
+  quote: Exome sequencing of a fetus with an atrial septal defect
+  where: Abstract
+- field: variant 1 as_reported
+  quote: a heterozygous TBX5 splice-donor variant, c.700+1G>A
+  where: Abstract

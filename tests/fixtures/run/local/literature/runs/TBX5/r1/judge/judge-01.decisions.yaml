@@ -1,9 +1,0 @@
-CHDA:LIT:0901002:
-  - field: phenotypes
-    first: "HP:0001629 Ventricular septal defect"
-    second: "HP:0001629 Ventricular septal defect, HP:0001631 Atrial septal defect"
-    decision: first
-    value: "HP:0001629 Ventricular septal defect"
-    quote: "a proband"
-    where: "Abstract"
-    rule: "A synthetic rule."

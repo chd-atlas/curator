@@ -12,12 +12,38 @@
     },
     {
       "pmid": "PMID:91000002",
+      "source": "full_text",
+      "text": "local/literature/texts/91000002/fulltext.txt",
+      "abstract": "local/literature/texts/91000002/abstract.txt",
+      "supplements": [
+        "local/literature/texts/91000002/supplements/s1.txt"
+      ],
+      "needed": false,
+      "why": "",
+      "title": "Two synthetic TBX5 variants in a proband and a family",
+      "year": "2021"
+    },
+    {
+      "pmid": "PMID:91000003",
       "source": "abstract",
       "text": null,
-      "abstract": "local/literature/texts/91000002/abstract.txt",
+      "abstract": "local/literature/texts/91000003/abstract.txt",
       "supplements": [],
       "needed": true,
-      "why": "the full text is not open access"
+      "why": "the full text is not open access",
+      "title": "A synthetic TBX5 splice variant in a fetus",
+      "year": "2022"
+    },
+    {
+      "pmid": "PMID:91000004",
+      "source": "abstract",
+      "text": null,
+      "abstract": "local/literature/texts/91000004/abstract.txt",
+      "supplements": [],
+      "needed": false,
+      "why": "",
+      "title": "A synthetic mouse model of Tbx5 haploinsufficiency",
+      "year": "2023"
     }
   ]
 }

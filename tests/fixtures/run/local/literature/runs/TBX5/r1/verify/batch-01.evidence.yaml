@@ -1,2 +1,12 @@
 CHDA:LIT:0801001:
-  - {field: design, quote: "Synthetic family with a TBX5 frameshift", where: "Abstract"}
+- field: design
+  quote: We report a proband with a ventricular septal defect
+  where: Abstract
+CHDA:LIT:0801002:
+- field: design
+  quote: a second family carried a heterozygous c.835C>T, p.(Arg279Ter) variant
+  where: Results - Family B
+CHDA:LIT:0801003:
+- field: design
+  quote: 'Table S1: carrier 3 carried c.998G>A, p.(Gly333Glu), heterozygous'
+  where: Table S1

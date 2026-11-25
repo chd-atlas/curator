@@ -1,9 +1,41 @@
 findings:
-  - id: CHDA:LIT:0801002
-    publication: PMID:91000002
-    design: case_report
-    summary: A synthetic finding.
-  - id: CHDA:LIT:0801003
-    publication: PMID:91000002
-    design: functional_only
-    summary: A second synthetic finding the first reader did not report.
+- carriers:
+    de_novo: 0
+    inherited: 0
+    origin_unknown: 1
+  count_unit: probands
+  design: case_report
+  extracted_by: agent:literature-verify/claude-opus-5-5
+  id: CHDA:LIT:0802001
+  lesion_groups:
+  - septal
+  locators:
+  - &id001
+    element: Abstract
+    kind: in_text
+  methods:
+  - exome
+  phenotypes:
+  - HP:0001631
+  publication: PMID:91000003
+  screened: 1
+  shares_probands_with: unknown
+  summary: Exome sequencing of a fetus with an atrial septal defect found a heterozygous TBX5 splice-donor variant.
+  syndromic: isolated
+  variant_classes:
+  - snv_indel
+  variants:
+  - as_reported: c.700+1G>A, a splice-donor variant
+    carriers:
+      de_novo: 0
+      inherited: 0
+      origin_unknown: 1
+    id: 1
+    kind: snv_indel
+    locator: *id001
+    phenotypes:
+    - HP:0001631
+    placement: unplaced
+    reported:
+      c: c.700+1G>A
+    zygosity: heterozygous

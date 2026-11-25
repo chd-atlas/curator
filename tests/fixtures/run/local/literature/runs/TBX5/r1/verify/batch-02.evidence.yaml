@@ -1,4 +1,4 @@
-CHDA:LIT:0801002:
-  - {field: design, quote: "Synthetic case report of a proband", where: "Abstract"}
-CHDA:LIT:0801003:
-  - {field: design, quote: "Synthetic case report of a proband", where: "Abstract"}
+CHDA:LIT:0802001:
+- field: design
+  quote: Exome sequencing of a fetus with an atrial septal defect
+  where: Abstract
