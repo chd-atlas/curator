@@ -78,12 +78,14 @@ card lists each reviewer's latest triage verdict with its date (the owner's only
 plain approve) and the open flips, a fold lists verdicts on findings with no card on this page (the
 owner's plain approves left out), and the page says which archive commit it read. The owner's own open
 flips are ticked again on their rows. Approve or Needs a fix on the triage card closes every flip
-listed whose paper is not flipped on that card; Ask later, or no verdict, closes none. Undoing a flip
-while the card has no verdict shows a banner and refuses "I'm done". A triage state belongs to the
-page it was made on: a page restored in a browser or store that already holds another page's state
-for the same literature file keeps from it only the papers this page asks to be read, and its session
-is not finished. An archive the reader refuses (see `archive-state`) refuses the page, exit 2, and
-nothing is written; a failing git command exits 1. The command refuses to build, exit 1,
+listed whose paper is not flipped on that card; Ask later, or no verdict, closes none. While the card has no
+verdict, changing its flips from the set the page opened with (undoing a carried flip, say, or adding
+one) shows a banner and refuses "I'm done"; a flip made and undone changes nothing. A triage state
+belongs to the page it was made on: a page restored in a browser or store that already holds another
+page's state for the same literature file carries over the decisions on its cards by their digest, but
+from the triage card keeps only the papers this page asks to be read (no verdict, no flips), and the
+other page's session is dropped whole, so this page starts its own. An archive the reader refuses (see
+`archive-state`) refuses the page, exit 2, and nothing is written; a failing git command exits 1. The command refuses to build, exit 1,
 when `chd-atlas validate` reports an error. The page saves two ways: opened as a claude.ai artifact it
 saves to the page's store; opened as a plain file it saves in the browser. A page published as a claude.ai artifact needs the `downloads` capability beside `db`: claude.ai never lets a page download a file itself, so without `downloads` "Download my review" cannot save there (the page says the review was not saved). "Download my review"
 (available at any time) gives a decisions file, which the atlas's `literature apply-review`

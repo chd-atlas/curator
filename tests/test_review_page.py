@@ -19,6 +19,7 @@ import json
 import re
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -800,7 +801,7 @@ def test_restoring_from_the_browser_takes_only_this_pages_own_current_decisions(
     assert [(f["id"], f["decision"], f["shown_digest"]) for f in restored["findings"]] == [
         (G, "approve", shown[G])
     ]
-    assert restored["session"]["started_at"] == "2026-11-19T09:00:00.000Z"
+    assert restored["session"]["started_at"] is None  # a session no page stamped is not this one's
     assert visible(dom).count(">decided on an earlier version: decide again<") == 4  # J and A
 
 
@@ -1495,6 +1496,41 @@ def test_the_rule_sentence_is_absent_when_no_flip_is_open(
     assert "Dr Y, 2026-11-19: agreed" in text and TICKED not in text and RULE not in text
 
 
+def test_the_ticked_sentence_goes_when_the_owner_undoes_the_carried_flip(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """R-P4-21: with no row ticked any more, 'ticked again on their rows' would be false."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    kept = plain(card_html(dump_dom(page, ""), "triage"))
+    assert TICKED in kept and RULE in kept
+    undone = plain(card_html(dump_dom(page, "selftest-earlier-undo-only"), "triage"))
+    assert TICKED not in undone and RULE in undone
+
+
+@pytest.mark.parametrize(
+    ("role", "name", "mode", "refused"),
+    [
+        ("second_opinion", "Dr X", "flip-undo", False),
+        ("second_opinion", "Dr X", "noverdict", True),
+        ("owner", "E.A.M", "flip-undo", False),
+    ],
+)
+def test_the_banner_and_the_im_done_refusal_need_flips_that_differ_from_the_opening_set(
+    root: Path, stub_atlas: Path, role: str, name: str, mode: str, refused: bool
+) -> None:
+    """R-P4-21: a flip made and undone changes nothing, so it must not refuse I'm done."""
+    code, out = build(root, stub_atlas, "--reviewer", name, "--role", role)
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), f"selftest-{mode}")
+    decisions = selftest_output(dom)
+    assert (decisions["session"]["finished_at"] is None) is refused
+    banner = re.search(r'<div id="banner"([^>]*)>', visible(dom))
+    assert banner and ("hidden" not in banner.group(1)) is refused
+
+
 def test_a_listed_flip_that_is_not_the_owners_has_the_rule_and_no_ticked_sentence(
     root: Path, stub_atlas: Path, tmp_path: Path
 ) -> None:
@@ -1641,6 +1677,10 @@ TRIAGE_DRIVER = """
   await wait(300);
   const root = document.getElementById("root");
   const triage = () => root.querySelector('details.card[data-id="triage"]');
+  if (window.__findingFirst) {
+    const first = [...root.querySelectorAll("details.card")].find((c) => c.dataset.id !== "triage");
+    first.open = true; await wait(50);
+  }
   if (!window.__idle) { triage().open = true; await wait(50); }
   if (window.__flip) {
     const pmid = window.__flip;
@@ -1678,6 +1718,7 @@ def drive_triage(
     seed: Any = None,
     idle: bool = False,
     unfinished: bool = False,
+    finding_first: bool = False,
 ) -> dict[str, Any]:
     """The real page, in store or file mode, approving its triage card (and undoing a flip).
 
@@ -1691,6 +1732,7 @@ def drive_triage(
     head = (
         f"window.__undo = {json.dumps(undo)};window.__flip = {json.dumps(flip_here)};"
         f"window.__idle = {json.dumps(idle)};window.__unfinished = {json.dumps(unfinished)};"
+        f"window.__findingFirst = {json.dumps(finding_first)};"
         f"{TICKING_CLOCK}{fake}"
     )
     if not store and seed is not None:
@@ -1894,13 +1936,15 @@ def test_restoring_a_triage_entry_and_a_session_keeps_only_what_this_page_made(
     key = f"chd-review:{info['literature_sha256']}:owner:e-a-m"
     head = f"localStorage.setItem({json.dumps(key)},{json.dumps(saved)});"
     restored = selftest_output(dump_dom(_persist_page(page, head), "selftest-restore"))
-    assert restored["session"]["started_at"] == "2026-11-19T09:00:00.000Z"
     if stamp == "this page":
+        assert restored["session"]["started_at"] == "2026-11-19T09:00:00.000Z"
         assert restored["session"]["finished_at"] == "2026-11-19T10:00:00.000Z"
         assert restored["triage"]["decision"] == "fix"
         assert [f["pmid"] for f in restored["triage"]["flips"]] == [P1]
         assert restored["papers_seen"] == sorted([P2, "PMID:99999999"])
     else:
+        # a session restored from another page is dropped whole: the page starts its own
+        assert restored["session"]["started_at"] is None
         assert restored["session"]["finished_at"] is None
         assert restored["triage"] is None
         assert restored["papers_seen"] == [P2]
@@ -1979,3 +2023,28 @@ def test_an_idle_page_on_a_reused_store_converts_without_the_other_pages_verdict
     assert done.exit_code == 0, done.output
     assert "left out a triage verdict that was not made on this page" in done.output
     assert json.loads(decisions.read_text(encoding="utf-8"))["triage"] is None
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_an_approval_made_after_opening_a_finding_card_first_survives_on_a_reused_store(
+    root: Path, stub_atlas: Path, tmp_path: Path, store: bool
+) -> None:
+    """R-P4-21: on page 2 over page 1's state, open a finding card, then the triage card, then
+    approve it. The verdict must stay on the page and in the store with this page's stamp (the
+    stamp in `docBody` is not redundant with the one made when a card is first opened)."""
+    archive = flipped_archive(tmp_path)
+    page1, page2 = two_pages_of_one_literature_file(root, stub_atlas, archive, tmp_path)
+    first = drive_triage(page1, store=store)
+    seed = first["store"] if store else first["kept"]
+    second = drive_triage(page2, store=store, seed=seed, finding_first=True)
+    assert "approved" in second["afterApprove"]
+    decisions = json.loads(second["download"])
+    assert decisions["triage"]["decision"] == "approve"
+    built = datetime.fromisoformat(data_of(page2)["page"]["built_on"])
+    assert datetime.fromisoformat(decisions["session"]["started_at"]) > built  # page 2's own
+    if store:
+        stored = second["store"]["review/triage"]
+        assert (
+            stored["decision"] == "approve"
+            and stored["built_on"] == data_of(page2)["page"]["built_on"]
+        )

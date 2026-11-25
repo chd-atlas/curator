@@ -151,7 +151,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const DATA = JSON.parse(document.getElementById("data").textContent);
   const OWNER = DATA.reviewer.role === "owner";
   const SELFTEST = location.hash.startsWith("#selftest");
-  const MODE = location.hash.replace(/^#selftest-?/, "");   // selftest variants: earlier-approve, earlier-undo, earlier-undo-only, earlier-undecided, earlier-add, earlier-flip (the owner page's archive flips), noverdict, reflip, unflip, redecide, stale, stale-open, stale-click, persist, restore (selftest hook: window.__downloadsTimeoutMs shortens the 10 s wait for downloads)
+  const MODE = location.hash.replace(/^#selftest-?/, "");   // selftest variants: earlier-approve, earlier-undo, earlier-undo-only, earlier-undecided, earlier-add, earlier-flip (the owner page's archive flips), flip-undo, noverdict, reflip, unflip, redecide, stale, stale-open, stale-click, persist, restore (selftest hook: window.__downloadsTimeoutMs shortens the 10 s wait for downloads)
   // The selftest touches no browser storage, except in `persist` and `restore`, which exist to test it.
   const LIVE_STORAGE = !SELFTEST || MODE === "persist" || MODE === "restore";
   const NOVERDICT = MODE === "noverdict";
@@ -185,14 +185,18 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     return { papers_seen: (Array.isArray(entry.papers_seen) ? entry.papers_seen : []).filter((p) => NEEDED.has(p)) };
   }
   function ownSession(session) {
-    if (!session || !session.finished_at || (session.page && session.page.built_on === BUILT)) return session;
-    return { ...session, finished_at: null };
+    // a session of another page (or of a page that stamped nothing) is dropped whole: this page starts its own
+    if (!session || (session.page && session.page.built_on === BUILT)) return session;
+    return {};
   }
   const triage = () => state.decisions.triage || {};
   // The owner's own open flips from the archive, ticked again until the owner changes the flips here.
   const keptFlips = () => OWNER && DATA.triage_earlier ? DATA.triage_earlier.flips.filter((x) => x.role === "owner").map((x) => ({ pmid: x.pmid, to: x.to, note: x.note })) : [];
   const flipsTouched = () => Array.isArray(triage().flips);
   const flipsNow = () => flipsTouched() ? triage().flips : keptFlips();
+  // The flips the page opened with: the owner's carried ticked flips, none on a clinician page.
+  const OPENED = new Set(keptFlips().map((x) => x.pmid + ">" + x.to));
+  const flipsChanged = () => { const now = new Set(flipsNow().map((x) => x.pmid + ">" + x.to)); return now.size !== OPENED.size || [...now].some((k) => !OPENED.has(k)); };
   const cardOf = (id) => DATA.findings.find((f) => f.id === id);
   // A decision counts only on the card version it was made on: a finding's decision must carry that
   // card's current digest. Anything else (an older page's, a restored entry with none) asks again.
@@ -208,7 +212,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   let bannerNote = "";
   function triageWarning() {
     const n = flipsNow().length;
-    if (!flipsTouched() || triage().decision) return "";
+    if (!flipsTouched() || !flipsChanged() || triage().decision) return "";
     // flips changed here and no verdict: with none left (an undo) the card still has to be decided,
     // or the undone flip stays open on the archive and the download carries no triage at all
     if (!n) return bannerNote + "You changed the triage card's flips and it has no verdict. Give it a verdict (" + LABEL.approve + ", " + LABEL.fix + " or " + LABEL.later + "). Until then I'm done is refused.";
@@ -364,7 +368,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       ? `Your flip, ${esc(f.date)}: ${esc(f.pmid)} to ${esc(f.to)}${tail(f.note)}`
       : `${esc(f.name)} flipped ${esc(f.pmid)} to ${esc(f.to)}, ${esc(f.date)}${tail(f.note)}`);
     if (!lines.length) return "";
-    return `<ul class="earlier-list">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>${te.flips.length ? `<p class="meta">${te.flips.some((f) => f.role === "owner") ? esc(TICKED) + " " : ""}${esc(RULE)}</p>` : ""}`;
+    return `<ul class="earlier-list">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>${te.flips.length ? `<p class="meta">${te.flips.some((f) => f.role === "owner" && flipOf(f.pmid)) ? esc(TICKED) + " " : ""}${esc(RULE)}</p>` : ""}`;
   }
   function notOnPage() {
     const rows = OWNER ? DATA.not_on_page || [] : [];
@@ -693,6 +697,17 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       if (MODE === "earlier-add") await flipHere(DATA.triage.find((t) => !flipOf(t.pmid)).pmid);
       if (MODE === "earlier-flip") await flipHere(clinician.pmid);
       if (MODE !== "earlier-undecided" && MODE !== "earlier-add" && MODE !== "earlier-undo-only") { root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await step(); }
+      finish();
+      await emit();
+      return;
+    }
+    if (MODE === "flip-undo") {
+      // a flip made and taken back changes nothing: no banner, and I'm done is accepted
+      const pmid = DATA.triage[0].pmid;
+      root.querySelector(`[data-flip="${CSS.escape(pmid)}"]`).click(); await step();
+      document.getElementById("flipnote-" + pmid).value = "selftest";
+      root.querySelector(`[data-record="${CSS.escape(pmid)}"]`).click(); await step();
+      root.querySelector(`[data-unflip="${CSS.escape(pmid)}"]`).click(); await step();
       finish();
       await emit();
       return;
