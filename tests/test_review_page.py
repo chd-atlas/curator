@@ -481,10 +481,15 @@ def test_a_second_opinion_page_refuses_an_archive(
     assert no_page(root)
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
 def test_with_is_gone(root: Path, stub_atlas: Path, tmp_path: Path) -> None:
+    """With colour forced (measured: FORCE_COLOR=1), Typer/Rich styles the usage error and
+    splits ``--with`` into styled segments, so the match runs on the ANSI-stripped text."""
     opinion = second_opinion_file(tmp_path / "x.json")
     code, out = build(root, stub_atlas, "--with", str(opinion))
-    assert code == 2 and "--with" in out
+    assert code == 2 and "--with" in _ANSI.sub("", out)
     assert no_page(root)
 
 
