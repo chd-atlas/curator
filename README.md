@@ -155,6 +155,45 @@ written when `batches.json` exists or `batches/` holds a file, `texts.json` is m
 paper is not in it or has neither text nor abstract or has no year, nothing is selected, or a field
 is unknown or forbidden. `--mode reread` is not planned by this command yet.
 
+### Merge a run
+
+`chd-curator merge <SYMBOL> --run <run id> [--study-type PMID:<n>=<type> ...] [--root .]
+[--atlas-cli PATH]` merges a run's extraction batches into the gene's literature file
+(`<SYMBOL>` may be an alias; the run directory is named as typed). It reads `batches.json` and,
+per batch, `extract/batch-NN.findings.yaml`, `.papers.json` and `.evidence.yaml`, and never plans
+batches itself. In a run planned `--mode new` it numbers every finding from the `LIT` counter of
+`curation/.id_registry.yaml`, in (year, PMID number, batch, position in the file) order, where a
+paper's year is `publications.yaml`'s, else `texts.json`'s. A `shares_probands_with` entry naming a
+local id of the run becomes that finding's final id, one already in the file is kept, and `unknown`
+and `[]` stay as they are. It adds a Publication (from PubMed `esummary`, with the reader's
+reading written above its `study_type`, as `add-publication` does) for each cited paper that
+`publications.yaml` lacks, all fetched in one request before anything is written; a reader's null
+study type must be named with `--study-type PMID:<n>=<type>` (several allowed). A paper `papers.json` excludes goes
+from `included` to `excluded` in the triage, with its reason and note. The evidence is written to
+`evidence/batch-NN.yaml` under the final ids, and `merge.json` records the ids, the Publications
+added and the triage changes. In a run planned `--mode backfill` the findings file is
+`findings: {<finding id>: {<field>: <value>}}`: each id must be a finding in the file and in its
+batch, each field one the run declared, and only the declared fields change, plus two things
+that follow from them: a finding whose declared fields changed loses `verified_by`, and a
+common-variant finding that gains its first variant gets `variant_classes: [snv_indel]`. A
+backfill reads no `papers.json`, and its evidence file is copied to `evidence/` unchanged.
+
+Example output: `merged 3 findings (CHDA:LIT:0009002..CHDA:LIT:0009004) from 2 batches; 2
+publications added; 1 papers excluded; LIT counter 9004`. It exits 2, with every curated file and
+the run directory unchanged, when any batch is inconsistent: a paper of a batch missing from its
+`papers.json`, or one named there that the batch does not hold; a finding that cites a paper
+outside its batch, repeats a local id or one already in the file, or carries `verified_by` or an
+approval; an evidence key that is not a finding of its batch; a paper that already has a finding;
+an exclusion reason outside the atlas's list, or of a paper not `included` now; a study type the
+atlas does not allow, or a null one left unnamed; a `--study-type` for any paper that needs no
+Publication from it; a paper with no year; a `shares_probands_with` that names neither a finding
+of the run nor one in the file; any file a write of it would refuse (the atlas's schema, an
+anchor, an approval changed); or a run that already has `merge.json`. It exits 1, also with
+nothing written, when PubMed fails or answers no record for a PMID, or a file cannot be read.
+The files are written in this order: `evidence/` and `merge.json`; the id registry;
+`publications.yaml`; the literature file. A crash part-way leaves `merge.json` in place, so a
+re-run is refused until the curator removes it.
+
 ### Review a run
 
 `chd-curator quotes <SYMBOL> --run <run id>` checks every quote in a run's `evidence/` and

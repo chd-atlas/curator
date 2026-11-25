@@ -270,6 +270,7 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "texts",
         "quotes",
         "batch",
+        "merge",
         "review-page",
         "review-decisions",
         "archive-page",
@@ -421,7 +422,7 @@ def test_every_study_type_the_files_name_exists_and_the_table_is_the_contract() 
     }
     for path in _all_files():
         for study in re.findall(r"--study-type (\S+)", _text(path)):
-            assert study.strip("`") in study_types | {"<StudyType>"}, path.name
+            assert study.strip("`") in study_types | {"<StudyType>", "PMID:<n>=<type>"}, path.name
 
 
 def test_the_skills_state_the_verified_rulings_literally() -> None:

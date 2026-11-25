@@ -37,6 +37,7 @@ from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, sources, variantvalidator
 from chd_curator import batch as batch_module
+from chd_curator import merge as merge_module
 from chd_curator import texts as texts_module
 from chd_curator.atlas import (
     AtlasError,
@@ -68,7 +69,7 @@ from chd_curator.records import (
     with_verified,
 )
 from chd_curator.review_data import ReviewDataError, Reviewer, build_review_data
-from chd_curator.run import RUN_FORMAT, RunFormatError, RunPaths
+from chd_curator.run import RUN_FORMAT, RunFormatError, RunPaths, load_batches
 from chd_curator.write import (
     WriteRefused,
     refuse_anchors,
@@ -1045,6 +1046,53 @@ def batch(
     except OSError as exc:
         raise _fail(f"{paths.dir}: cannot be written: {exc}", 1) from None
     typer.echo(batch_module.summary(prepared.plan))
+
+
+@app.command("merge")
+def merge(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    study_type: list[str] = typer.Option(
+        [],
+        "--study-type",
+        help="PMID:<n>=<study type> for a paper whose reader left the study type null.",
+    ),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Merge a run's extraction batches into the gene's literature file.
+
+    New findings get final ids from the LIT counter; a paper newly cited gets a Publication; an
+    excluded paper's triage entry is set to excluded. A backfill run fills the declared fields of
+    existing findings. Exit 2, nothing written, when any batch is inconsistent or the run is
+    already merged; exit 1 when PubMed fails or a file cannot be read or written.
+    """
+    _require_root(root)
+    given: dict[str, str] = {}
+    for item in study_type:
+        pmid, _, value = item.partition("=")
+        if not re.fullmatch(r"PMID:[0-9]+", pmid) or not value or pmid in given:
+            raise _fail(f"--study-type {item!r} is not PMID:<n>=<type>, or repeats a PMID", 2)
+        given[pmid] = value
+    key = _api_key()
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        paths = RunPaths(root, symbol, run)
+        plan = load_batches(paths)
+        record = merge_module.merge_run(root, paths, plan, given, _fetch, key, approved=approved)
+        line = merge_module.summary(root, plan, record, paths)
+    except (
+        AtlasError,
+        merge_module.MergeError,
+        RunFormatError,
+        RecordError,
+        DiffError,
+        WriteRefused,
+    ) as exc:
+        raise _fail(_redact(str(exc), key), 2) from None
+    except (PubMedError, urllib.error.URLError, OSError) as exc:
+        raise _fail(_redact(str(exc), key), 1) from None
+    typer.echo(line)
 
 
 def _atlas_commit(root: Path) -> str | None:

@@ -10,8 +10,7 @@ findings:
   lesion_groups:
   - septal
   locators:
-  - &id001
-    element: Abstract
+  - element: Abstract
     kind: in_text
   methods:
   - exome
@@ -32,7 +31,9 @@ findings:
       origin_unknown: 1
     id: 1
     kind: snv_indel
-    locator: *id001
+    locator:
+      element: Abstract
+      kind: in_text
     phenotypes:
     - HP:0001631
     placement: unplaced

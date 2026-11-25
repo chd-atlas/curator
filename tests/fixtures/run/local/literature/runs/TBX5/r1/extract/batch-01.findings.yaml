@@ -10,8 +10,7 @@ findings:
   lesion_groups:
   - septal
   locators:
-  - &id001
-    element: Results - Patients
+  - element: Results - Patients
     kind: in_text
   methods:
   - exome
@@ -32,7 +31,9 @@ findings:
       origin_unknown: 0
     id: 1
     kind: snv_indel
-    locator: *id001
+    locator:
+      element: Results - Patients
+      kind: in_text
     phase: trans
     phenotypes:
     - HP:0001629
@@ -50,7 +51,9 @@ findings:
       origin_unknown: 0
     id: 2
     kind: snv_indel
-    locator: *id001
+    locator:
+      element: Results - Patients
+      kind: in_text
     phase: trans
     phenotypes:
     - HP:0001629
@@ -72,8 +75,7 @@ findings:
   lesion_groups:
   - septal
   locators:
-  - &id002
-    element: Results - Family B
+  - element: Results - Family B
     kind: in_text
   methods:
   - exome
@@ -94,7 +96,9 @@ findings:
       origin_unknown: 0
     id: 1
     kind: snv_indel
-    locator: *id002
+    locator:
+      element: Results - Family B
+      kind: in_text
     phenotypes:
     - HP:0001631
     placement: unplaced
