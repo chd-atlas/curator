@@ -11,7 +11,18 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from archive_helpers import BUILT_ON, SHA, decisions_doc, git, make_archive, page_html
+from archive_helpers import (
+    BUILT_ON,
+    SHA,
+    commit_all,
+    finding,
+    flip,
+    git,
+    make_archive,
+    page_html,
+    put,
+    tri,
+)
 from chd_curator.archive import ArchiveError, compact_utc
 from chd_curator.archive_read import (
     ArchiveView,
@@ -26,66 +37,6 @@ from chd_curator.review_page import slug
 G, J, A = "CHDA:LIT:0000901", "CHDA:LIT:0000902", "CHDA:LIT:0000903"
 D1, D2 = "sha256:" + "2" * 64, "sha256:" + "4" * 64
 FIXTURE = Path(__file__).parent / "fixtures" / "review"
-
-
-def finding(fid: str, decision: str, digest: str, at: str, note: str = "") -> dict[str, Any]:
-    return {
-        "id": fid,
-        "shown_digest": digest,
-        "decision": decision,
-        "note": note or ("because" if decision != "approve" else ""),
-        "active_ms": 10,
-        "decided_at": at,
-    }
-
-
-def put(
-    archive: Path,
-    tmp: Path,
-    name: str,
-    role: str,
-    finished: str,
-    findings: list[dict[str, Any]],
-    triage: dict[str, Any] | None = None,
-    run: str = "r1",
-    built_on: str = BUILT_ON,
-    page_extra: dict[str, Any] | None = None,
-    sha: str = SHA,
-    page: bool = True,
-) -> Path:
-    """File a decisions file by copying it into place; an owner's triage verdict that approves
-    or fixes also gets the page it was made on (``page_extra`` is that page's extra data)."""
-    src = decisions_doc(
-        tmp / "src.json",
-        name=name,
-        role=role,
-        finished_at=finished,
-        findings=findings,
-        triage=triage,
-        built_on=built_on,
-        sha=sha,
-    )
-    dest = archive / "TBX5" / run / "decisions" / f"{compact_utc(finished)}--{slug(name)}.json"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(src, dest)
-    deciding = triage is not None and triage["decision"] in ("approve", "fix")
-    if page and (page_extra is not None or (role == "owner" and deciding)):
-        pages = archive / "TBX5" / run / "pages"
-        pages.mkdir(parents=True, exist_ok=True)
-        page_html(
-            pages / f"{compact_utc(built_on)}--{slug(name)}.html",
-            name=name,
-            role=role,
-            built_on=built_on,
-            sha=sha,
-            extra=page_extra,
-        )
-    return dest
-
-
-def commit_all(archive: Path) -> None:
-    git(archive, "add", "--", "TBX5")
-    git(archive, "commit", "-m", "add")
 
 
 def view(archive: Path, root: Path) -> ArchiveView:
@@ -226,15 +177,6 @@ def test_later_on_the_current_digest_is_pending(
     got = state(view(archive, atlas_root), {G: D1}, {})
     assert got["findings"][0]["verdicts"][0]["pending"] is True
     assert got["triage"] == {"verdicts": [], "flips": []}
-
-
-def flip(pmid: str, to: str = "excluded") -> dict[str, str]:
-    return {"pmid": pmid, "to": to, "note": "because"}
-
-
-def tri(decision: str, *flips: dict[str, str]) -> dict[str, Any]:
-    return {"decision": decision, "note": "n" if decision != "approve" else "", "active_ms": 1,
-            "flips": list(flips)}  # fmt: skip
 
 
 P = "PMID:90000001"

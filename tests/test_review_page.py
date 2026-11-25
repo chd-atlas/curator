@@ -25,6 +25,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from archive_helpers import commit_all, finding, flip, make_archive, put, tri
 from chd_curator import review_page
 from chd_curator.atlas import schema_validator
 from chd_curator.cli import app
@@ -32,6 +33,9 @@ from chd_curator.decisions import decisions_from_export
 
 FIXTURE = Path(__file__).parent / "fixtures" / "review"
 G, J, A = "CHDA:LIT:0000901", "CHDA:LIT:0000902", "CHDA:LIT:0000903"
+D1, D2 = "sha256:" + "2" * 64, "sha256:" + "4" * 64
+T_X = "2026-11-19T13:00:00Z"
+P1, P2, P3 = "PMID:90000001", "PMID:90000002", "PMID:90000003"
 
 
 @pytest.fixture
@@ -272,7 +276,7 @@ def test_the_papers_needed_card_and_every_quote_state_render(root: Path, stub_at
 def test_a_second_opinion_intro_says_to_press_im_done_before_downloading(
     root: Path, stub_atlas: Path
 ) -> None:
-    """R-P1-46a: downloading without 'I'm done' yields a file `review-page --with` refuses."""
+    """R-P1-46a: downloading without 'I'm done' yields a file `archive-decisions` refuses."""
     code, out = build(root, stub_atlas, "--reviewer", "Dr X", "--role", "second_opinion")
     assert code == 0, out
     dom = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
@@ -417,27 +421,64 @@ def test_a_store_that_never_answers_falls_back_to_file_mode_after_ten_seconds(
     assert status and "kept in this browser" in status.group(1)
 
 
-def test_a_second_opinion_page_refuses_other_verdicts(
+def filed_by_dr_x(archive: Path, tmp_path: Path, j_digest: str = D2) -> None:
+    put(
+        archive, tmp_path, "Dr X", "second_opinion", T_X,
+        [finding(J, "fix", j_digest, T_X, "the carrier count is wrong"),
+         finding(G, "approve", D1, T_X)],
+    )  # fmt: skip
+    commit_all(archive)
+
+
+def no_page(root: Path) -> bool:
+    return not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+
+
+def test_a_second_opinion_page_refuses_an_archive(
     root: Path, stub_atlas: Path, tmp_path: Path
 ) -> None:
-    opinion = second_opinion_file(tmp_path / "x.json")
+    archive = make_archive(tmp_path)
     code, out = build(
-        root, stub_atlas, "--reviewer", "Dr Y", "--role", "second_opinion", "--with", str(opinion)
-    )
-    assert code == 2 and "drop --with" in out
-    assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+        root, stub_atlas, "--reviewer", "Dr Y", "--role", "second_opinion",
+        "--archive", str(archive),
+    )  # fmt: skip
+    assert code == 2 and "a second-opinion page reads no archive" in out
+    assert no_page(root)
+
+
+def test_with_is_gone(root: Path, stub_atlas: Path, tmp_path: Path) -> None:
+    opinion = second_opinion_file(tmp_path / "x.json")
+    code, out = build(root, stub_atlas, "--with", str(opinion))
+    assert code == 2 and "--with" in out
+    assert no_page(root)
+
+
+def test_a_dirty_archive_refuses_the_page(root: Path, stub_atlas: Path, tmp_path: Path) -> None:
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path)
+    (archive / "stray.txt").write_text("x", encoding="utf-8")
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 2 and "uncommitted changes" in out
+    assert no_page(root)
 
 
 def test_the_owner_page_shows_a_clinicians_verdict_on_its_card(
     root: Path, stub_atlas: Path, tmp_path: Path
 ) -> None:
-    opinion = second_opinion_file(tmp_path / "x.json")
-    code, out = build(root, stub_atlas, "--with", str(opinion))
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 0, out
     page = Path(out.strip().splitlines()[-1])
     data = inline_data(page.read_text(encoding="utf-8"))
     assert data["second_opinions"][J] == [
-        {"name": "Dr X", "decision": "fix", "note": "the carrier count is wrong", "current": True}
+        {
+            "name": "Dr X",
+            "decision": "fix",
+            "note": "the carrier count is wrong",
+            "current": True,
+            "date": "2026-11-19",
+        }
     ]
     dom = dump_dom(page, "")
     assert "Dr X: needs a fix: the carrier count is wrong" in dom
@@ -447,23 +488,25 @@ def test_the_owner_page_shows_a_clinicians_verdict_on_its_card(
 @pytest.mark.parametrize(
     ("override", "why"),
     [
-        (
-            {"reviewer": {"name": "E.A.M", "role": "owner"}},
-            "its reviewer's role is not second_opinion",
-        ),
-        ({"gene": "HGNC:4173"}, "--with"),
+        ({"gene": "HGNC:4173"}, "HGNC:4173"),
         ({"symbol": "GATA4"}, "GATA4"),
         ({"format": 2}, "format"),
-        ({"session": {"started_at": None, "finished_at": None, "active_ms": 0}}, "not finished"),
+        ({"session": {"started_at": None, "finished_at": None, "active_ms": 0}}, "finished"),
     ],
 )
-def test_a_with_file_must_be_a_second_opinion_on_this_gene(
+def test_a_filed_file_that_is_not_a_finished_second_opinion_on_this_gene_refuses_the_page(
     root: Path, stub_atlas: Path, tmp_path: Path, override: dict[str, Any], why: str
 ) -> None:
+    """Committed by hand, since filing would refuse it: the reader and the gene check must."""
+    archive = make_archive(tmp_path)
     opinion = second_opinion_file(tmp_path / "x.json", **override)
-    code, out = build(root, stub_atlas, "--with", str(opinion))
+    dest = archive / "TBX5" / "r1" / "decisions" / "20261119T130000Z--dr-x.json"
+    dest.parent.mkdir(parents=True)
+    shutil.copy(opinion, dest)
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 2 and why in out
-    assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+    assert no_page(root)
 
 
 def test_review_page_refuses_to_build_when_validate_reports_an_error(
@@ -499,31 +542,32 @@ def test_a_decisions_file_with_a_malformed_date_time_fails_the_schema(
     assert list(validator.iter_errors(opinion)) == []
 
 
-def test_two_files_from_one_reviewer_are_refused(
+def test_two_files_from_one_reviewer_are_one_reviewer_and_only_the_later_verdict_shows(
     root: Path, stub_atlas: Path, tmp_path: Path
 ) -> None:
-    first = second_opinion_file(tmp_path / "a.json")
-    again = second_opinion_file(
-        tmp_path / "b.json", reviewer={"name": " dr x", "role": "second_opinion"}
-    )
-    code, out = build(root, stub_atlas, "--with", str(first), "--with", str(again))
-    assert code == 2 and "already gave" in out and "a.json" in out
-    assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr X", "second_opinion", T_X, [finding(J, "fix", D2, T_X, "wrong")])
+    later = "2026-11-19T14:00:00Z"
+    put(archive, tmp_path, " dr x", "second_opinion", later, [finding(J, "approve", D2, later)])
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    (only,) = data_of(page)["second_opinions"][J]
+    assert (only["name"], only["decision"]) == (" dr x", "approve")
+    text = plain(card_html(dump_dom(page, ""), J))
+    assert "dr x: agrees" in text and "needs a fix" not in text
 
 
 def test_a_verdict_on_an_earlier_version_of_a_card_reads_as_one(
     root: Path, stub_atlas: Path, tmp_path: Path
 ) -> None:
-    opinion = second_opinion_file(tmp_path / "x.json")
-    doc = json.loads(opinion.read_text(encoding="utf-8"))
-    doc["findings"][0]["shown_digest"] = "sha256:" + "9" * 64  # J's card has changed since
-    opinion.write_text(json.dumps(doc), encoding="utf-8")
-    code, out = build(root, stub_atlas, "--with", str(opinion))
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path, j_digest="sha256:" + "9" * 64)  # J's card has changed since
+    code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 0, out
     page = Path(out.strip().splitlines()[-1])
-    assert (
-        inline_data(page.read_text(encoding="utf-8"))["second_opinions"][J][0]["current"] is False
-    )
+    assert data_of(page)["second_opinions"][J][0]["current"] is False
     text = plain(card_html(dump_dom(page, ""), J))
     assert "Dr X: needs a fix on an earlier version: the carrier count is wrong" in text
     assert "Dr X: agrees" in plain(card_html(dump_dom(page, ""), G))  # G's digest still matches
@@ -613,11 +657,9 @@ def test_what_each_card_claims_is_what_the_data_says_card_by_card(
         ),
         encoding="utf-8",
     )
-    opinion = second_opinion_file(tmp_path / "x.json")
-    doc = json.loads(opinion.read_text(encoding="utf-8"))
-    doc["findings"][0]["shown_digest"] = "sha256:" + "9" * 64
-    opinion.write_text(json.dumps(doc), encoding="utf-8")
-    code, out = build(root, stub_atlas, "--with", str(opinion))
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path, j_digest="sha256:" + "9" * 64)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 0, out
     dom = dump_dom(Path(out.strip().splitlines()[-1]), "")
     g, j, a = (plain(card_html(dom, i)) for i in (G, J, A))
@@ -1247,3 +1289,253 @@ def test_a_placement_reading_is_rendered_in_its_variant_card_as_text(
     assert any(plain(p) == reading for p in placed), placed
     assert "<b>bold</b>" not in mine and "&lt;b&gt;bold&lt;/b&gt;" in mine
     assert "CP-D8" not in card_html(dom, J)
+
+
+def test_the_owner_page_shows_the_owners_earlier_word_on_its_card(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    old = "sha256:" + "9" * 64
+    put(archive, tmp_path, "E.A.M", "owner", T_X, [
+        finding(J, "fix", D2, T_X, "the count is wrong"),
+        finding(A, "later", old, T_X, "ask the author"),
+        finding(G, "approve", D1, T_X, "fine"),
+    ])  # fmt: skip
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "")
+    assert "Your note, 2026-11-19: Needs a fix: the count is wrong" in plain(card_html(dom, J))
+    assert "Your note, 2026-11-19, on an earlier version: Ask later: ask the author" in plain(
+        card_html(dom, A)
+    )
+    assert "Your note, 2026-11-19: Approve: fine" in plain(card_html(dom, G))
+
+
+def test_a_verdict_with_no_card_reaches_the_fold_with_where_it_is(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    run = root / "local/literature/runs/TBX5/r1"
+    comparison = json.loads((run / "comparison.json").read_text(encoding="utf-8"))
+    del comparison["pairs"][A]
+    comparison["span_only"].remove(A)
+    (run / "comparison.json").write_text(json.dumps(comparison), encoding="utf-8")
+    gone = "CHDA:LIT:0000999"
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr X", "second_opinion", T_X, [
+        finding(A, "fix", D1, T_X, "check the proband count"),
+        finding(gone, "later", D1, T_X, "ask"),
+    ])  # fmt: skip
+    put(archive, tmp_path, "E.A.M", "owner", "2026-11-19T14:00:00Z", [
+        finding(A, "approve", D1, "2026-11-19T14:00:00Z"),
+        finding(gone, "fix", D1, "2026-11-19T14:00:00Z", "wrong gene"),
+    ])  # fmt: skip
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    dom = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+    fold = re.search(r'<details class="static-card" id="not-on-page">(.*?)</details>', dom, re.S)
+    assert fold
+    text = plain(fold.group(1))
+    assert text.startswith("Earlier verdicts on findings not on this page (3)")
+    assert (
+        f"{A}, on another page of this gene: Dr X: needs a fix: check the proband count "
+        "(2026-11-19)"
+    ) in text
+    assert (
+        f"{gone}, no longer in the gene's file: You: needs a fix: wrong gene (2026-11-19)" in text
+    )
+    assert f"{gone}, no longer in the gene's file: Dr X: ask later: ask (2026-11-19)" in text
+    assert "You: approved" not in text  # the owner's plain approve of an off-page id
+
+
+def test_the_fold_is_absent_when_nothing_is_off_the_page(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    assert "not-on-page" not in visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+
+
+def test_the_page_says_what_archive_it_read(root: Path, stub_atlas: Path, tmp_path: Path) -> None:
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path)
+    sha = subprocess.run(
+        ["git", "-C", str(archive), "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()  # fmt: skip
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    meta = plain(visible(dump_dom(page, "")))
+    assert f"Review archive read at {sha}: 1 decisions file from 1 reviewer" in meta
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    meta = plain(visible(dump_dom(Path(out.strip().splitlines()[-1]), "")))
+    assert "No review archive read: earlier notes and second opinions are not shown" in meta
+    code, out = build(root, stub_atlas, "--reviewer", "Dr Y", "--role", "second_opinion")
+    assert code == 0, out
+    dom = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+    assert "Review archive" not in dom and "No review archive" not in dom
+
+
+RULE = (
+    "Your flips are ticked again below and kept unless you undo them. Deciding this card "
+    "closes every other flip listed here that you do not make yourself; Ask later closes none."
+)
+
+
+def flipped_archive(tmp_path: Path) -> Path:
+    """Dr X has flipped P1 and the owner has flipped P2; both are still open."""
+    archive = make_archive(tmp_path)
+    put(
+        archive,
+        tmp_path,
+        "Dr X",
+        "second_opinion",
+        "2026-11-19T10:00:00Z",
+        [],
+        tri("fix", flip(P1)),
+    )
+    put(archive, tmp_path, "E.A.M", "owner", "2026-11-19T11:00:00Z", [], tri("fix", flip(P2)))
+    commit_all(archive)
+    return archive
+
+
+def triage_rows(dom: str) -> dict[str, str]:
+    card = card_html(dom, "triage")
+    return {
+        re.search(r"PMID:\d+", row).group(0): plain(row)  # type: ignore[union-attr]
+        for row in re.findall(r"<tr>(.*?)</tr>", card, re.S)
+        if "PMID:" in row
+    }
+
+
+def test_the_triage_card_lists_earlier_verdicts_and_open_flips_and_ticks_only_the_owners(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = flipped_archive(tmp_path)
+    put(archive, tmp_path, "Dr Y", "second_opinion", T_X, [], tri("approve"))
+    put(archive, tmp_path, "Dr Z", "second_opinion", T_X, [], tri("later"))
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    assert [
+        (f["name"], f["role"], f["pmid"]) for f in data_of(page)["triage_earlier"]["flips"]
+    ] == [
+        ("E.A.M", "owner", P2),
+        ("Dr X", "second_opinion", P1),
+    ]
+    dom = dump_dom(page, "")
+    text = plain(card_html(dom, "triage"))
+    assert "Your note, 2026-11-19: Needs a fix: n" in text
+    assert "Dr Y: agreed" in text and "Dr Z: ask later: n" in text
+    assert "Your flip, 2026-11-19: PMID:90000002 to excluded: because" in text
+    assert "Dr X flipped PMID:90000001 to excluded: because" in text
+    assert text.count(RULE) == 1
+    rows = triage_rows(dom)
+    assert "flipped to excluded because Undo flip" in rows[P2]
+    assert "flipped to" not in rows[P1] and "Exclude instead" in rows[P1]
+    assert "flipped to" not in rows[P3]
+    assert RULE not in plain(visible(dom).replace(card_html(dom, "triage"), ""))
+
+
+def test_the_rule_sentence_is_absent_when_no_flip_is_open(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr Y", "second_opinion", T_X, [], tri("approve"))
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    text = plain(card_html(dump_dom(Path(out.strip().splitlines()[-1]), ""), "triage"))
+    assert "Dr Y: agreed" in text and "ticked again" not in text
+
+
+@pytest.mark.parametrize(
+    ("mode", "flips", "finished", "banner"),
+    [
+        ("earlier-approve", [P2], True, False),
+        ("earlier-undo", [], True, False),
+        ("earlier-undecided", None, True, False),
+        ("earlier-add", None, False, True),
+        ("earlier-flip", [P2, P1], True, False),
+    ],
+)
+def test_ticked_again_flips_reach_the_file_until_the_owner_undoes_them(
+    root: Path,
+    stub_atlas: Path,
+    tmp_path: Path,
+    atlas_root: Path,
+    mode: str,
+    flips: list[str] | None,
+    finished: bool,
+    banner: bool,
+) -> None:
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), f"selftest-{mode}")
+    decisions = selftest_output(dom)
+    assert [
+        e.message for e in schema_validator(atlas_root, "review_decisions").iter_errors(decisions)
+    ] == []
+    if flips is None:
+        assert decisions["triage"] is None
+    else:
+        assert [f["pmid"] for f in decisions["triage"]["flips"]] == flips
+        assert decisions["triage"]["decision"] == "approve"
+    assert (decisions["session"]["finished_at"] is not None) is finished
+    shown = visible(dom)
+    hidden = re.search(r'<div id="banner"[^>]*\bhidden', shown) is not None
+    assert hidden is not banner
+    if banner:
+        # the ticked-again flip and the one made here: both are on the card, neither has a verdict
+        assert "The triage card carries 2 flipped papers and no verdict." in plain(shown)
+
+
+@pytest.mark.parametrize("owner_flips_the_paper", [False, True])
+def test_the_page_and_the_reader_agree_on_which_flips_a_decision_closed(
+    root: Path,
+    stub_atlas: Path,
+    tmp_path: Path,
+    atlas_root: Path,
+    owner_flips_the_paper: bool,
+) -> None:
+    """The contract: the page's own data is what the reader reads back as 'shown'."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    runner = CliRunner()
+    filed = runner.invoke(
+        app, ["archive-page", "TBX5", "--run", "r1", "--page", str(page), "--archive", str(archive)]
+    )
+    assert filed.exit_code == 0, filed.output
+    mode = "earlier-flip" if owner_flips_the_paper else "earlier-approve"
+    decisions = tmp_path / "decisions.json"
+    decisions.write_text(
+        json.dumps(selftest_output(dump_dom(page, f"selftest-{mode}"))), encoding="utf-8"
+    )
+    done = runner.invoke(
+        app,
+        ["archive-decisions", "TBX5", "--run", "r1", "--decisions", str(decisions)]
+        + ["--archive", str(archive), "--root", str(root)],
+    )
+    assert done.exit_code == 0, done.output
+    got = runner.invoke(
+        app,
+        ["archive-state", "TBX5", "--archive", str(archive), "--root", str(root), "--json"]
+        + ["--atlas-cli", str(stub_atlas)],
+    )
+    assert got.exit_code == 0, got.output
+    rows = {r["name"]: r for r in json.loads(got.output)["triage"]["flips"]}
+    x = rows["Dr X"]
+    assert x["pending"] is owner_flips_the_paper
+    assert (x["closed_by"] is not None) is not owner_flips_the_paper
+    if x["closed_by"] is not None:
+        assert x["closed_by"].endswith("--e-a-m.json") and "/decisions/" in x["closed_by"]
+    assert rows["E.A.M"]["pending"] is True  # the owner's own flip was kept, so it is still open

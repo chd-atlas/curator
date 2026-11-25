@@ -69,10 +69,14 @@ recorded as not checked (`checked: false`, `found: false` in `quotes.json`), nev
 found.
 
 `chd-curator review-page <SYMBOL> --run <run id> --reviewer <name> [--role owner|second_opinion]
-[--with <decisions.json> ...]` writes the run's review page, one self-contained HTML file:
+[--archive <dir>]` writes the run's review page, one self-contained HTML file:
 `<run>/review.html` for the owner, `<run>/review-<name>.html` for a second opinion (which shows no
-approval state and no other reviewer's verdict; `--with` is for the owner page only, and each file
-must be a format 1 decisions file by a second opinion on the same gene). It refuses to build, exit 1,
+approval state and no other reviewer's verdict, and refuses `--archive`). With `--archive` the owner
+page reads the review archive (see `archive-state` below): each card shows the owner's own earlier
+note and each clinician's latest verdict on it, the triage card lists the earlier triage verdicts and
+the open flips (the owner's own flips are ticked again, and kept unless undone), a fold lists verdicts
+on findings with no card on this page, and the page says which archive commit it read. An archive
+the reader refuses (see `archive-state`) refuses the page, exit 2, and nothing is written. The command refuses to build, exit 1,
 when `chd-atlas validate` reports an error. The page saves two ways: opened as a claude.ai artifact it
 saves to the page's store; opened as a plain file it saves in the browser. A page published as a claude.ai artifact needs the `downloads` capability beside `db`: claude.ai never lets a page download a file itself, so without `downloads` "Download my review" cannot save there (the page says the review was not saved). "Download my review"
 (available at any time) gives a decisions file, which the atlas's `literature apply-review`

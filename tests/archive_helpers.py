@@ -5,11 +5,13 @@ Names are made up, except the owner, who is E.A.M here as elsewhere in these tes
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from chd_curator import review_page
+from chd_curator.archive import compact_utc
 
 BUILT_ON = "2026-11-19T12:00:00+00:00"
 SHA = "sha256:" + "a" * 64
@@ -111,3 +113,80 @@ def decisions_doc(
     }
     path.write_text(json.dumps(doc, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def finding(fid: str, decision: str, digest: str, at: str, note: str = "") -> dict[str, Any]:
+    return {
+        "id": fid,
+        "shown_digest": digest,
+        "decision": decision,
+        "note": note or ("because" if decision != "approve" else ""),
+        "active_ms": 10,
+        "decided_at": at,
+    }
+
+
+def put(
+    archive: Path,
+    tmp: Path,
+    name: str,
+    role: str,
+    finished: str,
+    findings: list[dict[str, Any]],
+    triage: dict[str, Any] | None = None,
+    run: str = "r1",
+    built_on: str = BUILT_ON,
+    page_extra: dict[str, Any] | None = None,
+    sha: str = SHA,
+    page: bool = True,
+    gene: str = "HGNC:11604",
+) -> Path:
+    """File a decisions file by copying it into place; an owner's triage verdict that approves
+    or fixes also gets the page it was made on (``page_extra`` is that page's extra data)."""
+    src = decisions_doc(
+        tmp / "src.json",
+        name=name,
+        role=role,
+        finished_at=finished,
+        findings=findings,
+        triage=triage,
+        built_on=built_on,
+        sha=sha,
+        gene=gene,
+    )
+    dest = (
+        archive
+        / "TBX5"
+        / run
+        / "decisions"
+        / f"{compact_utc(finished)}--{review_page.slug(name)}.json"
+    )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(src, dest)
+    deciding = triage is not None and triage["decision"] in ("approve", "fix")
+    if page and (page_extra is not None or (role == "owner" and deciding)):
+        pages = archive / "TBX5" / run / "pages"
+        pages.mkdir(parents=True, exist_ok=True)
+        page_html(
+            pages / f"{compact_utc(built_on)}--{review_page.slug(name)}.html",
+            name=name,
+            role=role,
+            built_on=built_on,
+            sha=sha,
+            extra=page_extra,
+        )
+    return dest
+
+
+def commit_all(archive: Path) -> None:
+    git(archive, "add", "--", "TBX5")
+    git(archive, "commit", "-m", "add")
+
+
+def flip(pmid: str, to: str = "excluded") -> dict[str, str]:
+    return {"pmid": pmid, "to": to, "note": "because"}
+
+
+def tri(decision: str, *flips: dict[str, str]) -> dict[str, Any]:
+    return {"decision": decision, "note": "n" if decision != "approve" else "", "active_ms": 1,
+            "flips": list(flips)}  # fmt: skip

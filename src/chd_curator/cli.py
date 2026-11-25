@@ -950,53 +950,16 @@ def _atlas_commit(root: Path) -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
-def _second_opinions(
-    paths: Sequence[Path], root: Path, symbol: str, gene: str
-) -> list[dict[str, Any]]:
-    validator = schema_validator(root, "review_decisions")
-    loaded: list[dict[str, Any]] = []
-    names: dict[str, str] = {}  # reviewer name, case-folded, to the file that gave it
-    for path in paths:
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise _fail(f"--with {path}: cannot be read as JSON: {exc}", 2) from None
-        errors = sorted(
-            f"{'/'.join(map(str, e.path)) or '(file)'}: {e.message}"
-            for e in validator.iter_errors(doc)
-        )
-        if errors:
-            raise _fail(f"--with {path} is not a format 1 decisions file: {errors[0]}", 2)
-        if doc["reviewer"]["role"] != "second_opinion":
-            raise _fail(f"--with {path}: its reviewer's role is not second_opinion", 2)
-        if doc["gene"] != gene or doc["symbol"] != symbol:
-            raise _fail(
-                f"--with {path} is for {doc['symbol']} ({doc['gene']}), not {symbol} ({gene})", 2
-            )
-        if not doc["session"].get("finished_at"):
-            raise _fail(
-                f"--with {path}: the review is not finished (no I'm done), so it is no verdict", 2
-            )
-        who = doc["reviewer"]["name"].strip().casefold()
-        if who in names:
-            raise _fail(
-                f"--with {path}: {names[who]} already gave that reviewer's second opinion; "
-                "one file each",
-                2,
-            )
-        names[who] = str(path)
-        loaded.append(doc)
-    return loaded
-
-
 @app.command("review-page")
 def review_page_command(
     symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
     run: str = typer.Option(..., "--run", help="The run id."),
     reviewer: str = typer.Option(..., "--reviewer", help="The reviewer's name, shown on the page."),
     role: str = typer.Option("owner", "--role", help="owner or second_opinion."),
-    with_: list[Path] = typer.Option(
-        [], "--with", help="A second opinion's decisions file to show on the owner page."
+    archive: Path | None = typer.Option(
+        None,
+        "--archive",
+        help="The review archive checkout: the owner page shows the earlier verdicts filed there.",
     ),
     root: Path = typer.Option(Path("."), help="Atlas checkout root."),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
@@ -1004,19 +967,24 @@ def review_page_command(
     """Write the run's review page: one HTML file the owner or a second reviewer opens.
 
     The owner page is `<run>/review.html`; a second opinion's is `<run>/review-<name>.html`
-    and shows no approval state and no other reviewer's verdict. Opened as a claude.ai
-    artifact the page saves to its store; opened as a file it saves in the browser and
-    offers "Download my review" (a decisions file for `chd-atlas literature apply-review`).
+    and shows no approval state and no other reviewer's verdict. With `--archive <dir>` the
+    owner page also shows what the review archive holds for the gene: the owner's own earlier
+    notes, each clinician's latest verdict on each card, the triage card's earlier verdicts and
+    open flips (the owner's own are ticked again), and a fold of verdicts on findings with no
+    card on this page. Opened as a claude.ai artifact the page saves to its store; opened as a
+    file it saves in the browser and offers "Download my review" (a decisions file for
+    `chd-atlas literature apply-review`).
     Refuses (exit 1) to build when `chd-atlas validate` reports an error; exit 2 for a bad
-    argument, an unreadable run, or a `--with` file that is not a finished second opinion on this
-    gene (two files from one reviewer are refused too). Validate is asked first, so a gene the atlas
-    cannot digest still reports its validate errors.
+    argument, an unreadable run, `--archive` with `--role second_opinion`, or an archive the
+    reader refuses (not a marked checkout, uncommitted changes, an invalid decisions file, or
+    the symbol filed as another gene than the atlas's); nothing is written then. Validate is
+    asked first, so a gene the atlas cannot digest still reports its validate errors.
     """
     _require_root(root)
     if role not in ("owner", "second_opinion"):
         raise _fail(f"--role {role!r} is not owner or second_opinion", 2)
-    if role == "second_opinion" and with_:
-        raise _fail("a second-opinion page shows no other reviewer's verdicts: drop --with", 2)
+    if role == "second_opinion" and archive is not None:
+        raise _fail("a second-opinion page reads no archive", 2)
     name = reviewer.strip()
     name_slug = review_page.slug(name)
     if not name_slug:
@@ -1033,9 +1001,11 @@ def review_page_command(
         )
     try:
         found = digests(root, symbol, cli)
-        opinions = _second_opinions(with_, root, symbol, found.gene)
-    except AtlasError as exc:
+        view = archive_read.read_archive(archive, symbol, root) if archive is not None else None
+    except (AtlasError, archive_mod.ArchiveError) as exc:
         raise _fail(str(exc), 2) from None
+    except archive_mod.GitError as exc:
+        raise _fail(str(exc), 1) from None
     who = Reviewer(name, "owner" if role == "owner" else "second_opinion")
     try:
         data = build_review_data(
@@ -1046,9 +1016,9 @@ def review_page_command(
             datetime.now(UTC),
             _atlas_commit(root),
             line,
-            second_opinions=opinions,
+            archive=view,
         )
-    except (ReviewDataError, RunFormatError, ValueError) as exc:
+    except (ReviewDataError, RunFormatError, ValueError, archive_mod.ArchiveError) as exc:
         raise _fail(str(exc), 2) from None
     out = paths.dir / ("review.html" if role == "owner" else f"review-{name_slug}.html")
     try:
