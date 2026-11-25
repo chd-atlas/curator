@@ -215,6 +215,8 @@ def digests(root: Path, symbol: str, atlas_cli: Path) -> Digests:
         for key in ("approved", "verified", "approval_void"):
             if type(row[key]) is not bool:
                 raise AtlasError(f"the atlas's finding {key} is not a boolean: {row[key]!r}")
+        if any(f.id == row["id"] for f in findings):
+            raise AtlasError(f"the atlas's answer lists finding {row['id']} twice")
         findings.append(
             FindingDigests(
                 row["id"],

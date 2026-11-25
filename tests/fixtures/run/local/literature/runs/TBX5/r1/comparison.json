@@ -1,0 +1,9 @@
+{
+  "agreed": ["CHDA:LIT:0901001"],
+  "differs": {"CHDA:LIT:0901002": ["phenotypes"]},
+  "format": 1,
+  "only_first": [],
+  "only_second": ["CHDA:LIT:0801003"],
+  "pairs": {"CHDA:LIT:0901001": "CHDA:LIT:0801001", "CHDA:LIT:0901002": "CHDA:LIT:0801002"},
+  "span_only": []
+}

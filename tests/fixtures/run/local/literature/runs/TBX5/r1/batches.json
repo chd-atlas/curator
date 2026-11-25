@@ -1,0 +1,10 @@
+{
+  "batches": [
+    {"findings": [], "id": "01", "papers": ["PMID:91000001"], "text_bytes": 150},
+    {"findings": [], "id": "02", "papers": ["PMID:91000002"], "text_bytes": 90}
+  ],
+  "budget_bytes": 400000,
+  "fields": [],
+  "format": 1,
+  "mode": "new"
+}

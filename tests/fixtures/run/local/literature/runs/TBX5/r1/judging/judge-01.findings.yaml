@@ -1,0 +1,5 @@
+findings:
+  - id: CHDA:LIT:0701001
+    publication: PMID:91000002
+    design: functional_only
+    summary: A second synthetic finding the judge adds from the second reader.

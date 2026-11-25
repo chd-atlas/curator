@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "papers": [
+    {
+      "pmid": "PMID:91000001",
+      "source": "full_text",
+      "text": "local/literature/texts/91000001/fulltext.txt",
+      "abstract": "local/literature/texts/91000001/abstract.txt",
+      "supplements": [],
+      "needed": false,
+      "why": ""
+    },
+    {
+      "pmid": "PMID:91000002",
+      "source": "abstract",
+      "text": null,
+      "abstract": "local/literature/texts/91000002/abstract.txt",
+      "supplements": [],
+      "needed": true,
+      "why": "the full text is not open access"
+    }
+  ]
+}

@@ -82,7 +82,7 @@ def test_the_run_paths_are_the_contracts_children() -> None:
         for n in (
             "texts.json",
             "evidence",
-            "verify.yaml",
+            "verify",
             "comparison.json",
             "judge",
             "quotes.json",
@@ -470,6 +470,10 @@ def _without_finding_key(key: str) -> dict[str, Any]:
         (_with_finding(approval_void=0), "approval_void is not a boolean"),
         (_without_finding_key("approval_void"), r"missing \['approval_void'\]"),
         (_with_finding(shown_digest=None), "shown_digest is not a non-empty string"),
+        (
+            GOOD_DIGESTS | {"findings": GOOD_DIGESTS["findings"] * 2},
+            r"lists finding CHDA:LIT:0000901 twice",
+        ),
     ],
 )
 def test_a_malformed_digests_answer_is_refused(

@@ -1,0 +1,9 @@
+findings:
+  - id: CHDA:LIT:0801002
+    publication: PMID:91000002
+    design: case_report
+    summary: A synthetic finding.
+  - id: CHDA:LIT:0801003
+    publication: PMID:91000002
+    design: functional_only
+    summary: A second synthetic finding the first reader did not report.

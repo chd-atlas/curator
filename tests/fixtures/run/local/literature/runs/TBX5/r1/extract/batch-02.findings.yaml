@@ -1,0 +1,5 @@
+findings:
+  - id: CHDA:LIT:0901002
+    publication: PMID:91000002
+    design: case_report
+    summary: A synthetic finding.
