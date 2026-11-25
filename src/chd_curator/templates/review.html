@@ -480,7 +480,11 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     if (act !== "approve" && !note.trim()) return false;
     if (id === "triage") bannerNote = "";
     if (openId === id) { if (openSince && document.visibilityState === "visible") localActive[id] = (localActive[id] || 0) + (Date.now() - openSince); openSince = Date.now(); }
-    save(id, docBody(id, { decision: act, note: note.trim(), decided_at: now() }));
+    const extra = { decision: act, note: note.trim(), decided_at: now() };
+    // flips ticked again from the archive exist only virtually until the owner changes them; a verdict
+    // on the card writes them down, or the store (and so review-decisions) would hold none
+    if (id === "triage" && !flipsTouched()) extra.flips = keptFlips();
+    save(id, docBody(id, extra));
     if (openId === id) openSince = null;   // the save took the time; closeOpen below must not add the ms after it
     reopenSession();
     const card = root.querySelector(`details.card[data-id="${CSS.escape(id)}"]`);

@@ -1497,6 +1497,7 @@ def test_ticked_again_flips_reach_the_file_until_the_owner_undoes_them(
         assert "The triage card carries 2 flipped papers and no verdict." in plain(shown)
 
 
+@pytest.mark.parametrize("route", ["download", "store"])
 @pytest.mark.parametrize("owner_flips_the_paper", [False, True])
 def test_the_page_and_the_reader_agree_on_which_flips_a_decision_closed(
     root: Path,
@@ -1504,8 +1505,12 @@ def test_the_page_and_the_reader_agree_on_which_flips_a_decision_closed(
     tmp_path: Path,
     atlas_root: Path,
     owner_flips_the_paper: bool,
+    route: str,
 ) -> None:
-    """The contract: the page's own data is what the reader reads back as 'shown'."""
+    """The contract: the page's own data is what the reader reads back as 'shown'.
+
+    Both routes to a decisions file are pinned: the page's own download and `review-decisions`
+    over an export of the page's store."""
     archive = flipped_archive(tmp_path)
     code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 0, out
@@ -1515,11 +1520,21 @@ def test_the_page_and_the_reader_agree_on_which_flips_a_decision_closed(
         app, ["archive-page", "TBX5", "--run", "r1", "--page", str(page), "--archive", str(archive)]
     )
     assert filed.exit_code == 0, filed.output
-    mode = "earlier-flip" if owner_flips_the_paper else "earlier-approve"
     decisions = tmp_path / "decisions.json"
-    decisions.write_text(
-        json.dumps(selftest_output(dump_dom(page, f"selftest-{mode}"))), encoding="utf-8"
-    )
+    if route == "download":
+        mode = "earlier-flip" if owner_flips_the_paper else "earlier-approve"
+        decisions.write_text(
+            json.dumps(selftest_output(dump_dom(page, f"selftest-{mode}"))), encoding="utf-8"
+        )
+    else:
+        dump = drive_triage(page, store=True, flip_here=P1 if owner_flips_the_paper else "")
+        exported = runner.invoke(
+            app,
+            ["review-decisions", "TBX5", "--run", "r1", "--page", str(page)]
+            + ["--export", str(export_of(dump["store"], tmp_path / "export"))]
+            + ["--out", str(decisions), "--root", str(root)],
+        )
+        assert exported.exit_code == 0, exported.output
     done = runner.invoke(
         app,
         ["archive-decisions", "TBX5", "--run", "r1", "--decisions", str(decisions)]
@@ -1539,3 +1554,146 @@ def test_the_page_and_the_reader_agree_on_which_flips_a_decision_closed(
     if x["closed_by"] is not None:
         assert x["closed_by"].endswith("--e-a-m.json") and "/decisions/" in x["closed_by"]
     assert rows["E.A.M"]["pending"] is True  # the owner's own flip was kept, so it is still open
+
+
+# ---- the owner's ticked-again flips must reach the store export and survive a reload -------------
+
+TRIAGE_DRIVER = """
+(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await wait(300);
+  const root = document.getElementById("root");
+  const triage = () => root.querySelector('details.card[data-id="triage"]');
+  triage().open = true; await wait(50);
+  if (window.__flip) {
+    const pmid = window.__flip;
+    root.querySelector(`[data-flip="${pmid}"]`).click(); await wait(50);
+    document.getElementById("flipnote-" + pmid).value = "selftest";
+    root.querySelector(`[data-record="${pmid}"]`).click(); await wait(50);
+    triage().open = true; await wait(50);
+  }
+  root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await wait(50);
+  const decided = () => root.querySelector('details.card[data-id="triage"] .sum-chips').textContent;
+  const afterApprove = decided();
+  if (window.__undo) {
+    root.querySelector(`[data-unflip="${window.__undo}"]`).click(); await wait(50);
+  }
+  document.getElementById("finish").click(); await wait(300);
+  document.getElementById("download").click(); await wait(300);
+  let kept = null;
+  try { kept = Object.fromEntries(Object.entries(localStorage)); } catch (e) { /* none */ }
+  const pre = document.createElement("pre"); pre.id = "drive-dump";
+  pre.textContent = JSON.stringify({ store: window.__store || null, download: window.__lastDownload,
+    kept, afterApprove, banner: document.getElementById("banner").textContent });
+  document.body.appendChild(pre);
+})();
+"""
+
+
+def drive_triage(
+    page: Path, *, store: bool, undo: str = "", flip_here: str = "", seed: Any = None
+) -> dict[str, Any]:
+    """The real page, in store or file mode, approving its triage card (and undoing a flip)."""
+    text = page.read_text(encoding="utf-8")
+    marker = '<script type="application/json" id="data">'
+    fake = STORE_FAKE if store else FILE_FAKE
+    if store and seed is not None:
+        fake = fake.replace("window.__store = {};", f"window.__store = {json.dumps(seed)};")
+    head = (
+        f"window.__undo = {json.dumps(undo)};window.__flip = {json.dumps(flip_here)};"
+        f"{TICKING_CLOCK}{fake}"
+    )
+    if not store and seed is not None:
+        entries = json.dumps(seed)
+        head += (
+            f"try {{ for (const [k, v] of Object.entries({entries})) "
+            "localStorage.setItem(k, v); } catch (e) {}"
+        )
+    harness = page.with_name("triage-drive.html")
+    harness.write_text(
+        text.replace(marker, f"<script>{head}</script>" + marker)
+        + f"<script>{TRIAGE_DRIVER}</script>",
+        encoding="utf-8",
+    )
+    dom = dump_dom(harness, "", budget=8000)
+    match = re.search(r'<pre id="drive-dump">(.*?)</pre>', dom, re.S)
+    assert match, "the driver wrote no dump"
+    dump: dict[str, Any] = json.loads(html.unescape(match.group(1)))
+    dump["dom"] = dom
+    return dump
+
+
+def export_of(store: dict[str, Any], where: Path) -> Path:
+    for path, body in store.items():
+        target = where / f"{path}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(body), encoding="utf-8")
+    return where
+
+
+def test_a_store_export_of_an_approved_triage_card_keeps_the_ticked_again_flips(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """The flips are ticked only virtually until the owner changes them; deciding the card must
+    write them, or `review-decisions` exports none and the owner's own flip reads as closed."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    dump = drive_triage(page, store=True)
+    assert [f["pmid"] for f in dump["store"]["review/triage"]["flips"]] == [P2]
+    done = tmp_path / "from-store.json"
+    got = CliRunner().invoke(
+        app,
+        [
+            "review-decisions",
+            "TBX5",
+            "--run",
+            "r1",
+            "--export",
+            str(export_of(dump["store"], tmp_path / "export")),
+        ]
+        + ["--out", str(done), "--page", str(page), "--root", str(root)],
+    )
+    assert got.exit_code == 0, got.output
+    exported = json.loads(done.read_text(encoding="utf-8"))["triage"]
+    assert [(f["pmid"], f["to"]) for f in exported["flips"]] == [(P2, "excluded")]
+    assert exported["decision"] == "approve"
+    # the download of the same page says the same
+    assert json.loads(dump["download"])["triage"]["flips"] == exported["flips"]
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_an_approved_triage_card_with_ticked_again_flips_survives_a_reload(
+    root: Path, stub_atlas: Path, tmp_path: Path, store: bool
+) -> None:
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    first = drive_triage(page, store=store)
+    seed = first["store"] if store else first["kept"]
+    assert seed, "the first visit saved nothing to reload from"
+    second = drive_triage(page, store=store, seed=seed)
+    rows = triage_rows(second["dom"])
+    assert "flipped to excluded" in rows[P2] and "flipped to" not in rows[P1]
+    assert json.loads(second["download"])["triage"]["flips"] == [
+        {"pmid": P2, "to": "excluded", "note": "because"}
+    ]
+    assert second["banner"] == ""
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_undoing_a_ticked_again_flip_after_the_verdict_clears_the_verdict(
+    root: Path, stub_atlas: Path, tmp_path: Path, store: bool
+) -> None:
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    dump = drive_triage(page, store=store, undo=P2)
+    assert "approved" in dump["afterApprove"]
+    assert json.loads(dump["download"])["triage"] is None
+    if store:
+        assert dump["store"]["review/triage"]["flips"] == []
+        assert "decision" not in dump["store"]["review/triage"]
