@@ -192,8 +192,8 @@ that names another reviewer whose name contains this one ("Dr X Smith") must not
 because this command cannot remove one without the other, so do that removal by hand. Both the dry
 run and `--apply` refuse (exit 2) an archive in which a path carries a skip-worktree or
 assume-unchanged bit (git then hides a deleted or edited working copy from `git status`; the message
-names the paths and prints one `git update-index --no-skip-worktree` or `--no-assume-unchanged`
-command for each bit set, because one command with both flags clears only the assume-unchanged bit)
+names the paths and prints one `git update-index` command for each bit set, clearing skip-worktree
+and assume-unchanged separately, because one command clearing both clears only assume-unchanged)
 and a file the scan cannot read.
 `--apply` also refuses an archive with uncommitted changes, a removal that touches no file, a missing
 README or one without exactly one `## Removals` line, and `.git/redact-*.txt` files left by an earlier
@@ -214,7 +214,7 @@ after it the checkout's reflog still holds them until the printed `reflog expire
 GitHub may keep the force-pushed-over commits reachable by id until GitHub Support removes them
 (unmeasured). `git filter-repo` is not installed where this was written, so the printed procedure has
 never been run and is unmeasured as of 2026-11-25; when `git-filter-repo` is not on this PATH the output
-says `uv tool install git-filter-repo`; the reflog re-check is `git log --all --reflog -p`. It never pushes.
+says `uv tool install git-filter-repo`; its reflog re-check was measured on git 2.34.1 to count matches before the expiry and 0 after. It never pushes.
 
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
