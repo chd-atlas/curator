@@ -1,4 +1,7 @@
-"""Fixtures for the review archive's tests: made-up names, an archive under ``tmp_path``."""
+"""Fixtures for the review archive's tests: an archive under ``tmp_path``.
+
+Names are made up, except the owner, who is E.A.M here as elsewhere in these tests.
+"""
 
 from __future__ import annotations
 
