@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from archive_helpers import BUILT_ON, decisions_doc, git, make_archive, page_html
+from archive_helpers import BUILT_ON, SHA, decisions_doc, git, make_archive, page_html
 from chd_curator.archive import ArchiveError, compact_utc
 from chd_curator.archive_read import (
     ArchiveView,
@@ -50,6 +50,8 @@ def put(
     run: str = "r1",
     built_on: str = BUILT_ON,
     page_extra: dict[str, Any] | None = None,
+    sha: str = SHA,
+    page: bool = True,
 ) -> Path:
     """File a decisions file by copying it into place; an owner's triage verdict that approves
     or fixes also gets the page it was made on (``page_extra`` is that page's extra data)."""
@@ -61,12 +63,13 @@ def put(
         findings=findings,
         triage=triage,
         built_on=built_on,
+        sha=sha,
     )
     dest = archive / "TBX5" / run / "decisions" / f"{compact_utc(finished)}--{slug(name)}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(src, dest)
     deciding = triage is not None and triage["decision"] in ("approve", "fix")
-    if page_extra is not None or (role == "owner" and deciding):
+    if page and (page_extra is not None or (role == "owner" and deciding)):
         pages = archive / "TBX5" / run / "pages"
         pages.mkdir(parents=True, exist_ok=True)
         page_html(
@@ -74,6 +77,7 @@ def put(
             name=name,
             role=role,
             built_on=built_on,
+            sha=sha,
             extra=page_extra,
         )
     return dest
@@ -342,6 +346,54 @@ def test_a_page_that_showed_an_earlier_flip_does_not_close_the_same_reviewers_la
         True,
         None,
     )
+
+
+def test_a_shown_flip_closes_only_the_reviewer_it_names_at_a_shared_instant(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "Dr Y", "second_opinion", T0, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "E.A.M", "owner", T1, [], tri("approve"),
+        page_extra=shows(("Dr X", "second_opinion", P, T0)))  # fmt: skip
+    commit_all(archive)
+    rows = {r["name"]: r for r in flip_rows(archive, atlas_root, UNDECIDED)}
+    assert (rows["Dr X"]["pending"], rows["Dr Y"]["pending"]) == (False, True)
+    assert rows["Dr Y"]["closed_by"] is None
+
+
+@pytest.mark.parametrize("shower", ["first", "second"])
+@pytest.mark.parametrize("decided_on", ["shower", "other"])
+@pytest.mark.parametrize("differs", ["built_on", "sha", "name"])
+def test_a_decision_takes_the_flips_of_the_page_it_was_made_on_not_another_in_the_run(
+    differs: str, decided_on: str, shower: str, archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    # Two owner pages in one run differ in exactly one of the four matched fields (owner pages
+    # may carry different names; every owner file is still keyed "owner"). One shows P.
+    base = {"built_on": BUILT_ON, "sha": SHA, "name": "E.A.M"}
+    other = {
+        "built_on": "2026-11-19T12:30:00+00:00",
+        "sha": "sha256:" + "b" * 64,
+        "name": "Dr Z",
+    }
+    variants = [dict(base), {**base, differs: other[differs]}]
+    if shower == "second":
+        variants.reverse()
+    shows_p = [variants[0], variants[1]][0 if shower == "first" else 1]
+    quiet = variants[1] if shower == "first" else variants[0]
+    pages = archive / "TBX5" / "r1" / "pages"
+    pages.mkdir(parents=True)
+    for v, extra in ((shows_p, shows(("Dr X", "second_opinion", P, T0))), (quiet, {})):
+        page_html(
+            pages / f"{compact_utc(v['built_on'])}--{slug(v['name'])}-{v['sha'][7:9]}.html",
+            built_on=v["built_on"], sha=v["sha"], name=v["name"], extra=extra,
+        )  # fmt: skip
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P)))
+    v = shows_p if decided_on == "shower" else quiet
+    put(archive, tmp_path, v["name"], "owner", T1, [], tri("approve"),
+        built_on=v["built_on"], sha=v["sha"], page=False)  # fmt: skip
+    commit_all(archive)
+    rows = {r["name"]: r for r in flip_rows(archive, atlas_root, UNDECIDED)}
+    assert rows["Dr X"]["pending"] is (decided_on != "shower")
 
 
 def test_the_earliest_owner_verdict_that_closed_a_flip_is_named(
