@@ -35,7 +35,7 @@ identity through :func:`archive.commit`. When the scan finds the name, a write f
 commit fails, it restores every touched path with ``git checkout HEAD -- <paths>`` and raises
 :class:`GitError`.
 
-History still holds the name after that commit. ``apply_redact`` leaves
+History still holds the name and the notes after that commit. ``apply_redact`` leaves
 ``.git/redact-expressions.txt`` and ``.git/redact-paths.txt`` (the deleted files and the rewritten
 owner pages, whose original blobs hold the clinician's notes) for a history rewrite, and
 :func:`procedure` is the text the command prints for the owner to run. That procedure has not been
