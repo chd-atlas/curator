@@ -1049,12 +1049,13 @@ def review_decisions_command(
     page's own inline data, and writes the format 1 file `chd-atlas literature apply-review`
     applies. Exit 1 when the reviewer has not pressed "I'm done", or changed a choice after it
     (press it again); exit 2 for an export that is not this page's (another page, reviewer or
-    gene, a flip or a seen paper the page does not hold, a triage document made on another
-    page), a document for a card not on the page, a decision outside approve|fix|later, or a
-    result failing the schema. Nothing is written on
+    gene, a flip or a seen paper the page does not hold), a document for a card not on the page,
+    a decision outside approve|fix|later, or a result failing the schema. Nothing is written on
     exit 1 or 2. A card decided on an earlier version is left out of the file, as the page's own
-    download leaves it out, and named on stdout (exit 0). The last-but-one line counts what was
-    written.
+    download leaves it out, and named on stdout (exit 0). A triage document not stamped with this
+    page's build time (made on another page, or by a page that stamped nothing) is read for
+    nothing but the papers this page asks to be read; a verdict in it is left out and one line
+    says so (exit 0). The last-but-one line counts what was written.
     """
     _require_root(root)
     source = page if page is not None else RunPaths(root, symbol, run).review_html
@@ -1071,6 +1072,8 @@ def review_decisions_command(
         raise _fail(f"{out}: cannot be written: {exc}", 1) from None
     if converted.stale:
         typer.echo(f"left out, decided on an earlier version: {', '.join(converted.stale)}")
+    if converted.triage_left_out:
+        typer.echo("left out a triage verdict that was not made on this page")
     made = [f["decision"] for f in decisions["findings"]]
     triage = decisions["triage"]["decision"] if decisions["triage"] else "none"
     typer.echo(

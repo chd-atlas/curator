@@ -1957,3 +1957,25 @@ def test_a_redacted_entry_renders_without_a_dangling_colon(
         ).group(1)
     )  # type: ignore[union-attr]
     assert "no longer in the gene's file: a removed reviewer: ask later (2026-11-19)" in fold
+
+
+def test_an_idle_page_on_a_reused_store_converts_without_the_other_pages_verdict(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """R-P4-21: page 2 opens on page 1's store and the owner touches nothing; the store still
+    holds page 1's approved triage, and the conversion leaves it out instead of refusing."""
+    archive = flipped_archive(tmp_path)
+    page1, page2 = two_pages_of_one_literature_file(root, stub_atlas, archive, tmp_path)
+    first = drive_triage(page1, store=True)
+    second = drive_triage(page2, store=True, seed=first["store"], idle=True)
+    assert second["store"]["review/triage"]["decision"] == "approve"  # page 1's, still stored
+    decisions = tmp_path / "decisions.json"
+    done = CliRunner().invoke(
+        app,
+        ["review-decisions", "TBX5", "--run", "r1", "--page", str(page2)]
+        + ["--export", str(export_of(second["store"], tmp_path / "export"))]
+        + ["--out", str(decisions), "--root", str(root)],
+    )
+    assert done.exit_code == 0, done.output
+    assert "left out a triage verdict that was not made on this page" in done.output
+    assert json.loads(decisions.read_text(encoding="utf-8"))["triage"] is None

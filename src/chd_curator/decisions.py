@@ -17,8 +17,10 @@ for that card: the page stores the card's digest with each decision and shows an
 "decided on an earlier version". Such a card is LEFT OUT of the decisions file and named in
 :attr:`Converted.stale`, as the page's own download leaves it out (R-P1-44). A decision stamped
 after ``finished_at`` is refused: it was changed after "I'm done".
-A ``review/triage`` document stamped with another page's ``built_on`` is refused (the page
-stamps every triage write with its own); one with no stamp is read as before. Notes are copied
+A ``review/triage`` document is read only when stamped with this page's ``built_on`` (the page
+stamps every triage write with its own); one stamped for another page, or not stamped, gives only
+the ``papers_seen`` this page asks to be read and is reported in
+:attr:`Converted.triage_left_out` when it held a verdict, never refused. Notes are copied
 untouched.
 
 Exit codes at the CLI: :class:`ExportError` carries ``exit_code`` 1 when the review is not
@@ -110,6 +112,7 @@ class Converted:
     decisions: dict[str, Any]
     stale: tuple[str, ...]
     cards: int
+    triage_left_out: bool = False
 
 
 def _when(value: Any, what: str) -> datetime:
@@ -202,12 +205,13 @@ def decisions_from_export(
             }
         )
     triage_doc = docs.get("triage", {})
-    made_on = triage_doc.get("built_on")
-    if made_on is not None and made_on != provenance["built_on"]:
-        raise ExportError(
-            f"review/triage was made on another page (built_on {made_on!r}, this page's is "
-            f"{provenance['built_on']!r}): a triage state belongs to the page it was made on"
-        )
+    # The conversion matches the page: a triage document is read (decision, note, flips) only when
+    # it is stamped with this page's built_on. Any other keeps just the papers this page asks to be
+    # read, and a verdict in it is reported as left out, never exported.
+    left_out = False
+    if triage_doc.get("built_on") != provenance["built_on"]:
+        left_out = bool(triage_doc.get("decision"))
+        triage_doc = {"papers_seen": [p for p in triage_doc.get("papers_seen", []) if p in needed]}
     for flip in triage_doc.get("flips", []):
         pmid = flip.get("pmid") if isinstance(flip, dict) else None
         if pmid not in triage_now:
@@ -259,4 +263,4 @@ def decisions_from_export(
     )
     if errors:
         raise ExportError(f"the decisions file fails its schema: {errors[0]}")
-    return Converted(result, tuple(stale), len(cards))
+    return Converted(result, tuple(stale), len(cards), left_out)

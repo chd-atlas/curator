@@ -101,8 +101,11 @@ file (notes copied byte for byte). The page writes its own identity (literature 
 time, reviewer) into `session/main`, and an export that is not that page's is refused. The command
 exits 1 when the reviewer has not pressed "I'm done" or changed a choice after it (press it again),
 and 2 for an export from another page, reviewer or gene, a flip or a seen paper the page does not
-hold, a document for a card not on the page, a triage document stamped by another page, a decision
-outside approve|fix|later, or a file failing the schema; nothing is written on either. A card decided on an earlier version of it is left out
+hold, a document for a card not on the page, a decision outside approve|fix|later, or a file failing
+the schema; nothing is written on either. A triage document that is not stamped with this page's build time (made on another page, or by a page
+that stamped nothing) is read for nothing but the papers this page asks to be read: a verdict in it
+is left out of the file, one line says so ("left out a triage verdict that was not made on this
+page"), and the command still succeeds. A card decided on an earlier version of it is left out
 and named ("left out, decided on an earlier version: ..."), and the line before the path counts
 what was written, so a wrong `--export` directory shows. The step after is the atlas's
 `chd-atlas literature apply-review <SYMBOL> --decisions <file> --by <name>`.
