@@ -202,11 +202,14 @@ def require_identity(archive: Path) -> None:
         _local(archive, key)
 
 
-def commit(archive: Path, paths: Sequence[Path], message: str, contents: Sequence[bytes]) -> str:
+def commit(
+    archive: Path, paths: Sequence[Path], message: str, contents: Sequence[bytes | None]
+) -> str:
     """Commit exactly ``paths`` (relative to ``archive``); the short sha.
 
     ``contents`` are the bytes each path must hold in ``HEAD`` afterwards; a path that does
-    not is a :class:`GitError` (git can exit 0 having committed nothing for a path).
+    not is a :class:`GitError` (git can exit 0 having committed nothing for a path). A content
+    of None means the path must be absent from ``HEAD`` (a deletion).
     """
     names = [str(p) for p in paths]
     added = _git(archive, "add", "--", *names)

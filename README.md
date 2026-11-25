@@ -160,6 +160,27 @@ a finding twice or is a second opinion keyed as the owner, or two genes under on
 no symbol, a top-level directory whose name is not a symbol. Unlike `archive-state`, it does not
 compare the archive's gene with the atlas's.
 
+`chd-curator archive-redact --name <name> --archive <dir> [--apply]` removes a reviewer from the review
+archive on their request. A reviewer is found by name stripped and casefolded (so "Dr X" and " dr x"
+are one clinician); the owner cannot be removed. Without `--apply` it only prints five lists: the files
+to delete (the reviewer's decisions files, their own pages and those pages' `.artifact` files), the
+owner pages to rewrite, the artifact URLs to republish (the rewritten owner pages) and to unpublish
+(the reviewer's own pages), and the files that still name the reviewer afterwards. Rewriting an owner
+page replaces the reviewer's `name` with `a removed reviewer` and their `note` with an empty string in
+the page's data (the clinicians' verdicts on each card, the earlier triage verdicts, and the
+second-opinion entries of the open flips and of the verdicts on findings with no card) and leaves
+every other byte of the page alone. Nothing else is edited, so a name in an owner's own note, or anywhere else, stops `--apply` (exit 2, nothing
+changed) until you edit that file and commit. `--apply` also refuses an archive with uncommitted
+changes, a removal that touches no file, and a README without exactly one `## Removals` line. It
+deletes, rewrites, replaces `None yet.` under `## Removals` (or appends after the last entry) with a
+dated line, scans again (a match restores every touched path and exits 1), commits `redact a removed
+reviewer` under the archive's own identity, writes `.git/redact-expressions.txt` and
+`.git/redact-paths.txt`, and prints the steps to rewrite history in a fresh clone and the pages to
+republish or unpublish. History still holds the name until that rewrite is run, which is the owner's
+word. `git filter-repo` is not installed where this was written, so the printed `filter-repo` line has
+never been run and is unmeasured until the first removal; that removal starts with `uv tool install
+git-filter-repo`. It never pushes.
+
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and

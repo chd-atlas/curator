@@ -36,6 +36,7 @@ from ruamel.yaml.error import YAMLError
 from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, variantvalidator
+from chd_curator import redact as redact_mod
 from chd_curator.atlas import (
     AtlasError,
     Frame,
@@ -1221,6 +1222,53 @@ def archive_state_command(
         f"{archive_read.files_line(view)}; {pending} pending fix or ask later, "
         f"{flips} pending flip{'' if flips == 1 else 's'} (archive {view.commit})"
     )
+
+
+@app.command("archive-redact")
+def archive_redact_command(
+    name: str = typer.Option(
+        ..., "--name", help="The reviewer to remove, as the archive names them."
+    ),
+    archive: Path = typer.Option(..., "--archive", help="The review archive checkout."),
+    apply: bool = typer.Option(False, "--apply", help="Do it; without this, only print the plan."),
+) -> None:
+    """Remove a reviewer from the archive on their request (a dry run unless `--apply`).
+
+    The dry run prints five lists and changes nothing: the files to delete (the reviewer's
+    decisions files and their own pages with the pages' `.artifact` files), the owner pages to
+    rewrite (the reviewer's name and notes redacted in the page's data, every other byte kept),
+    the artifact URLs to republish and to unpublish, and the files that still name the reviewer
+    after that (an owner's note, say), which stop `--apply` until edited. `--apply` refuses
+    (exit 2, nothing changed) an archive with uncommitted changes, a name still found
+    elsewhere, a removal that touches nothing, or a README without exactly one `## Removals`
+    line; it deletes, rewrites, adds a dated line under `## Removals`, scans again (a match
+    restores every touched path and exits 1), commits `redact a removed reviewer`, and prints
+    the history-rewrite procedure plus the pages to republish or unpublish. That procedure has not
+    been run: `git filter-repo` is unmeasured until the first removal. Never pushes.
+    """
+    try:
+        plan = redact_mod.plan_redact(archive, name)
+        if not apply:
+            for title, items in (
+                ("delete", plan.delete),
+                ("rewrite", plan.rewrite),
+                ("republish", plan.republish),
+                ("unpublish", plan.unpublish),
+                ("elsewhere", plan.elsewhere),
+            ):
+                typer.echo(f"{title} ({len(items)}):")
+                for item in items:
+                    typer.echo(f"  {item}")
+            typer.echo("dry run: nothing changed; add --apply to carry it out")
+            return
+        sha = redact_mod.apply_redact(archive, name, plan, datetime.now(UTC).date())
+    except archive_mod.ArchiveError as exc:
+        raise _fail(str(exc), 2) from None
+    except archive_mod.GitError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"committed {sha}")
+    for line in redact_mod.procedure(archive, name, plan):
+        typer.echo(line)
 
 
 _AGREEMENT_SYMBOLS = typer.Argument(
