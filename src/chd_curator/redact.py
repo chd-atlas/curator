@@ -80,7 +80,8 @@ class RedactPlan:
     rewrite: tuple[str, ...]  # owner pages whose data names them in a structural field
     republish: tuple[str, ...]  # the .artifact URLs of the rewritten owner pages
     unpublish: tuple[str, ...]  # the .artifact URLs of their own pages
-    elsewhere: tuple[str, ...]  # other files the name pattern still matches after the plan
+    # surviving files the name pattern matches after the plan, or whose path holds the name's slug
+    elsewhere: tuple[str, ...]
 
 
 def _key(name: str) -> str:
@@ -170,7 +171,11 @@ def _url(path: Path) -> str | None:
 
 
 def _slug_token(name: str) -> re.Pattern[str] | None:
-    """The name's file-name slug as a whole token of a lowercased path, None when it has none."""
+    """The name's file-name slug as a whole token of a lowercased path, None when it has none.
+
+    Any character that is not a letter or digit bounds the token, ``-`` included, so ``dr-x``
+    matches ``dr-x-smith`` and ``--dr-x.json`` but not ``dr-xavier``.
+    """
     word = slug(name)
     if not word:
         return None

@@ -73,10 +73,17 @@ found.
 `<run>/review.html` for the owner, `<run>/review-<name>.html` for a second opinion (which shows no
 approval state and no other reviewer's verdict, and refuses `--archive`). With `--archive` the owner
 page reads the review archive (see `archive-state` below): each card shows the owner's own earlier
-note and each clinician's latest verdict on it, the triage card lists the earlier triage verdicts and
-the open flips (the owner's own flips are ticked again, and kept unless undone), a fold lists verdicts
-on findings with no card on this page, and the page says which archive commit it read. An archive
-the reader refuses (see `archive-state`) refuses the page, exit 2, and nothing is written. The command refuses to build, exit 1,
+verdict (only when it is not a plain approve) and each clinician's latest verdict on it, the triage
+card lists each reviewer's latest triage verdict with its date (the owner's only when it is not a
+plain approve) and the open flips, a fold lists verdicts on findings with no card on this page (the
+owner's plain approves left out), and the page says which archive commit it read. The owner's own open
+flips are ticked again on their rows. Approve or Needs a fix on the triage card closes every flip
+listed whose paper is not flipped on that card; Ask later, or no verdict, closes none. Undoing a flip
+while the card has no verdict shows a banner and refuses "I'm done". A triage state belongs to the
+page it was made on: a page restored in a browser or store that already holds another page's state
+for the same literature file keeps from it only the papers this page asks to be read, and its session
+is not finished. An archive the reader refuses (see `archive-state`) refuses the page, exit 2, and
+nothing is written; a failing git command exits 1. The command refuses to build, exit 1,
 when `chd-atlas validate` reports an error. The page saves two ways: opened as a claude.ai artifact it
 saves to the page's store; opened as a plain file it saves in the browser. A page published as a claude.ai artifact needs the `downloads` capability beside `db`: claude.ai never lets a page download a file itself, so without `downloads` "Download my review" cannot save there (the page says the review was not saved). "Download my review"
 (available at any time) gives a decisions file, which the atlas's `literature apply-review`
@@ -94,8 +101,8 @@ file (notes copied byte for byte). The page writes its own identity (literature 
 time, reviewer) into `session/main`, and an export that is not that page's is refused. The command
 exits 1 when the reviewer has not pressed "I'm done" or changed a choice after it (press it again),
 and 2 for an export from another page, reviewer or gene, a flip or a seen paper the page does not
-hold, a document for a card not on the page, a decision outside approve|fix|later, or a file failing
-the schema; nothing is written on either. A card decided on an earlier version of it is left out
+hold, a document for a card not on the page, a triage document stamped by another page, a decision
+outside approve|fix|later, or a file failing the schema; nothing is written on either. A card decided on an earlier version of it is left out
 and named ("left out, decided on an earlier version: ..."), and the line before the path counts
 what was written, so a wrong `--export` directory shows. The step after is the atlas's
 `chd-atlas literature apply-review <SYMBOL> --decisions <file> --by <name>`.
@@ -122,7 +129,8 @@ written) when the file is not valid JSON or fails the atlas's exported schema, i
 finished, it is for another symbol, it is a second opinion whose name reads as `owner`, it names one
 finding twice, the reviewer name has no ASCII letter or digit for a file name, its gene differs from
 the filed page's or from one already filed for the symbol, or no page filed under that run matches
-its `page.built_on`, `page.literature_sha256` and reviewer (a bad symbol or run id is refused too).
+its `page.built_on`, `page.literature_sha256` and reviewer, or its session finished before its page
+was built (a bad symbol or run id is refused too).
 These include the checks the archive reader applies, so the archive does not accept a file its reader would
 refuse. The same append-only rule applies: a different file at the same name is refused and the
 message names it, an identical one prints `already filed`. The message is `file <SYMBOL> <run id>:
@@ -138,11 +146,12 @@ twice). A flip is a verdict on one paper: a reviewer's latest flip of it counts,
 later triage verdicts say, and it is pending while the paper is in the literature file's triage with
 a decision other than the flip's `to` (a paper still undecided counts, one no longer in triage does
 not), unless the owner closed it by approving or fixing (not asking later) the triage on a filed page
-that showed that flip, without flipping the paper themselves. `--json` prints the whole state. It
-writes nothing, and refuses (exit 2) an archive with uncommitted
-changes (untracked files included), a non-JSON file under a decisions directory, a decisions file the
-last commit does not hold, an owner's approve or fix of the triage whose filed page cannot be found
-or read, a file that fails the schema, is unfinished, is misnamed, is for another
+that showed that flip, in a file that finished after the flip did, without flipping the paper
+themselves. `--json` prints the whole state. It writes nothing, and refuses (exit 2) an archive with
+uncommitted changes (untracked files included), anything in a decisions directory other than a
+.json file directly in it, a decisions file the last commit does not hold, an owner's approve or fix
+of the triage whose filed page cannot be found or read, a file that fails the schema, is unfinished,
+finished before its page was built, is misnamed, is for another
 symbol, names one finding twice or is a second opinion keyed as the owner, two genes under one
 symbol, or an archive whose gene for the symbol is not the atlas's.
 
@@ -154,36 +163,50 @@ clinician verdict on a version no owner decisions file covers is unpaired; a lat
 set against an earlier one, and triage verdicts are not counted. With no symbol it reads every
 top-level directory of the archive that is not a dot-directory. The report is printed here only: the
 command writes nothing, and `--json` prints the whole report instead. It refuses (exit 2) what the
-archive reader refuses (not a review archive, uncommitted changes, a non-JSON file under a decisions
-directory, a decisions file the last commit does not hold, or one that is not valid JSON, fails the schema, is unfinished, is misnamed, is for another symbol, names
-a finding twice or is a second opinion keyed as the owner, or two genes under one symbol) and, with
-no symbol, a top-level directory whose name is not a symbol. Unlike `archive-state`, it does not
+archive reader refuses (not a review archive, uncommitted changes, anything in a decisions directory
+other than a .json file directly in it, a decisions file the last commit does not hold, an owner's
+approve or fix of the triage whose filed page cannot be found or read, or a file that is not valid
+JSON, fails the schema, is unfinished, finished before its page was built, is misnamed, is for
+another symbol, names a finding twice or is a second opinion keyed as the owner, or two genes under
+one symbol) and, with no symbol, a top-level directory whose name is not a symbol. Unlike `archive-state`, it does not
 compare the archive's gene with the atlas's.
 
 `chd-curator archive-redact --name <name> --archive <dir> [--apply]` removes a reviewer from the review
 archive on their request. A reviewer is found by name stripped and casefolded (so "Dr X" and " dr x"
-are one clinician); the owner cannot be removed. Without `--apply` it only prints five lists: the files
-to delete (the reviewer's decisions files, their own pages and those pages' `.artifact` files), the
-owner pages to rewrite, the artifact URLs to republish (the rewritten owner pages) and to unpublish
-(the reviewer's own pages), and the files that still name the reviewer afterwards. Rewriting an owner
-page replaces the reviewer's `name` with `a removed reviewer` and their `note` with an empty string in
-the page's data (the clinicians' verdicts on each card, the earlier triage verdicts, and the
-second-opinion entries of the open flips and of the verdicts on findings with no card) and leaves
-every other byte of the page alone. Nothing else is edited, so a name in an owner's own note, or anywhere else, stops `--apply` (exit 2, nothing
-changed) until you edit that file and commit. `--apply` also refuses an archive with uncommitted
-changes, a removal that touches no file, a README without exactly one `## Removals` line, and
-`.git/redact-*.txt` files left by an earlier removal (finish that history rewrite first). A file whose
-path holds the reviewer's file-name slug (`dr-x` for "Dr X") also counts as naming them, so a clinician
-spelled "Dr. X" stops `--apply` until their files are dealt with. It
-deletes, rewrites, replaces `None yet.` under `## Removals` (or appends after the last entry) with a
-dated line, scans again, and commits `redact a removed reviewer` under the archive's own identity (a
-match in the scan, a failed write or a failed commit restores every touched path and exits 1). It then
-writes `.git/redact-expressions.txt` and `.git/redact-paths.txt`, and prints the steps to rewrite
-history in a fresh clone and the pages to
-republish or unpublish. History still holds the name until that rewrite is run, which is the owner's
-word. `git filter-repo` is not installed where this was written, so the printed `filter-repo` line has
-never been run and is unmeasured until the first removal; that removal starts with `uv tool install
-git-filter-repo`. It never pushes.
+are one clinician); `--name owner` is refused, and `--name <the owner's own name>` finds the owner's
+files as files that still name the reviewer, deletes and rewrites nothing, and `--apply` refuses it.
+Without `--apply` it only prints five lists: the files to delete (the reviewer's decisions files,
+their own pages and those pages' `.artifact` files), the owner pages to rewrite, the artifact URLs to
+republish (the rewritten owner pages) and to unpublish (the reviewer's own pages), and the files that
+still name the reviewer afterwards. Rewriting an owner page replaces the reviewer's `name` with
+`a removed reviewer` and their `note` with an empty string in the page's data (the clinicians' verdicts
+on each card, the earlier triage verdicts, and the second-opinion entries of the open flips and of the
+verdicts on findings with no card) and leaves every other byte of the page alone. Nothing else is
+edited, so a name in an owner's own note, or anywhere else, stops `--apply` (exit 2, nothing changed)
+until you edit that file and commit. A file whose path holds the reviewer's file-name slug (`dr-x` for
+"Dr X") as a whole token also counts as naming them, and `-` is a boundary there. So a name written
+another way ("Dr. X" is another key) or a longer name containing it ("Dr X Smith") stops `--apply`
+too, and needs a hand edit of those files (delete or edit them, commit, and run again). Both the dry
+run and `--apply` refuse (exit 2) an archive in which a path carries a skip-worktree or
+assume-unchanged bit (git then hides a deleted or edited working copy from `git status`; the message
+names the paths and the `git update-index` command that clears it) and a file the scan cannot read.
+`--apply` also refuses an archive with uncommitted changes, a removal that touches no file, a missing
+README or one without exactly one `## Removals` line, and `.git/redact-*.txt` files left by an earlier
+removal (finish that history rewrite first). It deletes, rewrites, replaces `None yet.` under
+`## Removals` (or appends after the last entry) with a dated line (`- <date>: one reviewer removed: N
+files deleted, their name and notes redacted from M owner pages.`), scans again, and commits `redact a
+removed reviewer` under the archive's own identity (a match in the scan, a failed write or a failed
+commit restores every touched path and exits 1). It then writes `.git/redact-expressions.txt` and
+`.git/redact-paths.txt` (the deleted files and the rewritten owner pages, whose original blobs hold the
+clinician's notes), and prints the steps to rewrite history in a fresh clone, re-add the redacted owner
+pages in one commit, and expire the checkout's reflog, then the copies outside the archive to delete by
+hand (the clinician's page and the file they sent back, on this machine) and the pages to republish or
+unpublish. History holds the name and the notes until that rewrite is run, which is the owner's word;
+after it the checkout's reflog still holds them until the printed `reflog expire` and `gc` are run, and
+GitHub may keep the force-pushed-over commits reachable by id until GitHub Support removes them
+(unmeasured). `git filter-repo` is not installed where this was written, so the printed procedure has
+never been run and is unmeasured as of 2026-11-25; when `git-filter-repo` is not on the PATH the output
+says `uv tool install git-filter-repo`. It never pushes.
 
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
@@ -227,8 +250,9 @@ owner sends and receives; a session never contacts a clinician.
 
 - **Send by file (the default).** The session builds the clinician's page (`review-page --role
   second_opinion --reviewer <name>`), files it with `archive-page`, and gives you the path; you email
-  it. The page states what the archive keeps, in a notice above its save buttons, and never reads
-  the archive.
+  it. The page states what the archive keeps, in a notice in its introduction, just before the
+  instructions for sending the review back (the save buttons are in the page header, above it), and
+  never reads the archive.
 - **On claude.ai, for an invited clinician with an account (not yet measured).** The session
   publishes the clinician's page as its own private artifact, with the `db` and `downloads`
   capabilities, and files it with `archive-page --artifact <url>`. You invite the clinician from the
@@ -240,8 +264,9 @@ owner sends and receives; a session never contacts a clinician.
   the `chd-atlas literature apply-review` command to run next. A store export is converted and not
   kept.
 - **Remove.** On a clinician's request, `archive-redact --name <name> --archive <dir>` lists what it
-  would delete and redact; `--apply` does it and commits. Rewriting the archive's history and
-  republishing your claude.ai copies follow the steps it prints, on your word.
+  would delete and redact; `--apply` does it and commits. Rewriting the archive's history,
+  republishing your claude.ai copies and unpublishing the clinician's own page follow the steps it
+  prints, on your word.
 
 ## Develop
 

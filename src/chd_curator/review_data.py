@@ -692,9 +692,7 @@ def _archive_data(
             "note": v.note,
             "date": _date(v.finished_at),
             "where": (
-                "on another page of this gene"
-                if v.finding in held
-                else "no longer in the gene's file"
+                "still in the gene's file" if v.finding in held else "no longer in the gene's file"
             ),
         }
         for v in sorted(off_page, key=lambda x: (x.finding, x.key != "owner", x.key))

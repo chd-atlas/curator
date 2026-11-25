@@ -1014,7 +1014,7 @@ def test_a_verdict_with_no_card_reaches_not_on_page_with_where_it_is(
     assert [c["id"] for c in data["findings"]] == [J, G]
     rows = [(r["id"], r["role"], r["name"], r["decision"], r["where"]) for r in data["not_on_page"]]
     assert rows == [
-        (A, "second_opinion", "Dr X", "approve", "on another page of this gene"),
+        (A, "second_opinion", "Dr X", "approve", "still in the gene's file"),
         (gone, "owner", "E.A.M", "fix", "no longer in the gene's file"),
         (gone, "second_opinion", "Dr X", "later", "no longer in the gene's file"),
         (gone, "second_opinion", "Dr Y", "fix", "no longer in the gene's file"),

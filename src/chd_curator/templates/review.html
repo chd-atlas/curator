@@ -151,7 +151,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const DATA = JSON.parse(document.getElementById("data").textContent);
   const OWNER = DATA.reviewer.role === "owner";
   const SELFTEST = location.hash.startsWith("#selftest");
-  const MODE = location.hash.replace(/^#selftest-?/, "");   // selftest variants: earlier-approve, earlier-undo, earlier-undecided, earlier-add, earlier-flip (the owner page's archive flips), noverdict, reflip, unflip, redecide, stale, stale-open, stale-click, persist, restore (selftest hook: window.__downloadsTimeoutMs shortens the 10 s wait for downloads)
+  const MODE = location.hash.replace(/^#selftest-?/, "");   // selftest variants: earlier-approve, earlier-undo, earlier-undo-only, earlier-undecided, earlier-add, earlier-flip (the owner page's archive flips), noverdict, reflip, unflip, redecide, stale, stale-open, stale-click, persist, restore (selftest hook: window.__downloadsTimeoutMs shortens the 10 s wait for downloads)
   // The selftest touches no browser storage, except in `persist` and `restore`, which exist to test it.
   const LIVE_STORAGE = !SELFTEST || MODE === "persist" || MODE === "restore";
   const NOVERDICT = MODE === "noverdict";
@@ -208,7 +208,10 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   let bannerNote = "";
   function triageWarning() {
     const n = flipsNow().length;
-    if (!flipsTouched() || !n || triage().decision) return "";
+    if (!flipsTouched() || triage().decision) return "";
+    // flips changed here and no verdict: with none left (an undo) the card still has to be decided,
+    // or the undone flip stays open on the archive and the download carries no triage at all
+    if (!n) return bannerNote + "You changed the triage card's flips and it has no verdict. Give it a verdict (" + LABEL.approve + ", " + LABEL.fix + " or " + LABEL.later + "). Until then I'm done is refused.";
     return bannerNote + "The triage card carries " + n + " flipped " + (n === 1 ? "paper" : "papers") + " and no verdict. Give the triage card a verdict (" + LABEL.approve + ", " + LABEL.fix + " or " + LABEL.later + "). Until then I'm done is refused and Download my review leaves the flips out.";
   }
   function updateBanner() {
@@ -304,7 +307,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       const [cls, what] = WHAT[o.decision] || ["asks", o.decision];
       // a verdict on an earlier version of the card is not a verdict on this one
       const where = o.current ? "" : " on an earlier version";
-      const note = o.decision === "approve" ? (o.note ? " · " + esc(o.note) : "") : ": " + esc(o.note);
+      const note = o.note ? (o.decision === "approve" ? " · " : ": ") + esc(o.note) : "";
       return `<li class="${cls}${o.current ? "" : " earlier"}">${esc(o.name)}: ${what}${where}${note}</li>`;
     };
     return `<ul class="opinions">${list.map(line).join("")}</ul>`;
@@ -348,19 +351,20 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   }
   // A clinician's own word: "agreed" for an approve, where the owner's is "approved".
   const PAST_OF = { owner: PAST, second_opinion: { approve: "agreed", fix: "needs a fix", later: "ask later" } };
-  const RULE = "Your flips are ticked again below and kept unless you undo them. Deciding this card closes every other flip listed here that you do not make yourself; Ask later closes none.";
+  const TICKED = "Your open flips are ticked again on their rows.";
+  const RULE = "Approve or Needs a fix closes every flip listed here whose paper is not flipped on this card when you decide; Ask later, or no verdict, closes none.";
   function triageEarlier() {
     const te = OWNER ? DATA.triage_earlier : null;
     if (!te) return "";
     const tail = (note) => note ? ": " + esc(note) : "";
     const lines = [];
     if (te.owner) lines.push(`Your note, ${esc(te.owner.date)}: ${esc(LABEL[te.owner.decision])}${tail(te.owner.note)}`);
-    for (const c of te.clinicians) lines.push(`${esc(c.name)}: ${esc(PAST_OF.second_opinion[c.decision])}${tail(c.note)}`);
+    for (const c of te.clinicians) lines.push(`${esc(c.name)}, ${esc(c.date)}: ${esc(PAST_OF.second_opinion[c.decision])}${tail(c.note)}`);
     for (const f of te.flips) lines.push(f.role === "owner"
       ? `Your flip, ${esc(f.date)}: ${esc(f.pmid)} to ${esc(f.to)}${tail(f.note)}`
-      : `${esc(f.name)} flipped ${esc(f.pmid)} to ${esc(f.to)}${tail(f.note)}`);
+      : `${esc(f.name)} flipped ${esc(f.pmid)} to ${esc(f.to)}, ${esc(f.date)}${tail(f.note)}`);
     if (!lines.length) return "";
-    return `<ul class="earlier-list">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>${te.flips.length ? `<p class="meta">${esc(RULE)}</p>` : ""}`;
+    return `<ul class="earlier-list">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>${te.flips.length ? `<p class="meta">${te.flips.some((f) => f.role === "owner") ? esc(TICKED) + " " : ""}${esc(RULE)}</p>` : ""}`;
   }
   function notOnPage() {
     const rows = OWNER ? DATA.not_on_page || [] : [];
@@ -685,10 +689,10 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
         document.getElementById("flipnote-" + pmid).value = "selftest";
         root.querySelector(`[data-record="${CSS.escape(pmid)}"]`).click(); await step();
       };
-      if (MODE === "earlier-undo") { root.querySelector(`[data-unflip="${CSS.escape(own.pmid)}"]`).click(); await step(); }
+      if (MODE === "earlier-undo" || MODE === "earlier-undo-only") { root.querySelector(`[data-unflip="${CSS.escape(own.pmid)}"]`).click(); await step(); }
       if (MODE === "earlier-add") await flipHere(DATA.triage.find((t) => !flipOf(t.pmid)).pmid);
       if (MODE === "earlier-flip") await flipHere(clinician.pmid);
-      if (MODE !== "earlier-undecided" && MODE !== "earlier-add") { root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await step(); }
+      if (MODE !== "earlier-undecided" && MODE !== "earlier-add" && MODE !== "earlier-undo-only") { root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await step(); }
       finish();
       await emit();
       return;

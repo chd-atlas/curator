@@ -461,10 +461,17 @@ def no_page(root: Path) -> bool:
     return not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
 
 
+@pytest.mark.parametrize("marked", [True, False])
 def test_a_second_opinion_page_refuses_an_archive(
-    root: Path, stub_atlas: Path, tmp_path: Path
+    root: Path, stub_atlas: Path, tmp_path: Path, marked: bool
 ) -> None:
-    archive = make_archive(tmp_path)
+    """The CLI's own refusal comes first, even for a directory that is not an archive (where the
+    reader's "not a review archive" would otherwise be the message)."""
+    if marked:
+        archive = make_archive(tmp_path)
+    else:
+        archive = tmp_path / "plain"
+        archive.mkdir()
     code, out = build(
         root, stub_atlas, "--reviewer", "Dr Y", "--role", "second_opinion",
         "--archive", str(archive),
@@ -521,7 +528,7 @@ def test_the_owner_page_shows_a_clinicians_verdict_on_its_card(
         ({"session": {"started_at": None, "finished_at": None, "active_ms": 0}}, "finished"),
     ],
 )
-def test_a_filed_file_that_is_not_a_finished_second_opinion_on_this_gene_refuses_the_page(
+def test_a_filed_second_opinion_for_another_gene_or_symbol_or_format_or_unfinished_refuses_the_page(
     root: Path, stub_atlas: Path, tmp_path: Path, override: dict[str, Any], why: str
 ) -> None:
     """Committed by hand, since filing would refuse it: the reader and the gene check must."""
@@ -1366,8 +1373,7 @@ def test_a_verdict_with_no_card_reaches_the_fold_with_where_it_is(
     text = plain(fold.group(1))
     assert text.startswith("Earlier verdicts on findings not on this page (3)")
     assert (
-        f"{A}, on another page of this gene: Dr X: needs a fix: check the proband count "
-        "(2026-11-19)"
+        f"{A}, still in the gene's file: Dr X: needs a fix: check the proband count (2026-11-19)"
     ) in text
     assert (
         f"{gone}, no longer in the gene's file: You: needs a fix: wrong gene (2026-11-19)" in text
@@ -1408,10 +1414,16 @@ def test_the_page_says_what_archive_it_read(root: Path, stub_atlas: Path, tmp_pa
     assert "Review archive" not in dom and "No review archive" not in dom
 
 
+TICKED = "Your open flips are ticked again on their rows."
 RULE = (
-    "Your flips are ticked again below and kept unless you undo them. Deciding this card "
-    "closes every other flip listed here that you do not make yourself; Ask later closes none."
+    "Approve or Needs a fix closes every flip listed here whose paper is not flipped on this "
+    "card when you decide; Ask later, or no verdict, closes none."
 )
+NO_VERDICT_AFTER_UNDO = (
+    "You changed the triage card's flips and it has no verdict. Give it a verdict (Approve, "
+    "Needs a fix or Ask later). Until then I'm done is refused."
+)
+CLEARED = "Your earlier triage verdict was cleared because a flip changed. "
 
 
 def flipped_archive(tmp_path: Path) -> Path:
@@ -1459,15 +1471,16 @@ def test_the_triage_card_lists_earlier_verdicts_and_open_flips_and_ticks_only_th
     dom = dump_dom(page, "")
     text = plain(card_html(dom, "triage"))
     assert "Your note, 2026-11-19: Needs a fix: n" in text
-    assert "Dr Y: agreed" in text and "Dr Z: ask later: n" in text
+    assert "Dr Y, 2026-11-19: agreed" in text and "Dr Z, 2026-11-19: ask later: n" in text
     assert "Your flip, 2026-11-19: PMID:90000002 to excluded: because" in text
-    assert "Dr X flipped PMID:90000001 to excluded: because" in text
-    assert text.count(RULE) == 1
+    assert "Dr X flipped PMID:90000001 to excluded, 2026-11-19: because" in text
+    assert text.count(TICKED) == 1 and text.count(RULE) == 1
     rows = triage_rows(dom)
     assert "flipped to excluded because Undo flip" in rows[P2]
     assert "flipped to" not in rows[P1] and "Exclude instead" in rows[P1]
     assert "flipped to" not in rows[P3]
-    assert RULE not in plain(visible(dom).replace(card_html(dom, "triage"), ""))
+    outside = plain(visible(dom).replace(card_html(dom, "triage"), ""))
+    assert RULE not in outside and TICKED not in outside
 
 
 def test_the_rule_sentence_is_absent_when_no_flip_is_open(
@@ -1479,7 +1492,44 @@ def test_the_rule_sentence_is_absent_when_no_flip_is_open(
     code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 0, out
     text = plain(card_html(dump_dom(Path(out.strip().splitlines()[-1]), ""), "triage"))
-    assert "Dr Y: agreed" in text and "ticked again" not in text
+    assert "Dr Y, 2026-11-19: agreed" in text and TICKED not in text and RULE not in text
+
+
+def test_a_listed_flip_that_is_not_the_owners_has_the_rule_and_no_ticked_sentence(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    put(
+        archive,
+        tmp_path,
+        "Dr X",
+        "second_opinion",
+        "2026-11-19T10:00:00Z",
+        [],
+        tri("fix", flip(P1)),
+    )
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    text = plain(card_html(dump_dom(Path(out.strip().splitlines()[-1]), ""), "triage"))
+    assert "Dr X flipped PMID:90000001 to excluded, 2026-11-19: because" in text
+    assert text.count(RULE) == 1 and TICKED not in text
+
+
+def test_undoing_the_last_flip_without_a_verdict_shows_the_banner_and_refuses_im_done(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """With no flip left the old banner stayed silent, I'm done was accepted, the download's triage
+    was null and the undone flip stayed open on the archive."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "selftest-earlier-undo-only")
+    decisions = selftest_output(dom)
+    assert decisions["triage"] is None and decisions["session"]["finished_at"] is None
+    banner = re.search(r'<div id="banner"[^>]*>(.*?)</div>', visible(dom), re.S)
+    assert banner and "hidden" not in banner.group(0).split(">")[0]
+    assert banner.group(1) == NO_VERDICT_AFTER_UNDO
 
 
 @pytest.mark.parametrize(
@@ -1734,6 +1784,7 @@ def test_undoing_a_ticked_again_flip_after_the_verdict_clears_the_verdict(
     dump = drive_triage(page, store=store, undo=P2)
     assert "approved" in dump["afterApprove"]
     assert json.loads(dump["download"])["triage"] is None
+    assert dump["banner"] == CLEARED + NO_VERDICT_AFTER_UNDO
     if store:
         assert dump["store"]["review/triage"]["flips"] == []
         assert "decision" not in dump["store"]["review/triage"]
@@ -1867,3 +1918,42 @@ def test_a_session_finished_on_another_page_is_not_finished_here(
     seed = first["store"] if store else first["kept"]
     second = drive_triage(page2, store=store, seed=seed, idle=True, unfinished=True)
     assert json.loads(second["download"])["session"]["finished_at"] is None
+
+
+def test_a_redacted_entry_renders_without_a_dangling_colon(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """After a removal an entry has the name `a removed reviewer` and an empty note: every line
+    that renders `<who>: <verdict>: <note>` leaves out `: <note>` when there is none."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    data = data_of(page)
+    gone = {"name": "a removed reviewer", "note": ""}
+    data["second_opinions"] = {
+        G: [{"decision": "fix", "current": True, "date": "2026-11-19", **gone}]
+    }
+    earlier = data["triage_earlier"]
+    earlier["clinicians"] = [{"decision": "fix", "date": "2026-11-19", **gone}]
+    earlier["flips"] = [
+        {"role": "second_opinion", "pmid": P1, "to": "excluded", "date": "2026-11-19",
+         "finished_at": T_X, **gone}
+    ]  # fmt: skip
+    data["not_on_page"] = [
+        {"id": "CHDA:LIT:0000999", "role": "second_opinion", "decision": "later",
+         "date": "2026-11-19", "where": "no longer in the gene's file", **gone}
+    ]  # fmt: skip
+    dom = visible(dump_dom(tmp_page(page, data), ""))
+    assert '<li class="fixes">a removed reviewer: needs a fix</li>' in dom
+    triage = plain(card_html(dom, "triage"))
+    assert "a removed reviewer, 2026-11-19: needs a fix" in triage
+    assert "a removed reviewer flipped PMID:90000001 to excluded, 2026-11-19" in triage
+    assert "a removed reviewer, 2026-11-19: needs a fix:" not in triage
+    assert "to excluded, 2026-11-19:" not in triage
+    fold = plain(
+        re.search(
+            r'<details class="static-card" id="not-on-page">(.*?)</details>', dom, re.S
+        ).group(1)
+    )  # type: ignore[union-attr]
+    assert "no longer in the gene's file: a removed reviewer: ask later (2026-11-19)" in fold

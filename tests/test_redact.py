@@ -630,3 +630,44 @@ def test_a_rescan_that_cannot_read_a_file_restores_every_touched_path(
         apply_redact(archive, "Dr X", plan_redact(archive, "Dr X"), date(2026, 11, 25))
     _unchanged(archive, head)
     assert not (archive / ".git" / "redact-paths.txt").exists()
+
+
+def test_the_owners_own_name_deletes_and_rewrites_nothing_and_stops_apply(archive: Path) -> None:
+    """README: `--name <the owner's own name>` finds the owner's files as files that still name
+    the reviewer, deletes and rewrites nothing, and `--apply` refuses it; `--name owner` is
+    refused."""
+    plan = plan_redact(archive, "E.A.M")
+    assert plan.delete == () and plan.rewrite == ()
+    assert OWNER_PAGE in plan.elsewhere
+    head = git(archive, "rev-parse", "HEAD")
+    result = CliRunner().invoke(
+        app, ["archive-redact", "--name", "E.A.M", "--archive", str(archive), "--apply"]
+    )
+    assert result.exit_code == 2 and "still found in files redaction does not edit" in result.output
+    _unchanged(archive, head)
+    refused = CliRunner().invoke(
+        app, ["archive-redact", "--name", "owner", "--archive", str(archive)]
+    )
+    assert (
+        refused.exit_code == 2
+        and "the owner is not a reviewer that can be removed" in refused.output
+    )
+
+
+@pytest.mark.parametrize("other", ["Dr. X", "Dr X Smith"])
+def test_a_name_written_another_way_stops_apply_until_those_files_are_edited_by_hand(
+    archive: Path, tmp_path: Path, other: str
+) -> None:
+    later = "2026-11-25T10:00:00+00:00"
+    put(archive, tmp_path, other, "second_opinion", later, [finding(J, "fix", D1, later)])
+    commit_all(archive)
+    plan = plan_redact(archive, "Dr X")
+    assert (
+        f"{RUN}/decisions/{compact_utc(later)}--{'dr-x' if other == 'Dr. X' else 'dr-x-smith'}.json"
+        in plan.elsewhere
+    )
+    assert X_DECISIONS in plan.delete  # the exact key is still removed
+    result = CliRunner().invoke(
+        app, ["archive-redact", "--name", "Dr X", "--archive", str(archive), "--apply"]
+    )
+    assert result.exit_code == 2 and "still found in files redaction does not edit" in result.output

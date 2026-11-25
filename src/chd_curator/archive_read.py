@@ -26,9 +26,10 @@ literature file's triage with a decision other than the flip's ``to`` (a paper a
 triage is not pending), unless an owner has *closed* it. The owner closes a flip by a triage
 verdict that is ``approve`` or ``fix`` (never ``later``), made on a filed page that showed that
 flip, in a file that finished after the flip did, whose own flips do not include the paper. A
-page showed a flip when its data has ``archive.read`` true and lists
-``(reviewer key, pmid, finished_at)`` in ``triage_earlier.flips``; a page without
-``archive.read`` true showed nothing. A clinician's verdict never closes a flip.
+page showed a flip when its data has ``archive.read`` true and lists the flip's reviewer
+(``name`` and ``role``; the key is derived from them), ``pmid`` and ``finished_at`` in
+``triage_earlier.flips``; a page without ``archive.read`` true showed nothing. A clinician's
+verdict never closes a flip.
 """
 
 from __future__ import annotations

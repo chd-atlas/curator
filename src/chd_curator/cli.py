@@ -971,15 +971,18 @@ def review_page_command(
     and shows no approval state and no other reviewer's verdict. With `--archive <dir>` the
     owner page also shows what the review archive holds for the gene: the owner's own earlier
     notes, each clinician's latest verdict on each card, the triage card's earlier verdicts and
-    open flips (the owner's own are ticked again), and a fold of verdicts on findings with no
-    card on this page. Opened as a claude.ai artifact the page saves to its store; opened as a
-    file it saves in the browser and offers "Download my review" (a decisions file for
-    `chd-atlas literature apply-review`).
+    open flips (the owner's own open flips are ticked again on their rows; Approve or Needs a
+    fix on the card closes every flip listed whose paper is not flipped on that card, Ask later
+    or no verdict closes none), and a fold of verdicts on findings with no card on this page.
+    Opened as a claude.ai artifact the page saves to its store; opened as a file it saves in the
+    browser and offers "Download my review" (a decisions file for `chd-atlas literature
+    apply-review`).
     Refuses (exit 1) to build when `chd-atlas validate` reports an error; exit 2 for a bad
     argument, an unreadable run, `--archive` with `--role second_opinion`, or an archive the
     reader refuses (not a marked checkout, uncommitted changes, an invalid decisions file, or
-    the symbol filed as another gene than the atlas's); nothing is written then. Validate is
-    asked first, so a gene the atlas cannot digest still reports its validate errors.
+    the symbol filed as another gene than the atlas's); nothing is written then, and a failing
+    git command exits 1. Validate is asked first, so a gene the atlas cannot digest still
+    reports its validate errors.
     """
     _require_root(root)
     if role not in ("owner", "second_opinion"):
@@ -1046,8 +1049,9 @@ def review_decisions_command(
     page's own inline data, and writes the format 1 file `chd-atlas literature apply-review`
     applies. Exit 1 when the reviewer has not pressed "I'm done", or changed a choice after it
     (press it again); exit 2 for an export that is not this page's (another page, reviewer or
-    gene, a flip or a seen paper the page does not hold), a document for a card not on the page,
-    a decision outside approve|fix|later, or a result failing the schema. Nothing is written on
+    gene, a flip or a seen paper the page does not hold, a triage document made on another
+    page), a document for a card not on the page, a decision outside approve|fix|later, or a
+    result failing the schema. Nothing is written on
     exit 1 or 2. A card decided on an earlier version is left out of the file, as the page's own
     download leaves it out, and named on stdout (exit 0). The last-but-one line counts what was
     written.
@@ -1133,7 +1137,8 @@ def archive_decisions_command(
     a bad symbol or run id, invalid JSON or a schema error, an unfinished session, another
     symbol, a second opinion keyed as the owner, a finding decided twice, a reviewer name with
     no ASCII letter or digit, another gene than the page's or than one already filed for the
-    symbol, no page filed for the file, a different file already filed, a path git ignores);
+    symbol, a session that finished before its page was built, no page filed for the file, a
+    different file already filed, a path git ignores);
     exit 1 when git fails, a file cannot be written, or a commit leaves a path out of HEAD.
     Never pushes.
     """
@@ -1176,14 +1181,16 @@ def archive_state_command(
     whatever their later triage verdicts say. It is pending while the paper's triage decision is
     not the flip's `to` (a paper absent from the triage is not pending), unless the owner closed
     it: an owner triage verdict that approved or fixed (never "ask later") on a filed page that
-    showed that flip, without flipping the paper itself. With `--json` it prints the whole
+    showed that flip, in a file that finished after the flip did, without flipping the paper
+    itself. With `--json` it prints the whole
     state instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
     decisions file HEAD does not hold, an owner's approve or fix of the triage whose filed page
     cannot be found or says nothing usable about the flips it showed, a file that fails the
-    schema, is not finished, is for another symbol, names a finding twice, is a second opinion
-    keyed as the owner, or is misnamed, two genes in the archive for the symbol, a non-JSON file
-    under a decisions directory, an unreadable literature file, or a gene other than the
-    atlas's); exit 1 when git fails. Writes nothing.
+    schema, is not finished, finished before its page was built, is for another symbol, names a
+    finding twice, is a second opinion keyed as the owner, or is misnamed, two genes in the
+    archive for the symbol, anything in a decisions directory other than a .json file directly
+    in it, an unreadable literature file, or a gene other than the atlas's); exit 1 when git
+    fails. Writes nothing.
     """
     _require_root(root)
     cli = _atlas_cli(root, atlas_cli)
@@ -1295,13 +1302,14 @@ def agreement_command(
     said later). A clinician verdict on a version no owner decisions file covers is unpaired.
     With no symbol it reads every top-level directory of the archive that is not a
     dot-directory (one that is not a gene symbol is refused). `--json` prints the whole
-    report instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
-    non-JSON file under a decisions directory, a decisions file HEAD does not hold, a file
-    that is not valid JSON, fails the schema, is unfinished, is for another symbol, names a
-    finding twice, is a second opinion keyed as the owner, or is misnamed, or two genes under
-    one symbol); exit 1 when git fails. Unlike `archive-state`
-    it does not compare the archive's gene with the atlas's. Writes nothing, and the report
-    is printed nowhere else.
+    report instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes,
+    anything in a decisions directory other than a .json file directly in it, a decisions file
+    HEAD does not hold, an owner's approve or fix of the triage whose filed page cannot be found
+    or read, a file that is not valid JSON, fails the schema, is unfinished, finished before its
+    page was built, is for another symbol, names a finding twice, is a second opinion keyed as
+    the owner, or is misnamed, or two genes under one symbol); exit 1 when git fails. Unlike
+    `archive-state` it does not compare the archive's gene with the atlas's. Writes nothing, and
+    the report is printed nowhere else.
     """
     _require_root(root)
     try:
