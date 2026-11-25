@@ -27,6 +27,7 @@ from chd_curator.atlas import (
     schema_validator,
 )
 from chd_curator.run import (
+    Attempt,
     Comparison,
     JudgeDecision,
     PaperText,
@@ -228,6 +229,38 @@ def assert_a_judged_variant_is_absent_from_its_finding(root: Path) -> None:
         ),
         ("texts", "texts.json", lambda d: d.update(format=2), "format is 2"),
         (
+            "texts",
+            "texts.json",
+            lambda d: d["papers"][0].update(licence=1),
+            "'licence' is not a string",
+        ),
+        (
+            "texts",
+            "texts.json",
+            lambda d: d["papers"][0].update(attempts="none"),
+            "'attempts' is not a list",
+        ),
+        (
+            "texts",
+            "texts.json",
+            lambda d: d["papers"][0].update(attempts=[{"via": "pmc", "url": "u"}]),
+            r"missing \['outcome'\]",
+        ),
+        (
+            "texts",
+            "texts.json",
+            lambda d: d["papers"][0].update(
+                attempts=[{"via": "pmc", "url": "u", "outcome": "ok", "extra": 1}]
+            ),
+            r"unexpected key\(s\) \['extra'\]",
+        ),
+        (
+            "texts",
+            "texts.json",
+            lambda d: d["papers"][0].update(attempts=[{"via": "pmc", "url": "u", "outcome": 3}]),
+            "'outcome' is not a string",
+        ),
+        (
             "comparison",
             "comparison.json",
             lambda d: d.update(extra=1),
@@ -304,6 +337,20 @@ def test_an_unexpected_yaml_key_names_the_file_and_the_key(
     with pytest.raises(RunFormatError) as caught:
         loader(run_copy)
     assert str(path) in str(caught.value) and needle in str(caught.value)
+
+
+def test_a_paper_may_carry_a_licence_and_its_attempts(run_copy: RunPaths) -> None:
+    data = json.loads(run_copy.texts.read_text())
+    data["papers"][0]["licence"] = "cc by"
+    data["papers"][1]["licence"] = None
+    data["papers"][0]["attempts"] = [{"via": "pmc", "url": "u", "outcome": "accepted"}]
+    run_copy.texts.write_text(json.dumps(data))
+
+    first, second, third = load_texts(run_copy)
+
+    assert (first.licence, first.attempts) == ("cc by", (Attempt("pmc", "u", "accepted"),))
+    assert (second.licence, second.attempts) == (None, ())
+    assert (third.licence, third.attempts) == (None, ())
 
 
 def test_a_missing_texts_file_is_an_error(run_copy: RunPaths) -> None:

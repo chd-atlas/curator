@@ -24,7 +24,8 @@ _PAPER_KEYS: Final = frozenset(
     {"pmid", "source", "text", "abstract", "supplements", "needed", "why"}
 )
 # Optional bibliographic keys of a paper entry, for a paper `curation/publications.yaml` lacks.
-_PAPER_OPTIONAL: Final = frozenset({"title", "year", "doi"})
+_PAPER_OPTIONAL: Final = frozenset({"title", "year", "doi", "licence", "attempts"})
+_ATTEMPT_KEYS: Final = frozenset({"via", "url", "outcome"})
 _QUOTE_KEYS: Final = frozenset({"field", "quote", "where"})
 _COMPARISON_KEYS: Final = frozenset({"format", "pairs", "agreed", "span_only", "differs"})
 _JUDGE_KEYS: Final = frozenset(
@@ -88,6 +89,16 @@ class RunPaths:
 
 
 @dataclass(frozen=True)
+class Attempt:
+    """One try for a paper (a request, a supplied file, a member of a supplement zip), and how
+    it ended."""
+
+    via: str
+    url: str
+    outcome: str
+
+
+@dataclass(frozen=True)
 class PaperText:
     pmid: str
     source: Source
@@ -99,6 +110,8 @@ class PaperText:
     title: str = ""
     year: str = ""
     doi: str = ""
+    licence: str | None = None
+    attempts: tuple[Attempt, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -206,6 +219,12 @@ def load_texts(p: RunPaths) -> tuple[PaperText, ...]:
         if pmid in seen:
             raise RunFormatError(f"{path}: paper {pmid} appears twice")
         seen.add(pmid)
+        licence = row.get("licence")
+        if licence is not None:
+            licence = _str(licence, path, "licence")
+        attempts = row.get("attempts", [])
+        if not isinstance(attempts, list):
+            raise RunFormatError(f"{path}: 'attempts' is not a list: {attempts!r}")
         papers.append(
             PaperText(
                 pmid=pmid,
@@ -220,6 +239,15 @@ def load_texts(p: RunPaths) -> tuple[PaperText, ...]:
                 title=_str(row.get("title", ""), path, "title"),
                 year=_str(year, path, "year"),
                 doi=_str(row.get("doi", ""), path, "doi"),
+                licence=licence,
+                attempts=tuple(
+                    Attempt(
+                        _str(a["via"], path, "via"),
+                        _str(a["url"], path, "url"),
+                        _str(a["outcome"], path, "outcome"),
+                    )
+                    for a in (_keys(item, _ATTEMPT_KEYS, path, "an attempt") for item in attempts)
+                ),
             )
         )
     return tuple(papers)

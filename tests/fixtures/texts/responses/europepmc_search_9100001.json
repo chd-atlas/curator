@@ -1,0 +1,4 @@
+{"version": "6.9", "hitCount": 1, "request": {"queryString": "EXT_ID:9100001 AND SRC:MED"},
+ "resultList": {"result": [{"id": "9100001", "source": "MED", "pmid": "9100001", "pmcid": "PMC9100001",
+  "doi": "10.9999/synthetic.0001", "title": "A synthetic study of a synthetic gene", "pubYear": "2001",
+  "isOpenAccess": "Y", "inEPMC": "Y", "inPMC": "N", "license": "cc by"}]}}
