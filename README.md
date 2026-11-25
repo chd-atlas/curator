@@ -96,6 +96,62 @@ and named ("left out, decided on an earlier version: ..."), and the line before 
 what was written, so a wrong `--export` directory shows. The step after is the atlas's
 `chd-atlas literature apply-review <SYMBOL> --decisions <file> --by <name>`.
 
+`chd-curator archive-page <SYMBOL> --run <run id> --page <html> --archive <dir> [--artifact <url>]` files a
+review page, byte for byte, in the review archive: a private git checkout with `.review-archive`
+committed at its top (any other `--archive`, including a subdirectory of one, is refused, exit 2). The
+page lands at `<SYMBOL>/<run id>/pages/<built_on in UTC>--<reviewer slug>.html`, and `--artifact` (a
+`https://claude.ai/` URL) beside it as `.artifact`. Filing is append-only, judged against what is
+committed: when the last commit holds the target, a different file is refused (exit 2) whatever the
+working tree now holds there, and an identical one prints `already filed` and is restored from the
+commit if the working copy is missing or differs; a target git ignores is refused. What is not yet
+committed is committed, with only those paths, under the archive's own `user.name` and `user.email`
+(unset: refused before anything is written; the commit is given those two values explicitly, and
+every `GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`
+and `GIT_CONFIG_PARAMETERS` variable is removed from its environment); a page by a second opinion
+whose name reads as `owner` is refused; the message is `file <SYMBOL> <run id>: page`. A commit that leaves a
+filed path out of the last commit is an error (exit 1). The command never pushes.
+
+`chd-curator archive-decisions <SYMBOL> --run <run id> --decisions <json> --archive <dir> [--root <atlas>]`
+files a finished decisions file, byte for byte, beside the page it was made on, at
+`<SYMBOL>/<run id>/decisions/<finished_at in UTC>--<reviewer slug>.json`. It is refused (exit 2, nothing
+written) when the file is not valid JSON or fails the atlas's exported schema, its session is not
+finished, it is for another symbol, it is a second opinion whose name reads as `owner`, it names one
+finding twice, the reviewer name has no ASCII letter or digit for a file name, its gene differs from
+the filed page's or from one already filed for the symbol, or no page filed under that run matches
+its `page.built_on`, `page.literature_sha256` and reviewer (a bad symbol or run id is refused too).
+These include the checks the archive reader applies, so the archive does not accept a file its reader would
+refuse. The same append-only rule applies: a different file at the same name is refused and the
+message names it, an identical one prints `already filed`. The message is `file <SYMBOL> <run id>:
+decisions`. For an owner's file the last line printed is the `chd-atlas literature apply-review`
+command to run next (values quoted for the shell); a second opinion prints none.
+
+`chd-curator archive-state <SYMBOL> --archive <dir> [--root <atlas>] [--atlas-cli <path>] [--json]` reads
+every decisions file filed for the gene and prints one line: how many findings have verdicts, the
+files and reviewers they come from, how many verdicts are pending, how many triage flips are pending
+and the archive's commit. A verdict is pending when a reviewer's latest verdict on the finding is a
+`fix` or `later` made on the finding's current digest (a finding with two such reviewers counts
+twice); a flip is pending while its paper is still in the literature file's triage and that decision
+is not yet the flip's `to` (a paper still undecided counts, one no longer in triage does not).
+`--json` prints the whole state. It writes nothing, and refuses (exit 2) an archive with uncommitted
+changes (untracked files included), a non-JSON file under a decisions directory, a decisions file the
+last commit does not hold, a file that fails the schema, is unfinished, is misnamed, is for another
+symbol, names one finding twice or is a second opinion keyed as the owner, two genes under one
+symbol, or an archive whose gene for the symbol is not the atlas's.
+
+`chd-curator agreement [SYMBOL ...] --archive <dir> [--root <atlas>] [--json]` reports, for each
+clinician, how often their latest verdict on a version of a card (its shown digest) agrees with the
+owner's latest on the same version: both approve or both fix is agreed, one approve and one fix is
+disagreed (the report quotes both notes), and either side saying later counts as ask later. A
+clinician verdict on a version no owner decisions file covers is unpaired; a later version is never
+set against an earlier one, and triage verdicts are not counted. With no symbol it reads every
+top-level directory of the archive that is not a dot-directory. The report is printed here only: the
+command writes nothing, and `--json` prints the whole report instead. It refuses (exit 2) what the
+archive reader refuses (not a review archive, uncommitted changes, a non-JSON file under a decisions
+directory, a decisions file the last commit does not hold, or one that is not valid JSON, fails the schema, is unfinished, is misnamed, is for another symbol, names
+a finding twice or is a second opinion keyed as the owner, or two genes under one symbol) and, with
+no symbol, a top-level directory whose name is not a symbol. Unlike `archive-state`, it does not
+compare the archive's gene with the atlas's.
+
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft
 <file>` writes it, unapproved, into the gene's file; a redraft replaces an unapproved one and
