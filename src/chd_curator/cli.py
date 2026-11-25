@@ -1240,9 +1240,11 @@ def archive_redact_command(
     the artifact URLs to republish and to unpublish, and the files that still name the reviewer
     after that (an owner's note, say), which stop `--apply` until edited. `--apply` refuses
     (exit 2, nothing changed) an archive with uncommitted changes, a name still found
-    elsewhere, a removal that touches nothing, or a README without exactly one `## Removals`
-    line; it deletes, rewrites, adds a dated line under `## Removals`, scans again (a match
-    restores every touched path and exits 1), commits `redact a removed reviewer`, and prints
+    elsewhere (in a file's text, or as the name's file-name slug in a path), a removal that
+    touches nothing, a README without exactly one `## Removals` line, or `.git/redact-*.txt`
+    left by an earlier removal; it deletes, rewrites, adds a dated line under `## Removals`,
+    scans again and commits `redact a removed reviewer` (a match in the scan, a failed write or a
+    failed commit restores every touched path and exits 1), and prints
     the history-rewrite procedure plus the pages to republish or unpublish. That procedure has not
     been run: `git filter-repo` is unmeasured until the first removal. Never pushes.
     """

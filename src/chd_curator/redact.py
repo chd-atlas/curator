@@ -18,9 +18,11 @@ The plan:
   byte outside the data element is left alone (:func:`redacted_page`);
 * ``republish`` / ``unpublish``: the claude.ai URLs the owner must republish or take down;
 * ``elsewhere``: every file under the archive (``.git`` excluded, README included) that
-  :func:`name_pattern` still matches once the deletes and rewrites are done. Redaction never
-  edits the owner's own notes or any other prose, so a name found there stops ``--apply``
-  until a curator edits it.
+  :func:`name_pattern` still matches once the deletes and rewrites are done, and every
+  surviving file whose lowercased path holds the name's file-name slug (``review_page.slug``) as
+  a whole token, so a clinician spelled "Dr. X" is found by the ``--dr-x`` in their file
+  names. Redaction never edits the owner's own notes or any other prose, so a name found
+  there stops ``--apply`` until a curator edits it.
 
 An owner page whose data cannot be read is refused (:class:`ArchiveError`), never skipped.
 :func:`apply_redact` needs a clean checkout, deletes, rewrites, adds a line under README's
@@ -57,7 +59,7 @@ from chd_curator.archive import (
 from chd_curator.archive_read import open_archive
 from chd_curator.decisions import _DATA_OPEN, ExportError, page_data_from_text
 from chd_curator.fs import write_bytes_atomically
-from chd_curator.review_page import inline_json
+from chd_curator.review_page import inline_json, slug
 
 REMOVED: Final = "a removed reviewer"
 MESSAGE: Final = "redact a removed reviewer"
@@ -160,16 +162,30 @@ def _url(path: Path) -> str | None:
     return _read_text(path).strip() if path.is_file() else None
 
 
+def _slug_token(name: str) -> re.Pattern[str] | None:
+    """The name's file-name slug as a whole token of a lowercased path, None when it has none."""
+    word = slug(name)
+    if not word:
+        return None
+    return re.compile(r"(?<![a-z0-9])" + re.escape(word) + r"(?![a-z0-9])")
+
+
 def _matches(
     top: Path,
-    pattern: re.Pattern[str],
+    name: str,
     gone: frozenset[str],
     rewritten: Mapping[str, str],
 ) -> tuple[str, ...]:
+    """The surviving files that still name ``name``: by content, or by a slug in the path."""
+    pattern = name_pattern(name)
+    token = _slug_token(name)
     found: list[str] = []
     for path in _files(top):
         rel = path.relative_to(top).as_posix()
         if rel in gone:
+            continue
+        if token is not None and token.search(rel.lower()):
+            found.append(rel)
             continue
         text = rewritten.get(rel)
         if text is None:
@@ -187,9 +203,9 @@ def _matches(
     return tuple(found)
 
 
-def _rescan(top: Path, pattern: re.Pattern[str]) -> tuple[str, ...]:
-    """The files on disk the pattern matches (after the changes were made)."""
-    return _matches(top, pattern, frozenset(), {})
+def _rescan(top: Path, name: str) -> tuple[str, ...]:
+    """The files on disk that still name ``name`` (after the changes were made)."""
+    return _matches(top, name, frozenset(), {})
 
 
 def plan_redact(archive: Path, name: str) -> RedactPlan:
@@ -248,7 +264,7 @@ def plan_redact(archive: Path, name: str) -> RedactPlan:
         rewrite=tuple(rewrite),
         republish=tuple(republish),
         unpublish=tuple(unpublish),
-        elsewhere=_matches(top, name_pattern(name), gone, rewritten),
+        elsewhere=_matches(top, name, gone, rewritten),
     )
 
 
@@ -285,12 +301,23 @@ def apply_redact(archive: Path, name: str, plan: RedactPlan, today: date) -> str
 
     Refuses (:class:`ArchiveError`, nothing changed) an archive that is unclean or has no
     identity, a plan that is not what the archive now yields, a name still found elsewhere, a
-    removal that touches nothing, and a README without exactly one ``## Removals`` line. A
-    write that fails, or a scan that still finds the name, restores every touched path and
-    raises :class:`GitError`.
+    removal that touches nothing, a README without exactly one ``## Removals`` line, and a
+    ``.git/redact-*.txt`` left by an earlier removal (finish its history rewrite first). A write
+    that fails, a scan that still finds the name, or a commit that fails restores every touched
+    path (``git checkout HEAD``, index included) and raises :class:`GitError`.
     """
     top, _ = open_archive(archive)
     require_identity(top)
+    done = _git(top, "rev-parse", "--absolute-git-dir")
+    if done.returncode != 0:
+        raise GitError(f"git rev-parse failed: {done.stderr.strip()}")
+    gitdir = Path(done.stdout.strip())
+    leftover = [f.name for f in sorted(gitdir.glob("redact-*.txt"))]
+    if leftover:
+        raise ArchiveError(
+            f"{gitdir} still holds {', '.join(leftover)} from an earlier removal: finish that "
+            "history rewrite first (the printed procedure removes them at its end)"
+        )
     if plan_redact(top, name) != plan:
         raise ArchiveError("the plan is stale: the archive changed since it was made")
     if plan.elsewhere:
@@ -313,23 +340,23 @@ def apply_redact(archive: Path, name: str, plan: RedactPlan, today: date) -> str
         for rel, content in pages.items():
             write_bytes_atomically(top / rel, content)
         write_bytes_atomically(top / _README, new_readme)
-        left = _rescan(top, pattern)
+        left = _rescan(top, name)
     except OSError as exc:
         _restore(top, touched)
         raise GitError(f"cannot change the archive: {exc}") from exc
     if left:
         _restore(top, touched)
         raise GitError(f"the name is still found after redaction in {', '.join(left)}; restored")
-    sha = commit(
-        top,
-        [Path(p) for p in touched],
-        MESSAGE,
-        [*([None] * len(plan.delete)), *pages.values(), new_readme],
-    )
-    done = _git(top, "rev-parse", "--absolute-git-dir")
-    if done.returncode != 0:
-        raise GitError(f"git rev-parse failed: {done.stderr.strip()}")
-    gitdir = Path(done.stdout.strip())
+    try:
+        sha = commit(
+            top,
+            [Path(p) for p in touched],
+            MESSAGE,
+            [*([None] * len(plan.delete)), *pages.values(), new_readme],
+        )
+    except (ArchiveError, GitError) as exc:
+        _restore(top, touched)
+        raise GitError(f"the commit failed, every touched path was restored: {exc}") from exc
     try:
         (gitdir / "redact-expressions.txt").write_text(
             f"regex:(?i){pattern.pattern}==>{REMOVED}\n", encoding="utf-8"

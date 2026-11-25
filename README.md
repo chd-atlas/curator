@@ -171,11 +171,15 @@ the page's data (the clinicians' verdicts on each card, the earlier triage verdi
 second-opinion entries of the open flips and of the verdicts on findings with no card) and leaves
 every other byte of the page alone. Nothing else is edited, so a name in an owner's own note, or anywhere else, stops `--apply` (exit 2, nothing
 changed) until you edit that file and commit. `--apply` also refuses an archive with uncommitted
-changes, a removal that touches no file, and a README without exactly one `## Removals` line. It
+changes, a removal that touches no file, a README without exactly one `## Removals` line, and
+`.git/redact-*.txt` files left by an earlier removal (finish that history rewrite first). A file whose
+path holds the reviewer's file-name slug (`dr-x` for "Dr X") also counts as naming them, so a clinician
+spelled "Dr. X" stops `--apply` until their files are dealt with. It
 deletes, rewrites, replaces `None yet.` under `## Removals` (or appends after the last entry) with a
-dated line, scans again (a match restores every touched path and exits 1), commits `redact a removed
-reviewer` under the archive's own identity, writes `.git/redact-expressions.txt` and
-`.git/redact-paths.txt`, and prints the steps to rewrite history in a fresh clone and the pages to
+dated line, scans again, and commits `redact a removed reviewer` under the archive's own identity (a
+match in the scan, a failed write or a failed commit restores every touched path and exits 1). It then
+writes `.git/redact-expressions.txt` and `.git/redact-paths.txt`, and prints the steps to rewrite
+history in a fresh clone and the pages to
 republish or unpublish. History still holds the name until that rewrite is run, which is the owner's
 word. `git filter-repo` is not installed where this was written, so the printed `filter-repo` line has
 never been run and is unmeasured until the first removal; that removal starts with `uv tool install

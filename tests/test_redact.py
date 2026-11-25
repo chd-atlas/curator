@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -248,7 +249,7 @@ def test_a_failed_rescan_restores_every_touched_path(
     archive: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     head = git(archive, "rev-parse", "HEAD")
-    monkeypatch.setattr(redact, "_rescan", lambda top, pattern: ["somewhere.txt"])
+    monkeypatch.setattr(redact, "_rescan", lambda top, name: ["somewhere.txt"])
     result = CliRunner().invoke(
         app, ["archive-redact", "--name", "Dr X", "--archive", str(archive), "--apply"]
     )
@@ -298,6 +299,8 @@ def test_a_second_removal_appends_after_the_first_entry(archive: Path, tmp_path:
     from datetime import date
 
     apply_redact(archive, "Dr X", plan_redact(archive, "Dr X"), date(2026, 11, 25))
+    for left in (archive / ".git").glob("redact-*.txt"):  # the procedure's last step
+        left.unlink()
     put(archive, tmp_path, "Dr Z", "second_opinion", AT, [finding(G, "fix", D1, AT)])
     commit_all(archive)
     apply_redact(archive, "Dr Z", plan_redact(archive, "Dr Z"), date(2026, 11, 26))
@@ -324,3 +327,172 @@ def test_redacted_page_leaves_a_page_naming_nobody_byte_identical(tmp_path: Path
     text = page_html(tmp_path / "p.html", extra=_owner_data()).read_text(encoding="utf-8")
     assert redacted_page(text, "dr w") == text
     assert json.dumps(page_data_from_text(redacted_page(text, "dr y"), "p"))  # still parses
+
+
+def _spy_rescan(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(top: Path, name: str) -> tuple[str, ...]:
+        raise AssertionError("the archive was changed before the refusal")
+
+    monkeypatch.setattr(redact, "_rescan", boom)
+
+
+def _unchanged(archive: Path, head: str) -> None:
+    assert git(archive, "status", "--porcelain") == ""
+    assert git(archive, "rev-parse", "HEAD") == head
+    assert (archive / X_PAGE).exists()
+
+
+def test_a_second_removal_is_refused_while_the_first_ones_rewrite_files_remain(
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    apply_redact(archive, "Dr X", plan_redact(archive, "Dr X"), date(2026, 11, 25))
+    before = {
+        f.name: f.read_text(encoding="utf-8") for f in (archive / ".git").glob("redact-*.txt")
+    }
+    put(archive, tmp_path, "Dr Z", "second_opinion", AT, [finding(G, "fix", D1, AT)])
+    commit_all(archive)
+    head = git(archive, "rev-parse", "HEAD")
+    _spy_rescan(monkeypatch)
+    with pytest.raises(ArchiveError, match="earlier removal"):
+        apply_redact(archive, "Dr Z", plan_redact(archive, "Dr Z"), date(2026, 11, 26))
+    assert git(archive, "status", "--porcelain") == ""
+    assert git(archive, "rev-parse", "HEAD") == head
+    after = {f.name: f.read_text(encoding="utf-8") for f in (archive / ".git").glob("redact-*.txt")}
+    assert after == before and set(before) == {"redact-expressions.txt", "redact-paths.txt"}
+    assert (archive / RUN / "decisions" / f"{compact_utc(AT)}--dr-z.json").exists()
+
+
+def test_an_owner_entry_carrying_the_clinicians_name_is_never_redacted_or_deleted(
+    archive: Path, tmp_path: Path
+) -> None:
+    data = _owner_data()
+    data["not_on_page"].append({**_entry("Dr X", "owner"), "id": "CHDA:LIT:0000998"})  # type: ignore[attr-defined]
+    data["triage_earlier"]["flips"].append(_flip("Dr X", "owner"))  # type: ignore[index]
+    text = page_html(tmp_path / "p.html", extra=data).read_text(encoding="utf-8")
+    new = page_data_from_text(redacted_page(text, "dr x"), "p")
+    assert new["not_on_page"][2] == data["not_on_page"][2]  # type: ignore[index]
+    assert new["triage_earlier"]["flips"][3] == data["triage_earlier"]["flips"][3]  # type: ignore[index]
+    assert new["not_on_page"][0]["name"] == REMOVED  # type: ignore[index]
+    assert new["triage_earlier"]["flips"][0]["name"] == REMOVED  # type: ignore[index]
+    # an owner's decisions file whose reviewer is named like the clinician is kept and reported
+    later = "2026-11-23T10:00:00+00:00"
+    put(archive, tmp_path, "Dr X", "owner", later, [finding(J, "fix", D1, later)])
+    commit_all(archive)
+    owner_file = f"{RUN}/decisions/{compact_utc(later)}--dr-x.json"
+    plan = plan_redact(archive, "Dr X")
+    assert owner_file not in plan.delete
+    assert owner_file in plan.elsewhere
+
+
+def test_a_missing_identity_is_refused_before_anything_is_changed(
+    archive: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = git(archive, "rev-parse", "HEAD")
+    git(archive, "config", "--local", "--unset", "user.name")
+    plan = plan_redact(archive, "Dr X")
+    _spy_rescan(monkeypatch)
+    with pytest.raises(ArchiveError, match="user.name"):
+        apply_redact(archive, "Dr X", plan, date(2026, 11, 25))
+    _unchanged(archive, head)
+
+
+def test_a_stale_plan_is_refused_before_anything_is_changed(
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = plan_redact(archive, "Dr X")
+    later = "2026-11-24T10:00:00+00:00"
+    put(archive, tmp_path, "Dr X", "second_opinion", later, [finding(J, "fix", D1, later)])
+    commit_all(archive)
+    head = git(archive, "rev-parse", "HEAD")
+    _spy_rescan(monkeypatch)
+    with pytest.raises(ArchiveError, match="stale"):
+        apply_redact(archive, "Dr X", plan, date(2026, 11, 25))
+    _unchanged(archive, head)
+
+
+def test_the_name_in_the_readme_stops_apply(archive: Path) -> None:
+    (archive / "README.md").write_text("# R\n\n## Removals\n\nthanks to Dr X\n", "utf-8")
+    git(archive, "add", "--", "README.md")
+    git(archive, "commit", "-m", "readme")
+    assert plan_redact(archive, "Dr X").elsewhere == ("README.md",)
+
+
+def test_a_name_stored_as_escapes_is_still_found(archive: Path, tmp_path: Path) -> None:
+    later = "2026-11-21T10:00:00+00:00"
+    put(
+        archive,
+        tmp_path,
+        "E.A.M",
+        "owner",
+        later,
+        [finding(J, "fix", D1, later, "ask dr zo\u00eb")],
+    )
+    commit_all(archive)
+    raw = (archive / RUN / "decisions" / f"{compact_utc(later)}--e-a-m.json").read_text("utf-8")
+    assert "zo\\u00eb" in raw and "zoë" not in raw  # the file really holds an escape
+    assert plan_redact(archive, "Dr Zoë").elsewhere == (
+        f"{RUN}/decisions/{compact_utc(later)}--e-a-m.json",
+    )
+
+
+@pytest.mark.parametrize(
+    ("leftover", "pattern_text"),
+    [
+        ("README.md", "thanks Dr X"),
+        (f"{RUN}/pages/other.html", "<p>Dr X</p>"),
+        (f"{RUN}/decisions/other.json", '{"n": "dr \\u0058"}'),
+    ],
+)
+def test_the_real_rescan_reads_every_kind_of_file(
+    tmp_path: Path, leftover: str, pattern_text: str
+) -> None:
+    clean = make_archive(tmp_path)
+    assert redact._rescan(clean, "Dr X") == ()
+    (clean / leftover).parent.mkdir(parents=True, exist_ok=True)
+    (clean / leftover).write_text(pattern_text, encoding="utf-8")
+    assert redact._rescan(clean, "Dr X") == (leftover,)
+
+
+def test_a_name_derived_slug_in_a_path_stops_apply_but_only_as_a_whole_token(
+    archive: Path, tmp_path: Path
+) -> None:
+    pages = archive / RUN / "pages"
+    (pages / "20261120T000000Z--dr-x.artifact").write_text("https://claude.ai/a\n", "utf-8")
+    (archive / RUN / "notes--dr-x.txt").write_text("nothing\n", "utf-8")
+    (archive / RUN / "notes--dr-xavier.txt").write_text("nothing\n", "utf-8")
+    later = "2026-11-25T10:00:00+00:00"
+    put(archive, tmp_path, "Dr. X", "second_opinion", later, [finding(J, "fix", D1, later)])
+    commit_all(archive)
+    plan = plan_redact(archive, "Dr X")
+    assert plan.elsewhere == (
+        f"{RUN}/decisions/{compact_utc(later)}--dr-x.json",
+        f"{RUN}/notes--dr-x.txt",
+        f"{RUN}/pages/20261120T000000Z--dr-x.artifact",
+    )
+
+
+def test_a_failed_write_restores_every_touched_path(
+    archive: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = git(archive, "rev-parse", "HEAD")
+
+    def broken(path: Path, content: bytes) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(redact, "write_bytes_atomically", broken)
+    with pytest.raises(GitError, match="disk full"):
+        apply_redact(archive, "Dr X", plan_redact(archive, "Dr X"), date(2026, 11, 25))
+    _unchanged(archive, head)
+    assert not (archive / ".git" / "redact-paths.txt").exists()
+
+
+def test_a_failing_commit_restores_every_touched_path_index_included(archive: Path) -> None:
+    head = git(archive, "rev-parse", "HEAD")
+    hook = archive / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    with pytest.raises(GitError, match="commit failed"):
+        apply_redact(archive, "Dr X", plan_redact(archive, "Dr X"), date(2026, 11, 25))
+    _unchanged(archive, head)
+    assert not (archive / ".git" / "redact-paths.txt").exists()
