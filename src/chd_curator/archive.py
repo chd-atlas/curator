@@ -6,12 +6,23 @@ directory that is not such a checkout, including a subdirectory of one. A page i
 ``<SYMBOL>/<run>/pages/<built_on, compact UTC>--<reviewer slug>.html`` byte for byte, and
 its claude.ai artifact URL beside it as ``.artifact``.
 
-Filing is append-only: a target holding different bytes is refused, and one holding the same
-bytes is reported as ``already filed``. Whatever was filed but is uncommitted (untracked or
-modified, by ``git status --porcelain``) is committed with ``git add`` and ``git commit``
-limited to exactly those paths, under the checkout's own ``user.name`` and ``user.email``
-(``--local``); the commit message holds no reviewer name and no path. A missing identity is
-refused before anything is written. Nothing here pushes.
+Filing is append-only, judged against what is committed: when ``HEAD`` holds the target, a
+payload with different bytes is refused (whatever the working tree now holds there) and the
+same bytes are reported as ``already filed``, the working-tree file being restored from
+``HEAD`` if it is missing or differs. A target absent from ``HEAD`` but present in the working
+tree is refused when its bytes differ, and reported as ``already filed`` when they are the
+same. A target that git ignores is refused before anything is written. Whatever is not yet in
+``HEAD`` is committed with ``git add`` and ``git commit`` limited to exactly those paths, under
+the checkout's own ``user.name`` and ``user.email`` (``--local``; ``GIT_AUTHOR_*`` and
+``GIT_COMMITTER_*`` in the environment are removed for the commit); the commit message holds no
+reviewer name and no path. After the commit every committed path is read back from ``HEAD``
+and must hold the filed bytes, or :class:`GitError` is raised. A missing identity is refused
+before anything is written. Nothing here pushes.
+
+The checks a decisions file must pass are one function, :func:`check_decisions`, which
+``file_decisions`` calls before writing and the reader calls on reading, so the archive does
+not accept a file its reader refuses. The one cross-file rule, one gene per symbol, is checked
+at filing against the decisions files already filed for the symbol.
 
 :class:`ArchiveError` is a refusal (the CLI exits 2); :class:`GitError` is a git command
 failing for another reason (exit 1).
@@ -20,6 +31,7 @@ failing for another reason (exit 1).
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -27,6 +39,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, Literal
+
+from jsonschema import Draft202012Validator
 
 from chd_curator.atlas import AtlasError, schema_validator
 from chd_curator.decisions import ExportError, page_data
@@ -45,16 +59,40 @@ class GitError(Exception):
     """A git command failed for a reason that is not a refusal."""
 
 
-def _git(archive: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _git(
+    archive: Path, *args: str, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["git", "-C", str(archive), *args],
             capture_output=True,
             text=True,
             check=False,
+            env=None if env is None else dict(env),
         )
     except OSError as exc:
         raise GitError(f"git cannot be run: {exc}") from exc
+
+
+def head_bytes(archive: Path, rel: Path) -> bytes | None:
+    """The bytes ``HEAD`` holds at ``rel``, or None when ``HEAD`` has no such file."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(archive), "show", f"HEAD:{rel.as_posix()}"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise GitError(f"git cannot be run: {exc}") from exc
+    return done.stdout if done.returncode == 0 else None
+
+
+_IDENTITY_ENV: Final = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+)
 
 
 def check_archive(archive: Path) -> Path:
@@ -121,10 +159,15 @@ def page_identity(page: Path) -> PageIdentity:
             reviewer=str(who["name"]),
             role=str(who["role"]),
         )
-    except (KeyError, TypeError) as exc:
+    except KeyError as exc:
         raise ArchiveError(f"{page}: the page's data lacks {exc}") from exc
+    except TypeError as exc:
+        raise ArchiveError(f"{page}: the page's data has an unexpected shape: {exc}") from exc
     if not slug(identity.reviewer):
-        raise ArchiveError(f"{page}: the reviewer name {identity.reviewer!r} has no letters")
+        raise ArchiveError(
+            f"{page}: the reviewer name {identity.reviewer!r} has no ASCII letter or digit "
+            "for a file name"
+        )
     return identity
 
 
@@ -139,15 +182,23 @@ def require_identity(archive: Path) -> None:
             )
 
 
-def commit(archive: Path, paths: Sequence[Path], message: str) -> str:
-    """Commit exactly ``paths`` (relative to ``archive``); the short sha."""
+def commit(archive: Path, paths: Sequence[Path], message: str, contents: Sequence[bytes]) -> str:
+    """Commit exactly ``paths`` (relative to ``archive``); the short sha.
+
+    ``contents`` are the bytes each path must hold in ``HEAD`` afterwards; a path that does
+    not is a :class:`GitError` (git can exit 0 having committed nothing for a path).
+    """
     names = [str(p) for p in paths]
     added = _git(archive, "add", "--", *names)
     if added.returncode != 0:
         raise GitError(f"git add failed: {added.stderr.strip()}")
-    done = _git(archive, "commit", "-m", message, "--", *names)
+    clean = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+    done = _git(archive, "commit", "-m", message, "--", *names, env=clean)
     if done.returncode != 0:
         raise GitError(f"git commit failed: {(done.stderr or done.stdout).strip()}")
+    for rel, content in zip(paths, contents, strict=True):
+        if head_bytes(archive, rel) != content:
+            raise GitError(f"git commit left {rel} out of HEAD or changed its bytes")
     sha = _git(archive, "rev-parse", "--short", "HEAD")
     if sha.returncode != 0:
         raise GitError(f"git rev-parse failed: {sha.stderr.strip()}")
@@ -160,11 +211,52 @@ class Filed:
     state: Literal["filed", "already filed"]
 
 
-def _uncommitted(archive: Path, path: Path) -> bool:
-    status = _git(archive, "status", "--porcelain", "--", str(path))
-    if status.returncode != 0:
-        raise GitError(f"git status failed: {status.stderr.strip()}")
-    return bool(status.stdout.strip())
+def _plan_target(top: Path, rel: Path, content: bytes) -> tuple[bool, bool]:
+    """(is new, is in HEAD) for filing ``content`` at ``rel``; refuse a different file.
+
+    ``HEAD`` decides when it holds ``rel``; otherwise the working tree does. A git-ignored
+    target is refused.
+    """
+    if _git(top, "check-ignore", "-q", "--", rel.as_posix()).returncode == 0:
+        raise ArchiveError(f"{rel} is ignored by git: a filing there could not be committed")
+    held = head_bytes(top, rel)
+    if held is not None:
+        if held != content:
+            raise ArchiveError(
+                f"the archive already holds {rel} with different content: filing never overwrites"
+            )
+        return False, True
+    target = top / rel
+    if target.exists() or target.is_symlink():
+        try:
+            same = target.is_file() and target.read_bytes() == content
+        except OSError as exc:
+            raise GitError(f"{rel}: cannot be read: {exc}") from exc
+        if not same:
+            raise ArchiveError(
+                f"the archive already holds {rel} with different content: filing never overwrites"
+            )
+        return False, False
+    return True, False
+
+
+def _holds(target: Path, content: bytes) -> bool:
+    try:
+        return target.is_file() and not target.is_symlink() and target.read_bytes() == content
+    except OSError:
+        return False
+
+
+def _write_targets(top: Path, plan: Sequence[tuple[Path, bytes, bool, bool]]) -> None:
+    """Write each new target, and restore one ``HEAD`` holds whose working copy differs."""
+    try:
+        for rel, content, new, in_head in plan:
+            target = top / rel
+            if new or (in_head and not _holds(target, content)):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                write_bytes_atomically(target, content)
+    except OSError as exc:
+        raise GitError(f"cannot write into the archive: {exc}") from exc
 
 
 def file_page(
@@ -172,7 +264,8 @@ def file_page(
 ) -> tuple[list[Filed], str | None]:
     """File ``page`` (and ``artifact``) under ``symbol``/``run``; the paths and the commit sha.
 
-    Every refusal comes before the first write. The sha is None when nothing was uncommitted.
+    Every refusal comes before the first write. The sha is None when ``HEAD`` already held
+    everything.
     """
     check_id("symbol", symbol)
     check_id("run id", run)
@@ -197,33 +290,19 @@ def file_page(
     if artifact is not None:
         wanted.append((stem.with_suffix(".artifact"), (artifact + "\n").encode("utf-8")))
 
-    plan: list[tuple[Path, bytes, bool]] = []
+    plan: list[tuple[Path, bytes, bool, bool]] = []
     for rel, content in wanted:
-        target = top / rel
-        if target.exists() or target.is_symlink():
-            try:
-                same = target.is_file() and target.read_bytes() == content
-            except OSError as exc:
-                raise GitError(f"{rel}: cannot be read: {exc}") from exc
-            if not same:
-                raise ArchiveError(
-                    f"the archive already holds {rel} with different content: "
-                    "filing never overwrites"
-                )
-            plan.append((rel, content, False))
-        else:
-            plan.append((rel, content, True))
+        new, in_head = _plan_target(top, rel, content)
+        plan.append((rel, content, new, in_head))
 
-    try:
-        for rel, content, new in plan:
-            if new:
-                (top / rel).parent.mkdir(parents=True, exist_ok=True)
-                write_bytes_atomically(top / rel, content)
-    except OSError as exc:
-        raise GitError(f"cannot write into the archive: {exc}") from exc
-    filed = [Filed(rel, "filed" if new else "already filed") for rel, _, new in plan]
-    pending = [f.path for f in filed if _uncommitted(top, f.path)]
-    sha = commit(top, pending, f"file {symbol} {run}: page") if pending else None
+    _write_targets(top, plan)
+    filed = [Filed(rel, "filed" if new else "already filed") for rel, _, new, _ in plan]
+    todo = [(rel, content) for rel, content, _, in_head in plan if not in_head]
+    sha = (
+        commit(top, [r for r, _ in todo], f"file {symbol} {run}: page", [c for _, c in todo])
+        if todo
+        else None
+    )
     return filed, sha
 
 
@@ -233,8 +312,8 @@ def filed_page_for(archive: Path, symbol: str, run: str, doc: Mapping[str, Any])
     A page matches when its own ``built_on``, ``literature_sha256``, reviewer name and reviewer
     role equal the decisions file's ``page.built_on``, ``page.literature_sha256`` and
     ``reviewer.name`` / ``reviewer.role`` as strings (both come from the page's data, so no
-    normalisation is applied). None when no filed page matches; a filed page whose data cannot
-    be read is refused rather than skipped. With several matches the first by name is returned.
+    normalisation is applied). None when no filed page matches; an unreadable page read before a
+    match is refused rather than skipped. With several matches the first by name is returned.
     """
     try:
         info = doc["page"]
@@ -257,6 +336,56 @@ def filed_page_for(archive: Path, symbol: str, run: str, doc: Mapping[str, Any])
     return None
 
 
+def check_decisions(doc: object, label: str, symbol: str, validator: Draft202012Validator) -> str:
+    """Refuse a decisions file the archive could not read back; the file name it must carry.
+
+    ``label`` names the file in each message. The checks, in order: a JSON object, the atlas's
+    schema, a finished session, the right symbol, a second opinion not keyed as the owner, no
+    finding decided twice, and a reviewer name with an ASCII letter or digit for the file
+    name. The returned name is ``<finished_at, compact UTC>--<reviewer slug>.json``.
+    """
+    if not isinstance(doc, dict):
+        raise ArchiveError(f"{label}: is not a JSON object")
+    errors = sorted(
+        f"{'/'.join(map(str, e.path)) or '(file)'}: {e.message}" for e in validator.iter_errors(doc)
+    )
+    if errors:
+        raise ArchiveError(f"{label} fails the schema: {errors[0]}")
+    finished = doc["session"]["finished_at"]
+    if not finished:
+        raise ArchiveError(f"{label}: the session is not finished (session.finished_at is empty)")
+    if doc["symbol"] != symbol:
+        raise ArchiveError(f"{label} is for {doc['symbol']}, not {symbol}")
+    name = str(doc["reviewer"]["name"])
+    if doc["reviewer"]["role"] != "owner" and name.strip().casefold() == "owner":
+        raise ArchiveError(
+            f"{label}: the second opinion {name!r} would be keyed as the owner: "
+            "a clinician's name must not read as 'owner'"
+        )
+    ids = [f["id"] for f in doc["findings"]]
+    again = sorted({i for i in ids if ids.count(i) > 1})
+    if again:
+        raise ArchiveError(f"{label}: decides {again[0]} more than once")
+    if not slug(name):
+        raise ArchiveError(
+            f"{label}: the reviewer name {name!r} has no ASCII letter or digit for a file name"
+        )
+    return f"{compact_utc(finished)}--{slug(name)}.json"
+
+
+def _filed_genes(top: Path, symbol: str) -> set[str]:
+    """The genes named by the decisions files already filed under ``symbol``."""
+    genes: set[str] = set()
+    for path in sorted((top / symbol).glob("*/decisions/*.json")):
+        try:
+            gene = json.loads(path.read_bytes()).get("gene")
+        except (OSError, ValueError, AttributeError) as exc:
+            raise ArchiveError(f"{path.relative_to(top)}: cannot be read: {exc}") from exc
+        if isinstance(gene, str):
+            genes.add(gene)
+    return genes
+
+
 def file_decisions(
     archive: Path, symbol: str, run: str, decisions: Path, schema_root: Path
 ) -> tuple[Filed, str | None]:
@@ -265,10 +394,11 @@ def file_decisions(
     The file is copied byte for byte to
     ``<symbol>/<run>/decisions/<finished_at, compact UTC>--<reviewer slug>.json``. Every refusal
     comes before the first write and before any commit: ids, archive, identity, readable JSON,
-    schema, a finished session, the right gene, no finding decided twice, a filed page it was
-    made on, and a target that is absent or byte-identical. A different file already at that
-    name is refused, and the message names it. Returns the filed path, the commit sha (None
-    when nothing was uncommitted).
+    everything :func:`check_decisions` refuses, a filed page it was made on, the page's gene, a
+    gene differing from one already filed for the symbol, a git-ignored target, and a target
+    that holds different bytes (in ``HEAD``, else in the working tree). The message for a
+    different file at that name names it. Returns the filed path, the commit sha (None when
+    ``HEAD`` already held the file).
     """
     check_id("symbol", symbol)
     check_id("run id", run)
@@ -282,28 +412,11 @@ def file_decisions(
         doc = json.loads(payload)
     except ValueError as exc:
         raise ArchiveError(f"{decisions}: is not valid JSON: {exc}") from exc
-    if not isinstance(doc, dict):
-        raise ArchiveError(f"{decisions}: is not a JSON object")
     try:
-        errors = sorted(
-            f"{'/'.join(map(str, e.path)) or '(file)'}: {e.message}"
-            for e in schema_validator(schema_root, "review_decisions").iter_errors(doc)
-        )
+        validator = schema_validator(schema_root, "review_decisions")
     except AtlasError as exc:
         raise ArchiveError(str(exc)) from exc
-    if errors:
-        raise ArchiveError(f"{decisions} fails the schema: {errors[0]}")
-    finished = doc["session"]["finished_at"]
-    if not finished:
-        raise ArchiveError(
-            f"{decisions}: the session is not finished (session.finished_at is empty)"
-        )
-    if doc["symbol"] != symbol:
-        raise ArchiveError(f"{decisions} is for {doc['symbol']}, not {symbol}")
-    ids = [f["id"] for f in doc["findings"]]
-    again = sorted({i for i in ids if ids.count(i) > 1})
-    if again:
-        raise ArchiveError(f"{decisions}: decides {again[0]} more than once")
+    name = check_decisions(doc, str(decisions), symbol, validator)
     page = filed_page_for(top, symbol, run, doc)
     if page is None:
         raise ArchiveError(
@@ -316,27 +429,14 @@ def file_decisions(
             f"{decisions}: gene {doc['gene']} differs from gene {filed_gene} on the filed "
             f"page {page}"
         )
-    who = str(doc["reviewer"]["name"])
-    if not slug(who):
-        raise ArchiveError(f"{decisions}: the reviewer name {who!r} has no letters")
-    rel = Path(symbol) / run / "decisions" / f"{compact_utc(finished)}--{slug(who)}.json"
-    target = top / rel
-    new = True
-    if target.exists() or target.is_symlink():
-        try:
-            same = target.is_file() and target.read_bytes() == payload
-        except OSError as exc:
-            raise GitError(f"{rel}: cannot be read: {exc}") from exc
-        if not same:
-            raise ArchiveError(
-                f"the archive already holds {rel} with different content: filing never overwrites"
-            )
-        new = False
-    if new:
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            write_bytes_atomically(target, payload)
-        except OSError as exc:
-            raise GitError(f"cannot write into the archive: {exc}") from exc
-    sha = commit(top, [rel], f"file {symbol} {run}: decisions") if _uncommitted(top, rel) else None
+    others = _filed_genes(top, symbol) - {doc["gene"]}
+    if others:
+        raise ArchiveError(
+            f"{decisions}: gene {doc['gene']} differs from the gene already filed for "
+            f"{symbol}: {sorted(others)}; the archive may hold one gene per symbol"
+        )
+    rel = Path(symbol) / run / "decisions" / name
+    new, in_head = _plan_target(top, rel, payload)
+    _write_targets(top, [(rel, payload, new, in_head)])
+    sha = None if in_head else commit(top, [rel], f"file {symbol} {run}: decisions", [payload])
     return Filed(rel, "filed" if new else "already filed"), sha

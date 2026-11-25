@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import urllib.error
 from collections.abc import Sequence
@@ -1117,12 +1118,15 @@ def archive_page_command(
 ) -> None:
     """File a review page in the review archive, byte for byte, and commit it.
 
-    Append-only: a different file at the same place is refused, an identical one prints
-    `already filed` (and is committed if it was left uncommitted). Prints one line per path,
-    then `committed <sha>` when it committed. Exit 2 for a refusal (an archive that is not the
-    top of a checkout with its marker committed, no `user.name`/`user.email` in the archive's
-    own config, a page for another gene, a bad id or `--artifact`, a different file already
-    filed); exit 1 when git fails or a file cannot be written. Never pushes.
+    Append-only against what is committed: a different file at the same place is refused (even
+    if the working copy was deleted or edited since), an identical one prints `already filed`
+    (restored from the commit if the working copy differs, and committed if it was never
+    committed). Prints one line per path, then `committed <sha>` when it committed. Exit 2 for
+    a refusal (an archive that is not the top of a checkout with its marker committed, no
+    `user.name`/`user.email` in the archive's own config, a page for another symbol, a bad id,
+    reviewer name or `--artifact`, a different file already filed, a path git ignores); exit 1
+    when git fails, a file cannot be written, or a commit leaves a path out of HEAD. Never
+    pushes.
     """
     try:
         filed, sha = archive_mod.file_page(archive, symbol, run, page, artifact)
@@ -1148,13 +1152,17 @@ def archive_decisions_command(
 
     The file is filed byte for byte as
     `<SYMBOL>/<run>/decisions/<finished_at in UTC>--<reviewer>.json`.
-    Append-only: a different file at that name is refused (the message names it), an identical
-    one prints `already filed` (and is committed if it was left uncommitted). Prints `filed
-    <path>` or `already filed <path>`, then `committed <sha>` when it committed; for an owner's
-    file the last line is the `chd-atlas literature apply-review` command to run next. Exit 2
-    for a refusal (an unusable archive, no `user.name`/`user.email` in the archive's own config,
-    invalid JSON or a schema error, an unfinished session, another gene, no page filed for the
-    file, a different file already filed); exit 1 when git fails or a file cannot be written.
+    Append-only against what is committed: a different file at that name is refused (the
+    message names it), an identical one prints `already filed` (restored from the commit if the
+    working copy differs, and committed if it was never committed). Prints `filed <path>` or
+    `already filed <path>`, then `committed <sha>` when it committed; for an owner's file the
+    last line is the `chd-atlas literature apply-review` command to run next. Exit 2 for a
+    refusal (an unusable archive, no `user.name`/`user.email` in the archive's own config,
+    a bad symbol or run id, invalid JSON or a schema error, an unfinished session, another
+    symbol, a second opinion keyed as the owner, a finding decided twice, a reviewer name with
+    no ASCII letter or digit, another gene than the page's or than one already filed for the
+    symbol, no page filed for the file, a different file already filed, a path git ignores);
+    exit 1 when git fails, a file cannot be written, or a commit leaves a path out of HEAD.
     Never pushes.
     """
     _require_root(root)
@@ -1172,8 +1180,9 @@ def archive_decisions_command(
     reviewer = doc["reviewer"]
     if reviewer["role"] == "owner":
         typer.echo(
-            f"next: chd-atlas literature apply-review {symbol} --decisions {top / filed.path} "
-            f"--by {reviewer['name']} --root {root.resolve()}"
+            f"next: chd-atlas literature apply-review {symbol} "
+            f"--decisions {shlex.quote(str(top / filed.path))} "
+            f"--by {shlex.quote(reviewer['name'])} --root {shlex.quote(str(root.resolve()))}"
         )
 
 
@@ -1189,12 +1198,15 @@ def archive_state_command(
 
     Prints one line, `<SYMBOL>: <n> findings with verdicts in <k decisions files from m
     reviewers>; <p> pending fix or ask later, <f> pending flips (archive <commit>)`: `<p>`
-    counts every reviewer's latest fix or later verdict on the finding's current digest (a
-    finding with two such reviewers counts 2) and `<f>` every pending triage flip in every
-    reviewer's latest triage verdict. With `--json` it prints the whole state instead. Exit 2
-    for a refusal (an unusable or dirty archive, a file that fails the schema, is not
-    finished, is for another gene or is misnamed, a non-JSON file under a decisions
-    directory, an unreadable literature file); exit 1 when git fails. Writes nothing.
+    counts every reviewer whose latest verdict on the finding is a fix or later made on its
+    current digest (a finding with two such reviewers counts 2) and `<f>` every pending triage
+    flip in every reviewer's latest triage verdict. With `--json` it prints the whole state
+    instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
+    decisions file HEAD does not hold, a file that fails the schema, is not finished, is for
+    another symbol, names a finding twice, is a second opinion keyed as the owner, or is
+    misnamed, two genes in the archive for the symbol, a non-JSON file under a decisions
+    directory, an unreadable literature file, or a gene other than the atlas's); exit 1 when
+    git fails. Writes nothing.
     """
     _require_root(root)
     cli = _atlas_cli(root, atlas_cli)
@@ -1227,10 +1239,11 @@ def archive_state_command(
         return
     pending = sum(v["pending"] for f in out["findings"] for v in f["verdicts"])
     flips = sum(fl["pending"] for t in out["triage"]["verdicts"] for fl in t["flips"])
+    n = len(out["findings"])
     typer.echo(
-        f"{symbol}: {len(out['findings'])} findings with verdicts in "
+        f"{symbol}: {n} finding{'' if n == 1 else 's'} with verdicts in "
         f"{archive_read.files_line(view)}; {pending} pending fix or ask later, "
-        f"{flips} pending flips (archive {view.commit})"
+        f"{flips} pending flip{'' if flips == 1 else 's'} (archive {view.commit})"
     )
 
 
@@ -1253,9 +1266,13 @@ def agreement_command(
     disagreed (one approves, one fixes; the notes are quoted) or with ask later (either side
     said later). A clinician verdict on a version no owner decisions file covers is unpaired.
     With no symbol it reads every top-level directory of the archive that is not a
-    dot-directory. `--json` prints the whole report instead. Exit 2 for a refusal (an unusable
-    or dirty archive, a file that fails the schema, is unfinished or is misnamed); exit 1 when
-    git fails. Writes nothing, and the report is printed nowhere else.
+    dot-directory (one that is not a gene symbol is refused). `--json` prints the whole
+    report instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
+    decisions file HEAD does not hold, a file that fails the schema, is unfinished, is for
+    another symbol, names a finding twice, is a second opinion keyed as the owner, or is
+    misnamed, or two genes under one symbol); exit 1 when git fails. Unlike `archive-state`
+    it does not compare the archive's gene with the atlas's. Writes nothing, and the report
+    is printed nowhere else.
     """
     _require_root(root)
     try:
@@ -1265,6 +1282,13 @@ def agreement_command(
             names = sorted(
                 p.name for p in top.iterdir() if p.is_dir() and not p.name.startswith(".")
             )
+            for n in names:
+                try:
+                    archive_mod.check_id("symbol", n)
+                except archive_mod.ArchiveError:
+                    raise archive_mod.ArchiveError(
+                        f"top-level directory {n!r} is not a gene symbol"
+                    ) from None
         views = [archive_read.read_archive(archive, s, root) for s in names]
     except archive_mod.ArchiveError as exc:
         raise _fail(str(exc), 2) from None

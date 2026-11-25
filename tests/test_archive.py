@@ -272,7 +272,7 @@ def test_a_finished_review_is_filed_and_the_owner_is_told_the_apply_command(
     ("case", "phrase"),
     [
         ("format2", "fails the schema"),
-        ("naive", "fails the schema"),
+        ("naive", "decided_at"),
         ("unfinished", "not finished"),
         ("othersymbol", "is for GATA4"),
         ("othergene", "gene"),
@@ -296,7 +296,7 @@ def test_archive_decisions_refuses_and_writes_nothing(
         if case == "format2":
             data["format"] = 2
         elif case == "naive":
-            data["findings"] = [dict(_FINDING, decided_at="2026-11-19T13:00:00")]
+            data["findings"] = [dict(_VALID_FINDING, decided_at="2026-11-19T13:00:00")]
         elif case == "unfinished":
             data["session"]["finished_at"] = None
         elif case == "othersymbol":
@@ -304,14 +304,10 @@ def test_archive_decisions_refuses_and_writes_nothing(
         elif case == "othergene":
             data["gene"] = "HGNC:4173"
         elif case == "twice":
-            one = {
-                "id": "CHDA:LIT:0000901",
-                "shown_digest": "sha256:" + "2" * 64,
-                "decision": "approve",
-                "active_ms": 1,
-                "decided_at": "2026-11-19T13:00:00Z",
-            }
-            data["findings"] = [one, dict(one, decided_at="2026-11-19T13:30:00Z")]
+            data["findings"] = [
+                _VALID_FINDING,
+                dict(_VALID_FINDING, decided_at="2026-11-19T13:30:00Z"),
+            ]
         doc.write_text(json.dumps(data), encoding="utf-8")
     head = git(archive, "rev-parse", "HEAD").strip()
     result = decide(archive, doc, atlas_root)
@@ -322,11 +318,12 @@ def test_archive_decisions_refuses_and_writes_nothing(
     assert not (archive / "TBX5" / "r1" / "decisions").exists()
 
 
-_FINDING = {
-    "id": "F1",
+_VALID_FINDING = {
+    "id": "CHDA:LIT:0000901",
+    "shown_digest": "sha256:" + "2" * 64,
     "decision": "approve",
+    "active_ms": 1,
     "decided_at": "2026-11-19T13:00:00Z",
-    "digest": "sha256:" + "b" * 64,
 }
 
 
@@ -380,3 +377,182 @@ def test_a_decisions_file_is_refused_when_the_filed_page_differs_in_one_field(
     assert git(archive, "status", "--porcelain") == ""
     assert git(archive, "rev-parse", "HEAD").strip() == head
     assert not (archive / "TBX5" / "r1" / "decisions").exists()
+
+
+def test_a_filing_commits_exactly_the_paths_it_wrote(tmp_path: Path) -> None:
+    archive = make_archive(tmp_path)
+    (archive / "stray.txt").write_text("x\n", encoding="utf-8")
+    git(archive, "add", "--", "stray.txt")
+    assert file_it(archive, page_html(tmp_path / "p.html")).exit_code == 0
+    assert git(archive, "show", "--name-only", "--format=", "HEAD").split() == [PAGE]
+    assert git(archive, "status", "--porcelain") == "A  stray.txt\n"
+
+
+@pytest.mark.parametrize("how", ["deleted", "edited"])
+def test_append_only_holds_against_what_was_committed_not_the_working_tree(
+    tmp_path: Path, how: str
+) -> None:
+    archive = make_archive(tmp_path)
+    page = page_html(tmp_path / "p.html")
+    assert file_it(archive, page).exit_code == 0
+    head = git(archive, "rev-parse", "HEAD").strip()
+    other = page_html(tmp_path / "q.html", extra={"groups": ["different"]})
+    if how == "deleted":
+        (archive / PAGE).unlink()
+    else:
+        (archive / PAGE).write_bytes(other.read_bytes())
+    refused = file_it(archive, other)
+    assert refused.exit_code == 2, refused.output
+    assert "already holds" in refused.output
+    assert git(archive, "rev-parse", "HEAD").strip() == head
+    again = file_it(archive, page)
+    assert again.exit_code == 0, again.output
+    assert again.output.strip() == f"already filed {PAGE}"
+    assert (archive / PAGE).read_bytes() == page.read_bytes()
+    assert git(archive, "rev-parse", "HEAD").strip() == head
+    assert git(archive, "status", "--porcelain") == ""
+
+
+def test_a_deleted_committed_decisions_file_is_not_replaced_by_a_different_one(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    file_it(archive, page_html(tmp_path / "p.html"))
+    first = decisions_doc(
+        tmp_path / "a.json", name="E.A.M", role="owner", finished_at=FINISHED, findings=[]
+    )
+    assert decide(archive, first, atlas_root).exit_code == 0
+    head = git(archive, "rev-parse", "HEAD").strip()
+    (archive / DECISIONS).unlink()
+    data = json.loads(first.read_text(encoding="utf-8"))
+    data["session"]["active_ms"] += 1
+    second = tmp_path / "b.json"
+    second.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    refused = decide(archive, second, atlas_root)
+    assert refused.exit_code == 2 and "already holds" in refused.output
+    assert git(archive, "rev-parse", "HEAD").strip() == head
+    same = decide(archive, first, atlas_root)
+    assert same.output.strip().splitlines()[0] == f"already filed {DECISIONS}"
+    assert (archive / DECISIONS).read_bytes() == first.read_bytes()
+    assert git(archive, "status", "--porcelain") == ""
+
+
+def test_a_filing_git_would_not_commit_is_refused_or_committed_for_real(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    file_it(archive, page_html(tmp_path / "p.html"))
+    owner = decisions_doc(
+        tmp_path / "o.json", name="E.A.M", role="owner", finished_at=FINISHED, findings=[]
+    )
+    exclude = archive / ".git" / "info" / "exclude"
+    exclude.write_text("*.json\n", encoding="utf-8")
+    head = git(archive, "rev-parse", "HEAD").strip()
+    ignored = decide(archive, owner, atlas_root)
+    assert ignored.exit_code == 2 and "ignored" in ignored.output, ignored.output
+    assert not (archive / DECISIONS).exists()
+    assert git(archive, "rev-parse", "HEAD").strip() == head
+    exclude.write_text("", encoding="utf-8")
+    git(archive, "config", "status.showUntrackedFiles", "no")
+    quiet = file_it(archive, page_html(tmp_path / "q.html", built_on="2026-11-19T12:30:00+00:00"))
+    assert quiet.exit_code == 0, quiet.output
+    assert "committed" in quiet.output
+    later = "TBX5/r1/pages/20261119T123000Z--e-a-m.html"
+    assert git(archive, "show", "HEAD:" + later).encode() == ((tmp_path / "q.html").read_bytes())
+
+
+def test_the_commit_is_authored_as_the_archives_own_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = make_archive(tmp_path)
+    for var, value in [
+        ("GIT_AUTHOR_NAME", "Env Author"),
+        ("GIT_AUTHOR_EMAIL", "env-author@example.invalid"),
+        ("GIT_COMMITTER_NAME", "Env Committer"),
+        ("GIT_COMMITTER_EMAIL", "env-committer@example.invalid"),
+    ]:
+        monkeypatch.setenv(var, value)
+    assert file_it(archive, page_html(tmp_path / "p.html")).exit_code == 0
+    got = git(archive, "log", "-1", "--format=%ae %ce")
+    assert got.strip() == "curator@example.invalid curator@example.invalid"
+
+
+def _file_both_pages(archive: Path, tmp: Path) -> None:
+    file_it(archive, page_html(tmp / "p.html"))
+    file_it(archive, page_html(tmp / "q.html", name="Owner", role="second_opinion"))
+    file_it(
+        archive, page_html(tmp / "r.html", name="Dr X", role="second_opinion", gene="HGNC:4173")
+    )
+
+
+def test_what_the_reader_would_refuse_is_refused_at_filing(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    _file_both_pages(archive, tmp_path)
+    head = git(archive, "rev-parse", "HEAD").strip()
+    keyed = decisions_doc(
+        tmp_path / "k.json", name="Owner", role="second_opinion", finished_at=FINISHED, findings=[]
+    )
+    refused = decide(archive, keyed, atlas_root)
+    assert refused.exit_code == 2 and "keyed as the owner" in refused.output
+    assert (
+        decide(
+            archive,
+            decisions_doc(
+                tmp_path / "o.json", name="E.A.M", role="owner", finished_at=FINISHED, findings=[]
+            ),
+            atlas_root,
+        ).exit_code
+        == 0
+    )
+    head = git(archive, "rev-parse", "HEAD").strip()
+    other = decisions_doc(
+        tmp_path / "g.json",
+        name="Dr X",
+        role="second_opinion",
+        finished_at="2026-11-19T14:00:00Z",
+        findings=[],
+        gene="HGNC:4173",
+    )
+    second = decide(archive, other, atlas_root)
+    assert second.exit_code == 2 and "one gene per symbol" in second.output, second.output
+    assert git(archive, "rev-parse", "HEAD").strip() == head
+    assert git(archive, "status", "--porcelain") == ""
+
+
+def test_a_decisions_file_without_a_triage_key_is_filed_and_read(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    file_it(archive, page_html(tmp_path / "p.html"))
+    doc = decisions_doc(
+        tmp_path / "o.json", name="E.A.M", role="owner", finished_at=FINISHED, findings=[]
+    )
+    data = json.loads(doc.read_text(encoding="utf-8"))
+    del data["triage"]
+    doc.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    assert decide(archive, doc, atlas_root).exit_code == 0
+    read = runner.invoke(app, ["agreement", "--archive", str(archive), "--root", str(atlas_root)])
+    assert read.exit_code == 0, read.output
+
+
+def test_the_next_line_quotes_a_name_with_a_space(tmp_path: Path, atlas_root: Path) -> None:
+    archive = make_archive(tmp_path)
+    file_it(archive, page_html(tmp_path / "p.html", name="Test Reviewer"))
+    doc = decisions_doc(
+        tmp_path / "o.json", name="Test Reviewer", role="owner", finished_at=FINISHED, findings=[]
+    )
+    result = decide(archive, doc, atlas_root)
+    assert result.exit_code == 0, result.output
+    assert "--by 'Test Reviewer' --root" in result.output.strip().splitlines()[-1]
+
+
+def test_a_commit_that_leaves_the_path_out_of_head_is_exit_1(tmp_path: Path) -> None:
+    archive = make_archive(tmp_path)
+    hook = archive / ".git" / "hooks" / "post-commit"
+    hook.write_text("#!/bin/sh\ngit reset -q --soft HEAD~1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    result = file_it(archive, page_html(tmp_path / "p.html"))
+    assert result.exit_code == 1, result.output
+    assert "out of HEAD" in result.output

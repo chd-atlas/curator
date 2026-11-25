@@ -41,6 +41,7 @@ def put(
     finished: str,
     findings: list[dict[str, Any]],
     symbol: str = "TBX5",
+    triage: dict[str, Any] | None = None,
 ) -> None:
     src = decisions_doc(
         tmp / "src.json",
@@ -49,6 +50,7 @@ def put(
         finished_at=finished,
         findings=findings,
         symbol=symbol,
+        triage=triage,
     )
     dest = archive / symbol / "r1" / "decisions" / f"{compact_utc(finished)}--{slug(name)}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -143,7 +145,7 @@ def test_a_clinician_written_two_ways_is_one_line_named_by_the_latest_file(
     assert lines[2].endswith('; dr x fix "because"')
 
 
-def test_no_clinician_and_triage_only_and_two_genes(
+def test_no_clinician_then_a_second_gene_counts_that_clinician_in_that_gene(
     archive: Path, tmp_path: Path, atlas_root: Path
 ) -> None:
     put(archive, tmp_path, "E.A.M", "owner", AT, [fnd(G, "approve", D1)])
@@ -156,8 +158,8 @@ def test_no_clinician_and_triage_only_and_two_genes(
     commit(archive)
     views = [read_archive(archive, s, atlas_root) for s in ("NR2F2", "TBX5")]
     assert report(tally(views), ["NR2F2", "TBX5"]) == [
-        "Dr X: 1 pairs, 1 agreed, 0 disagreed, 0 with ask later; 0 unpaired",
-        "  NR2F2: 1 pairs, 1 agreed, 0 disagreed, 0 with ask later; 0 unpaired",
+        "Dr X: 1 pair, 1 agreed, 0 disagreed, 0 with ask later; 0 unpaired",
+        "  NR2F2: 1 pair, 1 agreed, 0 disagreed, 0 with ask later; 0 unpaired",
     ]
 
 
@@ -217,3 +219,70 @@ def test_what_is_not_a_clean_archive_is_refused_even_with_no_gene_in_it(
         json.loads(clean.output)["archive_commit"]
         == git(archive, "rev-parse", "--short", "HEAD").strip()
     )
+
+
+def test_a_pair_where_both_sides_said_later_counts_as_ask_later_not_agreed(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    build(archive, tmp_path, [fnd(G, "later", D1, "ask")], [fnd(G, "later", D1, "ask")])
+    (t,) = tally([read_archive(archive, "TBX5", atlas_root)])
+    c = t.genes["TBX5"]
+    assert (c.pairs, c.agreed, len(c.disagreed), c.with_later) == (1, 0, 0, 1)
+
+
+def test_triage_verdicts_are_neither_paired_nor_unpaired(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    triage = {"decision": "fix", "note": "n", "active_ms": 1, "flips": []}
+    put(archive, tmp_path, "E.A.M", "owner", AT, [], triage=triage)
+    put(archive, tmp_path, "Dr X", "second_opinion", "2026-11-19T13:00:00Z", [], triage=triage)
+    commit(archive)
+    view = read_archive(archive, "TBX5", atlas_root)
+    assert pairs(view) == ([], [])
+    assert report(tally([view]), ["TBX5"]) == [
+        "Dr X: 0 pairs, 0 agreed, 0 disagreed, 0 with ask later; 0 unpaired",
+        "  TBX5: 0 pairs, 0 agreed, 0 disagreed, 0 with ask later; 0 unpaired",
+    ]
+
+
+def test_a_clinicians_total_sums_their_genes(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    for symbol in ("TBX5", "NR2F2"):
+        put(archive, tmp_path, "E.A.M", "owner", AT, [fnd(G, "approve", D1)], symbol)
+        put(
+            archive,
+            tmp_path,
+            "Dr X",
+            "second_opinion",
+            "2026-11-19T13:00:00Z",
+            [fnd(G, "fix", D1, "no"), fnd(J, "approve", D1)],
+            symbol,
+        )
+        put(
+            archive,
+            tmp_path,
+            "E.A.M",
+            "owner",
+            "2026-11-19T11:00:00Z",
+            [fnd(J, "approve", D1)],
+            symbol,
+        )
+    commit(archive)
+    views = [read_archive(archive, s, atlas_root) for s in ("NR2F2", "TBX5")]
+    lines = report(tally(views), ["NR2F2", "TBX5"])
+    assert lines[0] == "Dr X: 4 pairs, 2 agreed, 2 disagreed, 0 with ask later; 0 unpaired"
+    assert lines[1] == "  NR2F2: 2 pairs, 1 agreed, 1 disagreed, 0 with ask later; 0 unpaired"
+
+
+def test_a_top_level_directory_that_is_not_a_symbol_is_named_as_such(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    (archive / "my notes").mkdir()
+    (archive / "my notes" / "x.txt").write_text("x", encoding="utf-8")
+    commit(archive)
+    run = CliRunner().invoke(
+        app, ["agreement", "--archive", str(archive), "--root", str(atlas_root)]
+    )
+    assert run.exit_code == 2
+    assert "top-level directory 'my notes' is not a gene symbol" in run.output

@@ -115,7 +115,8 @@ def tally(views: Sequence[ArchiveView]) -> list[ClinicianTally]:
 
 def _summary(c: Counts) -> str:
     return (
-        f"{c.pairs} pairs, {c.agreed} agreed, {len(c.disagreed)} disagreed, "
+        f"{c.pairs} pair{'' if c.pairs == 1 else 's'}, {c.agreed} agreed, "
+        f"{len(c.disagreed)} disagreed, "
         f"{c.with_later} with ask later; {c.unpaired} unpaired"
     )
 

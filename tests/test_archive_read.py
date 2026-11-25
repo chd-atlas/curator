@@ -251,6 +251,25 @@ def test_read_archive_refuses(
         view(archive, atlas_root)
 
 
+@pytest.mark.parametrize(
+    ("setup", "phrase"),
+    [("showUntrackedFiles", "uncommitted"), ("ignored", "not in HEAD")],
+)
+def test_read_archive_refuses_a_decisions_file_that_is_not_in_head(
+    setup: str, phrase: str, archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    f = [finding(G, "approve", D1, "2026-11-19T12:00:00Z")]
+    put(archive, tmp_path, "E.A.M", "owner", "2026-11-19T12:00:00Z", f)
+    commit_all(archive)
+    if setup == "showUntrackedFiles":
+        git(archive, "config", "status.showUntrackedFiles", "no")
+    else:
+        (archive / ".git" / "info" / "exclude").write_text("*.json\n", "utf-8")
+    put(archive, tmp_path, "Dr X", "second_opinion", "2026-11-19T13:00:00Z", f)
+    with pytest.raises(ArchiveError, match=phrase):
+        view(archive, atlas_root)
+
+
 def test_an_archive_with_no_file_for_the_symbol_is_empty(archive: Path, atlas_root: Path) -> None:
     v = view(archive, atlas_root)
     assert (v.gene, v.files, v.reviewers, v.verdicts) == (None, 0, 0, ())
@@ -304,7 +323,7 @@ def test_archive_state_prints_the_json_contract_and_the_line(
     assert code == 0, out
     assert out == (
         "TBX5: 2 findings with verdicts in 2 decisions files from 2 reviewers; "
-        f"2 pending fix or ask later, 1 pending flips (archive {commit})\n"
+        f"2 pending fix or ask later, 1 pending flip (archive {commit})\n"
     )
 
 

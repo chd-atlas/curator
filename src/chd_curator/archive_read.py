@@ -2,14 +2,17 @@
 
 :func:`read_archive` reads every ``<SYMBOL>/<run>/decisions/*.json`` in sorted order and
 refuses the archive (:class:`~chd_curator.archive.ArchiveError`, exit 2) when it cannot be
-trusted: uncommitted changes anywhere in the checkout, a file that is not ``.json`` under a
-decisions directory (a skipped file would silently drop a reviewer's verdicts), a file that
-fails the atlas's schema, is not finished, is for another symbol, names another gene than
-the rest, names a finding twice, is a second opinion keyed as the owner, or sits under a name
-other than ``<finished_at, compact UTC>--<reviewer slug>.json``.
+trusted: uncommitted changes anywhere in the checkout (untracked files included, every one
+listed), a file that is not ``.json`` under a decisions directory (a skipped file would
+silently drop a reviewer's verdicts), a decisions file that ``HEAD`` does not hold (git-ignored,
+say), or a file that fails :func:`~chd_curator.archive.check_decisions` (the atlas's schema, a
+finished session, the right symbol, a second opinion not keyed as the owner, no finding named
+twice), names another gene than the rest, or sits under a name other than
+``<finished_at, compact UTC>--<reviewer slug>.json``.
 
 A reviewer is keyed by role: every owner file is the key ``owner``, and a clinician is
-``name.strip().casefold()``. "Latest" compares parsed instants, never strings.
+``name.strip().casefold()``. "Latest" compares parsed instants, not strings; two verdicts at
+the same instants fall back to their file paths as strings.
 """
 
 from __future__ import annotations
@@ -26,11 +29,10 @@ from chd_curator.archive import (
     GitError,
     _git,
     check_archive,
+    check_decisions,
     check_id,
-    compact_utc,
 )
 from chd_curator.atlas import AtlasError, schema_validator
-from chd_curator.review_page import slug
 
 STATE_FORMAT = 1
 
@@ -86,7 +88,7 @@ def _verdicts_of(doc: Mapping[str, Any], rel: str, run: str, finished: datetime)
         )
         for f in doc["findings"]
     ]
-    triage = doc["triage"]
+    triage = doc.get("triage")
     if triage is not None:
         out.append(
             Verdict(
@@ -113,7 +115,7 @@ def _verdicts_of(doc: Mapping[str, Any], rel: str, run: str, finished: datetime)
 def open_archive(archive: Path) -> tuple[Path, str]:
     """The archive's top and short HEAD, once it is a marked checkout with nothing uncommitted."""
     top = check_archive(archive)
-    status = _git(top, "status", "--porcelain")
+    status = _git(top, "status", "--porcelain", "--untracked-files=all")
     if status.returncode != 0:
         raise GitError(f"git status failed: {status.stderr.strip()}")
     if status.stdout.strip():
@@ -150,48 +152,37 @@ def read_archive(archive: Path, symbol: str, schema_root: Path) -> ArchiveView:
                     )
                 paths.append(path)
 
+    tracked = _git(top, "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", symbol)
+    if tracked.returncode != 0:
+        raise GitError(f"git ls-tree failed: {tracked.stderr.strip()}")
+    in_head = set(tracked.stdout.split("\0"))
+
     verdicts: list[Verdict] = []
     genes: set[str] = set()
     keys: set[str] = set()  # a file holding no verdict still names a reviewer
     for path in paths:
         rel = str(path.relative_to(top))
+        if path.relative_to(top).as_posix() not in in_head:
+            raise ArchiveError(f"{rel}: is not in HEAD (git-ignored?): commit it before reading")
         try:
             doc = json.loads(path.read_bytes())
         except (OSError, ValueError) as exc:
             raise ArchiveError(f"{rel}: cannot be read as JSON: {exc}") from exc
-        if not isinstance(doc, dict):
-            raise ArchiveError(f"{rel}: is not a JSON object")
-        errors = sorted(
-            f"{'/'.join(map(str, e.path)) or '(file)'}: {e.message}"
-            for e in validator.iter_errors(doc)
-        )
-        if errors:
-            raise ArchiveError(f"{rel} fails the schema: {errors[0]}")
-        finished_text = doc["session"]["finished_at"]
-        if not finished_text:
-            raise ArchiveError(f"{rel}: the session is not finished (session.finished_at is empty)")
-        if doc["symbol"] != symbol:
-            raise ArchiveError(f"{rel} is for {doc['symbol']}, not {symbol}")
+        expected = check_decisions(doc, rel, symbol, validator)
         genes.add(doc["gene"])
         if len(genes) > 1:
             raise ArchiveError(f"{rel}: the archive holds two genes for {symbol}: {sorted(genes)}")
-        name = str(doc["reviewer"]["name"])
-        key = reviewer_key(name, doc["reviewer"]["role"])
-        if doc["reviewer"]["role"] != "owner" and key == "owner":
-            raise ArchiveError(
-                f"{rel}: the second opinion {name!r} would be keyed as the owner: "
-                "a clinician's name must not read as 'owner'"
-            )
-        ids = [f["id"] for f in doc["findings"]]
-        again = sorted({i for i in ids if ids.count(i) > 1})
-        if again:
-            raise ArchiveError(f"{rel}: decides {again[0]} more than once")
-        keys.add(key)
-        expected = f"{compact_utc(finished_text)}--{slug(name)}.json"
         if path.name != expected:
             raise ArchiveError(f"{rel}: the file is named {path.name}, not {expected}")
+        name = str(doc["reviewer"]["name"])
+        keys.add(reviewer_key(name, doc["reviewer"]["role"]))
         verdicts.extend(
-            _verdicts_of(doc, rel, path.parent.parent.name, datetime.fromisoformat(finished_text))
+            _verdicts_of(
+                doc,
+                rel,
+                path.parent.parent.name,
+                datetime.fromisoformat(doc["session"]["finished_at"]),
+            )
         )
 
     return ArchiveView(
@@ -236,8 +227,11 @@ def state(
 ) -> dict[str, Any]:
     """What the archive holds, set against the atlas's current digests and triage.
 
-    ``current`` maps finding id to its current shown digest; ``triage`` maps pmid to
-    ``included``/``excluded``.
+    ``current`` maps finding id to its current shown digest; ``triage`` maps each pmid in the
+    literature file's triage to its decision (``pending``, ``included`` or ``excluded``); a
+    flip of a pmid absent from it is not pending. A verdict is pending when it is a
+    reviewer's latest verdict on the finding and is a ``fix`` or ``later`` made on its
+    current digest.
     """
     mine = latest(view.verdicts)
     ids = sorted({v.finding for v in mine.values() if v.finding != "triage"})
