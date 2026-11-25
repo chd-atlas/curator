@@ -289,6 +289,33 @@ def test_a_second_opinion_intro_says_to_press_im_done_before_downloading(
     )
 
 
+NOTICE = (
+    "Your name, verdicts and notes are kept in the atlas's private review archive, "
+    "a private GitHub repository. The curator who sent you this page, and the Claude "
+    "sessions that build review pages, read them to show your verdicts to the curator "
+    "and to measure how often reviewers agree. Nothing with your name is published "
+    "without your separate agreement. Ask the curator, and your name and notes are deleted."
+)
+
+
+def test_a_second_opinion_page_states_the_notice_and_the_owner_page_does_not(
+    root: Path, stub_atlas: Path
+) -> None:
+    """R-REG-12, R-REG-23: a clinician is told what the archive keeps before sending a verdict."""
+    assert len(NOTICE.split()) == 68
+    code, out = build(root, stub_atlas, "--reviewer", "Dr X", "--role", "second_opinion")
+    assert code == 0, out
+    dom = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+    notice = re.search(r'<p class="notice" id="notice">(.*?)</p>', dom, re.S)
+    assert notice, "the second-opinion page has no #notice"
+    assert plain(notice.group(1)) == NOTICE
+    assert dom.index('id="notice"') < dom.index("When you are done")
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    owner = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+    assert "private review archive" not in owner
+
+
 def test_the_papers_needed_card_words_every_text_source(root: Path, stub_atlas: Path) -> None:
     """R-P1-46b: a raw texts.json token such as full_text must never reach the card."""
     code, out = build(root, stub_atlas)
