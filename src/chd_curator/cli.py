@@ -36,6 +36,7 @@ from ruamel.yaml.error import YAMLError
 from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, sources, variantvalidator
+from chd_curator import batch as batch_module
 from chd_curator import texts as texts_module
 from chd_curator.atlas import (
     AtlasError,
@@ -1004,6 +1005,46 @@ def quotes(
         typer.echo(f"not found: {c.finding} {c.origin} {c.field}: {c.quote}")
     for c in long:
         typer.echo(f"over {LONG_QUOTE_WORDS} words ({c.words}): {c.finding} {c.origin} {c.field}")
+
+
+@app.command("batch")
+def batch(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    mode: str = typer.Option(..., "--mode", help="new or backfill."),
+    fields: str = typer.Option("", "--fields", help="Backfill: comma-separated Finding fields."),
+    findings: list[str] = typer.Option(
+        [], "--findings", help="Backfill: finding ids to re-read (default every finding)."
+    ),
+    budget_kb: int = typer.Option(170, "--budget-kb", min=1, help="Text budget per batch."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+) -> None:
+    """Plan a run's reading batches under a text budget; write batches.json and the manifests.
+
+    The budget is budget-kb x 1,000 bytes of main text per batch. Exit 2, nothing written, when
+    the run is already batched, has no texts.json, a selected paper has no text or year, or a
+    field is unknown or forbidden.
+    """
+    _require_root(root)
+    if mode not in ("new", "backfill"):
+        raise _fail(f"--mode {mode!r} is not new or backfill", 2)
+    paths = RunPaths(root, symbol, run)
+    names = tuple(n.strip() for n in fields.split(",") if n.strip())
+    try:
+        prepared = batch_module.prepare_batches(
+            paths,
+            "new" if mode == "new" else "backfill",
+            names,
+            tuple(findings),
+            budget_kb * 1000,
+        )
+    except (batch_module.BatchError, RunFormatError) as exc:
+        raise _fail(str(exc), 2) from None
+    try:
+        batch_module.write_plan(paths, prepared)
+    except OSError as exc:
+        raise _fail(f"{paths.dir}: cannot be written: {exc}", 1) from None
+    typer.echo(batch_module.summary(prepared.plan))
 
 
 def _atlas_commit(root: Path) -> str | None:

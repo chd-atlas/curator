@@ -102,7 +102,7 @@ class DiffError(Exception):
     """A findings file that cannot be compared (exit 1 at the CLI)."""
 
 
-def _finding_schema(literature_schema: Mapping[str, Any]) -> Mapping[str, Any]:
+def finding_schema(literature_schema: Mapping[str, Any]) -> Mapping[str, Any]:
     try:
         schema = literature_schema["$defs"]["Finding"]
         if not isinstance(schema["properties"], Mapping):
@@ -114,7 +114,7 @@ def _finding_schema(literature_schema: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def compared_fields(literature_schema: Mapping[str, Any]) -> tuple[str, ...]:
     """The sorted ``Finding`` property names minus ``EXCLUDED_FIELDS``."""
-    properties = _finding_schema(literature_schema)["properties"]
+    properties = finding_schema(literature_schema)["properties"]
     return tuple(sorted(name for name in properties if name not in EXCLUDED_FIELDS))
 
 
@@ -265,7 +265,7 @@ def diff_findings(
     literature_schema: Mapping[str, Any],
 ) -> FindingDiff:
     names = compared_fields(literature_schema)
-    properties = _finding_schema(literature_schema)["properties"]
+    properties = finding_schema(literature_schema)["properties"]
     defs = literature_schema["$defs"]
 
     def key(finding: Mapping[str, Any]) -> _Key:

@@ -133,6 +133,28 @@ gene, a missing literature file, a literature file that is not YAML or has no tr
 triage entry without a `PMID:<digits>`, a bad run id, or a run that already holds a `texts.json`,
 before any request. The atlas gitignores `local/`, so no fetched text is committed.
 
+### Plan a run's batches
+
+`chd-curator batch <SYMBOL> --run <run id> --mode new|backfill [--fields <f,...>]
+[--findings <id> ...] [--budget-kb 170] [--root .]` splits a run's papers into reading batches and
+writes `batches.json` plus `batches/batch-NN.md`, the manifest both blind readers open. It reads
+the run's `texts.json` and the gene's literature file and runs after `texts`. A budget of N KB is
+N x 1,000 bytes of main text per batch (default 170,000). Papers are packed in (year, PMID number)
+order; a paper whose own text, or whose supplements together, exceed the budget gets a batch of its
+own. A paper's year and title come from `curation/publications.yaml`, else from `texts.json`. In
+`--mode new` the papers are the `included` triage entries no finding cites. In `--mode backfill`
+they are the papers of `--findings` (default every finding in the file), `--fields` is required,
+and each name must be a `Finding` property of the exported schema other than `id`, `publication`,
+`approved_by`, `approved_on`, `approved_digest`, `extracted_by` and `verified_by`; the manifest then
+lists the fields and each paper's findings as curated, with `approved_by`, `approved_on` and
+`approved_digest` left out because a reader needs none of them. A manifest gives absolute paths to
+each paper's text, abstract and supplements (with sizes) and names no other file of the run.
+Example output: `planned 2 batches for 3 papers (budget 170,000 bytes): 01 1 paper 283 bytes; 02 2
+papers 354 bytes`. It writes the manifests first and `batches.json` last, and exits 2 with nothing
+written when `batches.json` exists or `batches/` holds a file, `texts.json` is missing, a selected
+paper is not in it or has neither text nor abstract or has no year, nothing is selected, or a field
+is unknown or forbidden. `--mode reread` is not planned by this command yet.
+
 ### Review a run
 
 `chd-curator quotes <SYMBOL> --run <run id>` checks every quote in a run's `evidence/` and
