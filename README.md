@@ -130,11 +130,15 @@ every decisions file filed for the gene and prints one line: how many findings h
 files and reviewers they come from, how many verdicts are pending, how many triage flips are pending
 and the archive's commit. A verdict is pending when a reviewer's latest verdict on the finding is a
 `fix` or `later` made on the finding's current digest (a finding with two such reviewers counts
-twice); a flip is pending while its paper is still in the literature file's triage and that decision
-is not yet the flip's `to` (a paper still undecided counts, one no longer in triage does not).
-`--json` prints the whole state. It writes nothing, and refuses (exit 2) an archive with uncommitted
+twice). A flip is a verdict on one paper: a reviewer's latest flip of it counts, whatever their
+later triage verdicts say, and it is pending while the paper is in the literature file's triage with
+a decision other than the flip's `to` (a paper still undecided counts, one no longer in triage does
+not), unless the owner closed it by approving or fixing (not asking later) the triage on a filed page
+that showed that flip, without flipping the paper themselves. `--json` prints the whole state. It
+writes nothing, and refuses (exit 2) an archive with uncommitted
 changes (untracked files included), a non-JSON file under a decisions directory, a decisions file the
-last commit does not hold, a file that fails the schema, is unfinished, is misnamed, is for another
+last commit does not hold, an owner's approve or fix of the triage whose filed page cannot be found
+or read, a file that fails the schema, is unfinished, is misnamed, is for another
 symbol, names one finding twice or is a second opinion keyed as the owner, two genes under one
 symbol, or an archive whose gene for the symbol is not the atlas's.
 

@@ -44,27 +44,41 @@ class ExportError(Exception):
         self.exit_code = exit_code
 
 
+def page_data_from_text(text: str, label: str) -> dict[str, Any]:
+    """The inline data of page text (``label`` names the page in each refusal)."""
+    if text.count(_DATA_OPEN) != 1:
+        raise ExportError(
+            f"{label}: expected exactly one data element, found {text.count(_DATA_OPEN)}"
+        )
+    start = text.index(_DATA_OPEN) + len(_DATA_OPEN)
+    end = text.find("</script>", start)
+    if end < 0:
+        raise ExportError(f"{label}: the data element is not closed")
+    try:
+        data = json.loads(text[start:end].replace("<\\/", "</"))
+    except ValueError as exc:
+        raise ExportError(f"{label}: the data element is not JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ExportError(f"{label}: the data element is not an object")
+    return data
+
+
+def page_data_from_bytes(raw: bytes, label: str) -> dict[str, Any]:
+    """The inline data of a page held as bytes (UTF-8), as :func:`page_data` reads a file."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ExportError(f"{label}: cannot be read as UTF-8: {exc}") from exc
+    return page_data_from_text(text, label)
+
+
 def page_data(page_html: Path) -> dict[str, Any]:
     """The page's inline data, from its one ``<script ... id="data">`` element."""
     try:
         text = page_html.read_text(encoding="utf-8")
     except OSError as exc:
         raise ExportError(f"{page_html}: cannot be read: {exc}") from exc
-    if text.count(_DATA_OPEN) != 1:
-        raise ExportError(
-            f"{page_html}: expected exactly one data element, found {text.count(_DATA_OPEN)}"
-        )
-    start = text.index(_DATA_OPEN) + len(_DATA_OPEN)
-    end = text.find("</script>", start)
-    if end < 0:
-        raise ExportError(f"{page_html}: the data element is not closed")
-    try:
-        data = json.loads(text[start:end].replace("<\\/", "</"))
-    except ValueError as exc:
-        raise ExportError(f"{page_html}: the data element is not JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ExportError(f"{page_html}: the data element is not an object")
-    return data
+    return page_data_from_text(text, str(page_html))
 
 
 def _read(path: Path) -> dict[str, Any]:

@@ -1200,14 +1200,19 @@ def archive_state_command(
     Prints one line, `<SYMBOL>: <n> findings with verdicts in <k decisions files from m
     reviewers>; <p> pending fix or ask later, <f> pending flips (archive <commit>)`: `<p>`
     counts every reviewer whose latest verdict on the finding is a fix or later made on its
-    current digest (a finding with two such reviewers counts 2) and `<f>` every pending triage
-    flip in every reviewer's latest triage verdict. With `--json` it prints the whole state
-    instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
-    decisions file HEAD does not hold, a file that fails the schema, is not finished, is for
-    another symbol, names a finding twice, is a second opinion keyed as the owner, or is
-    misnamed, two genes in the archive for the symbol, a non-JSON file under a decisions
-    directory, an unreadable literature file, or a gene other than the atlas's); exit 1 when
-    git fails. Writes nothing.
+    current digest (a finding with two such reviewers counts 2) and `<f>` the triage flips
+    that are pending. A flip is a verdict on one paper: a reviewer's latest flip of it counts,
+    whatever their later triage verdicts say. It is pending while the paper's triage decision is
+    not the flip's `to` (a paper absent from the triage is not pending), unless the owner closed
+    it: an owner triage verdict that approved or fixed (never "ask later") on a filed page that
+    showed that flip, without flipping the paper itself. With `--json` it prints the whole
+    state instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
+    decisions file HEAD does not hold, an owner's approve or fix of the triage whose filed page
+    cannot be found or says nothing usable about the flips it showed, a file that fails the
+    schema, is not finished, is for another symbol, names a finding twice, is a second opinion
+    keyed as the owner, or is misnamed, two genes in the archive for the symbol, a non-JSON file
+    under a decisions directory, an unreadable literature file, or a gene other than the
+    atlas's); exit 1 when git fails. Writes nothing.
     """
     _require_root(root)
     cli = _atlas_cli(root, atlas_cli)
@@ -1239,7 +1244,7 @@ def archive_state_command(
         typer.echo(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False))
         return
     pending = sum(v["pending"] for f in out["findings"] for v in f["verdicts"])
-    flips = sum(fl["pending"] for t in out["triage"]["verdicts"] for fl in t["flips"])
+    flips = sum(fl["pending"] for fl in out["triage"]["flips"])
     n = len(out["findings"])
     typer.echo(
         f"{symbol}: {n} finding{'' if n == 1 else 's'} with verdicts in "

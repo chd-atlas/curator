@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from archive_helpers import decisions_doc, git, make_archive
+from archive_helpers import decisions_doc, git, make_archive, page_html
 from chd_curator.agreement import pairs, report, tally
 from chd_curator.archive import compact_utc
 from chd_curator.archive_read import read_archive
@@ -236,6 +236,10 @@ def test_triage_verdicts_are_neither_paired_nor_unpaired(
     triage = {"decision": "fix", "note": "n", "active_ms": 1, "flips": []}
     put(archive, tmp_path, "E.A.M", "owner", AT, [], triage=triage)
     put(archive, tmp_path, "Dr X", "second_opinion", "2026-11-19T13:00:00Z", [], triage=triage)
+    # The reader looks up the page an owner's deciding triage verdict was made on.
+    pages = archive / "TBX5" / "r1" / "pages"
+    pages.mkdir(parents=True)
+    page_html(pages / "owner.html", name="E.A.M", role="owner")
     commit(archive)
     view = read_archive(archive, "TBX5", atlas_root)
     assert pairs(view) == ([], [])
