@@ -22,7 +22,7 @@ from ruamel.yaml.error import YAMLError
 from chd_curator.atlas import plain
 from chd_curator.diff import DiffError, finding_schema
 from chd_curator.fs import write_bytes_atomically
-from chd_curator.records import literature_path, pmid_key
+from chd_curator.records import is_empty, literature_path, pmid_key
 from chd_curator.run import (
     Batch,
     BatchPlan,
@@ -214,10 +214,21 @@ def prepare_batches(
         ]
         chosen: list[str] = []
     else:
-        chosen = list(finding_ids) or ordered_ids
-        unknown = [f for f in chosen if f not in findings]
+        unknown = [f for f in finding_ids if f not in findings]
         if unknown:
             raise BatchError(f"{path}: no finding {unknown[0]}")
+        # A backfill fills declared fields a finding lacks and never rewrites a filled one
+        # (merge refuses it), so a reader is not spent on a finding merge would refuse.
+        for fid in finding_ids:
+            for name in fields:
+                if not is_empty(findings[fid].get(name)):
+                    raise BatchError(
+                        f"{path}: {fid} already holds {name}; "
+                        "a backfill never rewrites a filled field"
+                    )
+        chosen = list(finding_ids) or [
+            f for f in ordered_ids if all(is_empty(findings[f].get(n)) for n in fields)
+        ]
         wanted = set(chosen)
         chosen = [f for f in ordered_ids if f in wanted]
         selected = sorted({str(findings[f]["publication"]) for f in chosen})

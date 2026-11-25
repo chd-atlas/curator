@@ -492,6 +492,14 @@ def _counter_pattern(prefix: str) -> re.Pattern[str]:
     )
 
 
+def is_empty(value: Any) -> bool:
+    """Whether a finding's field holds nothing: absent (None), ``[]`` or ``{}``.
+
+    The one definition ``batch`` and ``merge`` share for "a backfill may fill this field".
+    """
+    return value is None or value == [] or value == {}
+
+
 def read_counter(raw: bytes, prefix: str) -> int:
     """The id counter ``prefixes.<prefix>`` of ``curation/.id_registry.yaml``."""
     try:
@@ -514,7 +522,10 @@ def with_counter(raw: bytes, prefix: str, value: int) -> bytes:
     if value < current:
         raise RecordError(f"the {prefix} counter would fall from {current} to {value}")
     pattern = _counter_pattern(prefix)
-    lines = raw.decode("utf-8").splitlines(keepends=True)
+    try:
+        lines = raw.decode("utf-8").splitlines(keepends=True)
+    except UnicodeDecodeError as exc:
+        raise RecordError(f"the id registry is not UTF-8 text: {exc}") from None
     hits = [i for i, line in enumerate(lines) if pattern.fullmatch(line.rstrip("\r\n"))]
     if len(hits) != 1:
         raise RecordError(f"the {prefix} counter is not written as exactly one '{prefix}: n' line")

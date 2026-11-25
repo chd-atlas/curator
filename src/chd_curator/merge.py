@@ -10,6 +10,10 @@ literature file. A crash part-way therefore leaves skipped ids or a Publication 
 never a finding whose id lies past the counter, and it leaves ``merge.json`` in place, which
 makes a re-run refuse until the curator removes it.
 
+Exit codes: 2 is every refusal, including a curated file that is missing, malformed or not UTF-8;
+1 is a PubMed failure or an ``OSError`` while reading or writing a file. A backfill fills the
+declared fields a finding lacks and never rewrites a filled one.
+
 ``append_numbered`` is pure (bytes and mappings in, bytes and mappings out) so a command that
 only checks a batch can number it the way a merge will.
 """
@@ -31,6 +35,7 @@ from chd_curator.batch import FORBIDDEN_FIELDS
 from chd_curator.diff import DiffError, finding_schema, parse_findings_file
 from chd_curator.records import (
     RecordError,
+    is_empty,
     pmid_key,
     read_counter,
     with_counter,
@@ -495,6 +500,11 @@ def _plan_backfill(
                 if name not in declared:
                     raise MergeError(
                         f"{findings_path}: {fid} sets {name!r}, which batches.json does not declare"
+                    )
+                if not is_empty(c.findings[fid].get(name)):
+                    raise MergeError(
+                        f"{findings_path}: {fid} already holds {name}; a backfill fills a field "
+                        "a finding lacks and never rewrites a filled one"
                     )
             sets[fid] = fields
         quotes = load_evidence_file(evidence_path)

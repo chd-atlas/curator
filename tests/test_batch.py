@@ -131,15 +131,15 @@ def test_backfill_shows_the_curated_finding_without_its_approval_and_names_no_ru
     p = _fresh(tmp_path, atlas_root)
     # a run file a manifest must never name sits beside it
     (p.dir / "merge.json").write_text("{}")
-    code, out = _batch(p, "--mode", "backfill", "--fields", "screened,carriers")
+    code, out = _batch(p, "--mode", "backfill", "--fields", "cohorts,comparator")
     assert (code, out) == (
         0,
         "planned 1 batch for 1 paper (budget 170,000 bytes): 01 1 paper 55 bytes\n",
     )
     assert json.loads(p.batches_json.read_text())["batches"][0]["findings"] == ["CHDA:LIT:0009001"]
-    assert json.loads(p.batches_json.read_text())["fields"] == ["screened", "carriers"]
+    assert json.loads(p.batches_json.read_text())["fields"] == ["cohorts", "comparator"]
     manifest = (p.batches_dir / "batch-01.md").read_text()
-    assert "Fields to re-read: screened, carriers\n" in manifest
+    assert "Fields to re-read: cohorts, comparator\n" in manifest
     assert "- id: CHDA:LIT:0009001\n" in manifest and "  screened: 1\n" in manifest
     assert "- title: A synthetic Holt-Oram family with a TBX5 frameshift.\n" in manifest
     for absent in ("approved_digest", "approved_by", "approved_on", "sha256:", "E.A.M"):
@@ -151,6 +151,52 @@ def test_backfill_shows_the_curated_finding_without_its_approval_and_names_no_ru
             assert run_file not in text
         for run_file in ("/judging/", "/judge/"):
             assert run_file not in text
+
+
+def _with_findings(p: RunPaths) -> None:
+    """Beside the approved 0009001 (no cohorts): 0009002 holds cohorts, 0009003 holds an empty
+    list, 0009004 holds a comparator but no cohorts."""
+    block = (
+        "  - id: {fid}\n    publication: {pmid}\n    design: cohort_screen\n{extra}"
+        "    methods: [exome]\n    phenotypes: [HP:0001631]\n    lesion_groups: [septal]\n"
+        "    syndromic: isolated\n    shares_probands_with: unknown\n    locators:\n"
+        "      - {{kind: in_text, element: T}}\n    summary: s\n    extracted_by: agent:x/y\n"
+    )
+    lit = p.root / "curation/literature/TBX5.yaml"
+    with lit.open("a") as handle:
+        for fid, pmid, extra in (
+            ("0009002", "PMID:91000002", "    cohorts: [somewhere]\n"),
+            ("0009003", "PMID:91000003", "    cohorts: []\n"),
+            ("0009004", "PMID:91000004", "    comparator: null\n"),
+        ):
+            handle.write(block.format(fid=f"CHDA:LIT:{fid}", pmid=pmid, extra=extra))
+
+
+def test_backfill_by_default_selects_only_findings_whose_declared_fields_are_all_empty(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    _with_findings(p)
+    _batch(p, "--mode", "backfill", "--fields", "cohorts")
+    plan = json.loads(p.batches_json.read_text())
+    # 0009002 holds cohorts and is skipped; an empty list and an absent key are empty
+    assert [(b["papers"], b["findings"]) for b in plan["batches"]] == [
+        (
+            ["PMID:91000001", "PMID:91000003", "PMID:91000004"],
+            ["CHDA:LIT:0009001", "CHDA:LIT:0009003", "CHDA:LIT:0009004"],
+        )
+    ]
+
+
+def test_backfill_with_two_declared_fields_skips_a_finding_filled_in_either(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    _with_findings(p)
+    # 0009001 holds screened, 0009002 holds cohorts: neither is empty in every declared field
+    _batch(p, "--mode", "backfill", "--fields", "cohorts,screened")
+    plan = json.loads(p.batches_json.read_text())
+    assert [b["findings"] for b in plan["batches"]] == [["CHDA:LIT:0009003", "CHDA:LIT:0009004"]]
 
 
 def test_prepare_refuses_a_mode_the_cli_does_not_plan(tmp_path: Path, atlas_root: Path) -> None:
@@ -232,6 +278,16 @@ REFUSALS = [
         "no finding CHDA:LIT:0000042",
     ),
     (lambda p: None, ["--mode", "reread"], "not new or backfill"),
+    (
+        _with_findings,
+        ["--mode", "backfill", "--fields", "cohorts", "--findings", "CHDA:LIT:0009002"],
+        "CHDA:LIT:0009002 already holds cohorts",
+    ),
+    (
+        lambda p: None,
+        ["--mode", "backfill", "--fields", "screened"],
+        "no paper to read",
+    ),
 ]
 
 

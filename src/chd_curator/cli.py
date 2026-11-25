@@ -1064,8 +1064,10 @@ def merge(
 
     New findings get final ids from the LIT counter; a paper newly cited gets a Publication; an
     excluded paper's triage entry is set to excluded. A backfill run fills the declared fields of
-    existing findings. Exit 2, nothing written, when any batch is inconsistent or the run is
-    already merged; exit 1 when PubMed fails or a file cannot be read or written.
+    existing findings that lack them, and never rewrites a filled field. Exit 2, nothing
+    written, for every refusal: an inconsistent batch, an already merged run, a curated file that
+    is missing, malformed or not UTF-8. Exit 1 when PubMed fails or an OS error occurs while
+    reading or writing a file.
     """
     _require_root(root)
     given: dict[str, str] = {}

@@ -143,7 +143,9 @@ N x 1,000 bytes of main text per batch (default 170,000). Papers are packed in (
 order; a paper whose own text, or whose supplements together, exceed the budget gets a batch of its
 own. A paper's year and title come from `curation/publications.yaml`, else from `texts.json`. In
 `--mode new` the papers are the `included` triage entries no finding cites. In `--mode backfill`
-they are the papers of `--findings` (default every finding in the file), `--fields` is required,
+they are the papers of `--findings` (default every finding whose declared fields are all empty:
+absent, null, `[]` or `{}`), `--fields` is required, a backfill fills fields a finding lacks and
+never rewrites a filled one,
 and each name must be a `Finding` property of the exported schema other than `id`, `publication`,
 `approved_by`, `approved_on`, `approved_digest`, `extracted_by` and `verified_by`; the manifest then
 lists the fields and each paper's findings as curated, with `approved_by`, `approved_on` and
@@ -152,8 +154,9 @@ each paper's text, abstract and supplements (with sizes) and names no other file
 Example output: `planned 2 batches for 3 papers (budget 170,000 bytes): 01 1 paper 283 bytes; 02 2
 papers 354 bytes`. It writes the manifests first and `batches.json` last, and exits 2 with nothing
 written when `batches.json` exists or `batches/` holds a file, `texts.json` is missing, a selected
-paper is not in it or has neither text nor abstract or has no year, nothing is selected, or a field
-is unknown or forbidden. `--mode reread` is not planned by this command yet.
+paper is not in it or has neither text nor abstract or has no year, nothing is selected, a field
+is unknown or forbidden, or an explicit `--findings` id already holds a declared field.
+`--mode reread` is not planned by this command yet.
 
 ### Merge a run
 
@@ -171,7 +174,8 @@ reading written above its `study_type`, as `add-publication` does) for each cite
 study type must be named with `--study-type PMID:<n>=<type>` (several allowed). A paper `papers.json` excludes goes
 from `included` to `excluded` in the triage, with its reason and note. The evidence is written to
 `evidence/batch-NN.yaml` under the final ids, and `merge.json` records the ids, the Publications
-added and the triage changes. In a run planned `--mode backfill` the findings file is
+added and the triage changes. In a run planned `--mode backfill`, which fills declared fields a finding lacks and never
+rewrites a filled one, the findings file is
 `findings: {<finding id>: {<field>: <value>}}`: each id must be a finding in the file and in its
 batch, each field one the run declared, and only the declared fields change, plus two things
 that follow from them: a finding whose declared fields changed loses `verified_by`, and a
@@ -188,8 +192,10 @@ an exclusion reason outside the atlas's list, or of a paper not `included` now; 
 atlas does not allow, or a null one left unnamed; a `--study-type` for any paper that needs no
 Publication from it; a paper with no year; a `shares_probands_with` that names neither a finding
 of the run nor one in the file; any file a write of it would refuse (the atlas's schema, an
-anchor, an approval changed); or a run that already has `merge.json`. It exits 1, also with
-nothing written, when PubMed fails or answers no record for a PMID, or a file cannot be read.
+anchor, an approval changed); or a run that already has `merge.json`; a curated file that is missing, malformed or not UTF-8; or a
+backfill value for a declared field the finding already holds, equal or not. Exit 2 is every
+refusal. It exits 1, also with nothing written, when PubMed fails or answers no record for a PMID,
+or an OS error occurs while a file is read or written.
 The files are written in this order: `evidence/` and `merge.json`; the id registry;
 `publications.yaml`; the literature file. A crash part-way leaves `merge.json` in place, so a
 re-run is refused until the curator removes it.

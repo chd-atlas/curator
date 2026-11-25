@@ -28,6 +28,7 @@ from chd_curator.cli import app
 from chd_curator.merge import append_numbered
 from chd_curator.records import (
     RecordError,
+    is_empty,
     read_counter,
     with_counter,
     with_fields_set,
@@ -661,6 +662,17 @@ _VARIANT = {
 }
 
 
+_RS1 = {
+    "id": 1,
+    "as_reported": "rs1",
+    "locator": {"kind": "in_text", "element": "Table 1"},
+    "kind": "snv_indel",
+    "placement": "unplaced",
+    "reported": {"rsid": "rs1"},
+    "zygosity": "heterozygous",
+}
+
+
 def _finding_text(fid: str, pmid: str, design: str, trailing: str = "", extra: str = "") -> str:
     return (
         f"  - id: {fid}\n    publication: {pmid}\n    design: {design}\n{extra}"
@@ -775,7 +787,6 @@ def test_merge_backfill_changes_only_the_declared_fields(
             "CHDA:LIT:0009010": {"variants": [_VARIANT]},
             "CHDA:LIT:0009011": {"variants": [_VARIANT]},
             "CHDA:LIT:0009013": {"variants": [_VARIANT]},
-            "CHDA:LIT:0009014": {"variants": [{**_VARIANT, "as_reported": "rs2"}]},
             "CHDA:LIT:0009015": {"variants": []},
         },
     )
@@ -784,19 +795,19 @@ def test_merge_backfill_changes_only_the_declared_fields(
     before = _load(_literature(p))
     code, out = _merge(p, stub_atlas)
     assert code == 0, out
-    assert out == "backfilled 5 findings (variants) from 1 batch; LIT counter 9001\n"
+    assert out == "backfilled 4 findings (variants) from 1 batch; LIT counter 9001\n"
     assert fake.urls == []
     assert (p.root / "curation/.id_registry.yaml").read_bytes() == registry
     assert (p.root / "curation/publications.yaml").read_bytes() == publications
 
     expected = copy.deepcopy(before)
-    a, b, _c, d, e, _f = expected["findings"][1:]
+    a, b, _c, d, _e, _f = expected["findings"][1:]
     for finding in (a, b, d):
         finding["variants"] = [_VARIANT]
         del finding["verified_by"]
-    b["variant_classes"] = ["snv_indel"]  # D keeps its [cnv]; E has a variant already
-    e["variants"] = [{**_VARIANT, "as_reported": "rs2"}]
-    del e["verified_by"]  # F's empty answer for a key it lacks changed nothing, verified_by stays
+    # D keeps its [cnv]; E holds a variant and is not in the pass; F's empty answer for a key it
+    # lacks changed nothing, so its verified_by stays
+    b["variant_classes"] = ["snv_indel"]
     assert _load(_literature(p)) == expected
     assert "\n\n  - id: CHDA:LIT:0009011\n" in _literature(p).read_text()  # A's blank line kept
     assert _load(p.evidence / "batch-01.yaml") == {
@@ -834,6 +845,24 @@ def test_merge_backfill_changes_only_the_declared_fields(
             (),
             "CHDA:LIT:0009012 is not a finding of batch 01",
             id="a finding outside its batch",
+        ),
+        pytest.param(
+            {"CHDA:LIT:0009014": {"variants": [{**_VARIANT, "as_reported": "rs2"}]}},
+            (),
+            "CHDA:LIT:0009014 already holds variants; a backfill fills a field a finding lacks",
+            id="a different value for a field the finding already holds",
+        ),
+        pytest.param(
+            {"CHDA:LIT:0009014": {"variants": [_RS1]}},
+            (),
+            "CHDA:LIT:0009014 already holds variants; a backfill fills a field a finding lacks",
+            id="the same value for a field the finding already holds",
+        ),
+        pytest.param(
+            {"CHDA:LIT:0009014": {"variants": []}},
+            (),
+            "CHDA:LIT:0009014 already holds variants",
+            id="an empty value for a field the finding already holds",
         ),
         pytest.param(
             {"CHDA:LIT:0009099": {"variants": [_VARIANT]}},
@@ -1006,6 +1035,21 @@ def test_append_numbered_refuses_a_repeated_local_id_and_a_counter_behind_the_fi
 # ---- the helpers merge relies on ---------------------------------------------------------------
 
 
+def test_a_registry_that_is_not_utf8_is_a_refusal_not_a_traceback(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """UTF-16 with a BOM parses as YAML, so only the line edit sees that it is not UTF-8."""
+    p = _fresh(tmp_path, atlas_root)
+    _pubmed(monkeypatch)
+    registry = p.root / "curation/.id_registry.yaml"
+    registry.write_bytes(registry.read_text().encode("utf-16"))
+    before = _snapshot(p)
+    code, out = _merge(p, stub_atlas)
+    assert code == 2
+    assert "the id registry is not UTF-8 text" in out
+    assert _snapshot(p) == before
+
+
 def test_the_counter_changes_one_line_and_never_falls() -> None:
     raw = b"prefixes:\n  AST: 2\n  LIT: 9001  # keep\n"
     assert read_counter(raw, "LIT") == 9001
@@ -1054,3 +1098,22 @@ def test_a_triage_change_needs_the_decision_it_names() -> None:
     )
     with pytest.raises(RecordError, match="PMID:2 is not in the triage"):
         with_triage(raw, [TriageChange("PMID:2", "pending", "excluded", None, None)])
+
+
+@pytest.mark.parametrize(
+    ("value", "empty"),
+    [
+        (None, True),
+        ([], True),
+        ({}, True),
+        ([0], False),
+        ({"a": 1}, False),
+        ("", False),
+        (0, False),
+        (False, False),
+    ],
+)
+def test_is_empty_is_absent_null_empty_list_or_empty_mapping_and_nothing_else(
+    value: Any, empty: bool
+) -> None:
+    assert is_empty(value) is empty
