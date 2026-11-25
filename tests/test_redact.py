@@ -174,14 +174,15 @@ def test_apply_redacts_only_the_named_reviewer_and_keeps_every_other_byte(
     pattern = name_pattern("Dr X")
     assert [p for p, b in after.items() if pattern.search(b.decode("utf-8"))] == []
     assert after["README.md"].decode().splitlines()[-1] == (
-        "- 2026-11-25: one reviewer's files deleted and their name redacted from 1 owner pages."
+        "- 2026-11-25: one reviewer removed: 3 files deleted, their name and notes redacted "
+        "from 1 owner page."
     )
     assert "None yet." not in after["README.md"].decode()
     assert git(archive, "log", "-1", "--format=%s").strip() == "redact a removed reviewer"
     assert git(archive, "rev-parse", "--short", "HEAD").strip() == sha
     assert git(archive, "status", "--porcelain") == ""
     paths = (archive / ".git" / "redact-paths.txt").read_text(encoding="utf-8")
-    assert paths.splitlines() == list(plan.delete)
+    assert paths.splitlines() == [*plan.delete, OWNER_PAGE]  # the owner page's old blobs hold notes
     assert (archive / ".git" / "redact-expressions.txt").read_text(encoding="utf-8") == (
         "regex:(?i)(?<!\\w)Dr\\ X(?!\\w)==>a removed reviewer\n"
     )
@@ -263,20 +264,138 @@ def test_a_failed_rescan_restores_every_touched_path(
         apply_redact(archive, "Dr X", plan_redact(archive, "Dr X"), date(2026, 11, 25))
 
 
-def test_apply_prints_the_procedure_and_the_republish_lines(archive: Path) -> None:
+@pytest.mark.parametrize("installed", [True, False])
+def test_apply_prints_the_procedure_the_copies_to_delete_and_the_republish_lines(
+    archive: Path, monkeypatch: pytest.MonkeyPatch, installed: bool
+) -> None:
+    monkeypatch.setattr(
+        redact.shutil, "which", lambda cmd: "/bin/git-filter-repo" if installed else None
+    )
     result = CliRunner().invoke(
         app, ["archive-redact", "--name", "Dr X", "--archive", str(archive), "--apply"]
     )
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
+    d, rw = str(archive), f"{archive}-rewrite"
+    hint = "git filter-repo is not installed: uv tool install git-filter-repo"
+    assert (hint in lines) is not installed
+    assert "History still holds the name. On the owner's word, in a fresh clone:" in lines
+    assert not any("unmeasured until" in line or "not installed here" in line for line in lines)
+    assert f"  git clone --no-local {d} {rw}" in lines
+    # the owner page's original blobs hold the notes: it leaves history, then returns redacted
+    assert f"  mkdir -p {rw}/{RUN}/pages && cp {d}/{OWNER_PAGE} {rw}/{OWNER_PAGE}" in lines
+    assert f"  git -C {rw} add -- {OWNER_PAGE}" in lines
     assert (
-        "History still holds the name. On the owner's word, in a fresh clone "
-        "(git filter-repo is not installed here):" in lines
+        f'  git -C {rw} -c user.name="$(git -C {d} config --get user.name)" '
+        f'-c user.email="$(git -C {d} config --get user.email)" '
+        "commit -m 'file the redacted owner pages again'" in lines
     )
-    assert f"  git clone --no-local {archive} {archive}-rewrite" in lines
+    order = [
+        next(i for i, line in enumerate(lines) if marker in line)
+        for marker in (
+            "filter-repo --replace-text",
+            " add -- ",
+            "commit -m",
+            "must print 0",
+            "push --force",
+        )
+    ]
+    assert order == sorted(order)
+    assert f"  git -C {d} reflog expire --expire=now --all && git -C {d} gc --prune=now" in lines
+    assert any(
+        line.startswith(f"  git -C {d} log --all -g -p | grep -ciP")
+        and line.endswith("must print 0")
+        for line in lines
+    )
+    assert sum("must print 0" in line for line in lines) == 2
+    copies = [line for line in lines if line.startswith("Delete by hand the copies outside")]
+    assert len(copies) == 1 and "local/literature/runs/<SYMBOL>/<run>/review-dr-x.html" in copies[0]
+    assert (
+        "GitHub may keep the force-pushed-over commits reachable by id until GitHub Support "
+        "removes them (unmeasured)." in lines
+    )
     assert f"republish redacted: {URL_OWNER} from {OWNER_PAGE}" in lines
     assert f"unpublish: {URL_X}" in lines
-    assert any("must print 0" in line and "grep -ciP" in line for line in lines)
+
+
+def test_a_rewritten_owner_page_with_no_artifact_says_so(archive: Path) -> None:
+    (archive / OWNER_PAGE).with_suffix(".artifact").unlink()
+    git(archive, "add", "-A", "--", RUN)
+    git(archive, "commit", "-m", "drop the artifact")
+    result = CliRunner().invoke(
+        app, ["archive-redact", "--name", "Dr X", "--archive", str(archive), "--apply"]
+    )
+    assert result.exit_code == 0, result.output
+    assert f"rewritten, no claude.ai copy recorded: {OWNER_PAGE}" in result.output.splitlines()
+    assert "republish redacted" not in result.output
+
+
+@pytest.mark.parametrize("bit", ["--skip-worktree", "--assume-unchanged"])
+@pytest.mark.parametrize("apply", [False, True])
+def test_a_path_git_hides_refuses_the_removal_and_changes_nothing(
+    archive: Path, bit: str, apply: bool
+) -> None:
+    """R-P4-19: with the bit set, deleting the working copy leaves `git status` clean while HEAD
+    still holds the file, so the plan would list nothing for it."""
+    git(archive, "update-index", bit, "--", X_DECISIONS)
+    (archive / X_DECISIONS).unlink()
+    head = git(archive, "rev-parse", "HEAD")
+    result = CliRunner().invoke(
+        app,
+        ["archive-redact", "--name", "Dr X", "--archive", str(archive)]
+        + (["--apply"] if apply else []),
+    )
+    assert result.exit_code == 2, result.output
+    assert X_DECISIONS in result.output and "update-index --no-skip-worktree" in result.output
+    assert git(archive, "rev-parse", "HEAD") == head
+    assert not (archive / ".git" / "redact-paths.txt").exists()
+    assert "deleted" not in git(archive, "log", "-1", "--format=%s")
+
+
+def test_an_archive_with_no_readme_is_refused_as_a_missing_removals_line_is(archive: Path) -> None:
+    git(archive, "rm", "-q", "--", "README.md")
+    git(archive, "commit", "-m", "no readme")
+    head = git(archive, "rev-parse", "HEAD")
+    result = CliRunner().invoke(
+        app, ["archive-redact", "--name", "Dr X", "--archive", str(archive), "--apply"]
+    )
+    assert result.exit_code == 2, result.output
+    assert "README.md" in result.output
+    assert git(archive, "rev-parse", "HEAD") == head and git(archive, "status", "--porcelain") == ""
+    assert (archive / X_PAGE).exists()
+
+
+def test_a_file_the_scan_cannot_read_is_refused_naming_it(archive: Path) -> None:
+    stray = archive / RUN / "notes.txt"
+    stray.write_text("nothing\n", encoding="utf-8")
+    stray.chmod(0)
+    try:
+        result = CliRunner().invoke(
+            app, ["archive-redact", "--name", "Dr X", "--archive", str(archive)]
+        )
+    finally:
+        stray.chmod(0o644)
+    assert result.exit_code == 2, result.output
+    assert f"{RUN}/notes.txt: cannot be read" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("kept", "files", "pages"),
+    [
+        (1, "1 file", "1 owner page"),
+        (3, "3 files", "2 owner pages"),
+        (0, "0 files", "0 owner pages"),
+    ],
+)
+def test_the_readme_line_counts_with_the_right_singulars(kept: int, files: str, pages: str) -> None:
+    text = redact._readme_with_removal(
+        "## Removals\n\nNone yet.\n", date(2026, 11, 25), kept, int(pages[0])
+    )
+    assert (
+        f"- 2026-11-25: one reviewer removed: {files} deleted, their name and notes redacted "
+        f"from {pages}." in text.splitlines()
+    )
 
 
 @pytest.mark.parametrize("readme", ["# R\n", "# R\n\n## Removals\n\n## Removals\n\nNone yet.\n"])
@@ -493,6 +612,21 @@ def test_a_failing_commit_restores_every_touched_path_index_included(archive: Pa
     hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     hook.chmod(0o755)
     with pytest.raises(GitError, match="commit failed"):
+        apply_redact(archive, "Dr X", plan_redact(archive, "Dr X"), date(2026, 11, 25))
+    _unchanged(archive, head)
+    assert not (archive / ".git" / "redact-paths.txt").exists()
+
+
+def test_a_rescan_that_cannot_read_a_file_restores_every_touched_path(
+    archive: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = git(archive, "rev-parse", "HEAD")
+
+    def unreadable(top: Path, name: str) -> tuple[str, ...]:
+        raise ArchiveError("x.txt: cannot be read")
+
+    monkeypatch.setattr(redact, "_rescan", unreadable)
+    with pytest.raises(GitError, match="rescan the archive: x.txt: cannot be read"):
         apply_redact(archive, "Dr X", plan_redact(archive, "Dr X"), date(2026, 11, 25))
     _unchanged(archive, head)
     assert not (archive / ".git" / "redact-paths.txt").exists()

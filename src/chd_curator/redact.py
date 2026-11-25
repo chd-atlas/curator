@@ -20,21 +20,27 @@ The plan:
 * ``elsewhere``: every file under the archive (``.git`` excluded, README included) that
   :func:`name_pattern` still matches once the deletes and rewrites are done, and every
   surviving file whose lowercased path holds the name's file-name slug (``review_page.slug``) as
-  a whole token, so a clinician spelled "Dr. X" is found by the ``--dr-x`` in their file
-  names. Redaction never edits the owner's own notes or any other prose, so a name found
-  there stops ``--apply`` until a curator edits it.
+  a whole token (``-`` is a boundary, so ``dr-x`` matches ``dr-x-smith`` but not ``dr-xavier``),
+  so a clinician spelled "Dr. X" is found by the ``--dr-x`` in their file names. Redaction never
+  edits the owner's own notes or any other prose, so a name found there stops ``--apply`` until a
+  curator edits it.
 
-An owner page whose data cannot be read is refused (:class:`ArchiveError`), never skipped.
-:func:`apply_redact` needs a clean checkout, deletes, rewrites, adds a line under README's
-``## Removals``, scans again (:func:`_rescan`), and commits with the archive's own identity
-through :func:`archive.commit`. When the scan finds the name, or a write fails, it restores
-every touched path with ``git checkout HEAD -- <paths>`` and raises :class:`GitError`.
+An owner page whose data cannot be read, and any file the scan cannot read, is refused
+(:class:`ArchiveError`), never skipped. So is an archive in which a path carries a
+skip-worktree or assume-unchanged bit (``git ls-files -v``: ``S`` or a lowercase tag): git then
+hides a working-tree change from ``git status``, so the plan could list nothing for a file
+``HEAD`` still holds. :func:`apply_redact` needs a clean checkout, deletes, rewrites, adds a line
+under README's ``## Removals``, scans again (:func:`_rescan`), and commits with the archive's own
+identity through :func:`archive.commit`. When the scan finds the name, a write fails, or the
+commit fails, it restores every touched path with ``git checkout HEAD -- <paths>`` and raises
+:class:`GitError`.
 
 History still holds the name after that commit. ``apply_redact`` leaves
-``.git/redact-expressions.txt`` and ``.git/redact-paths.txt`` for a history rewrite, and
-:func:`procedure` is the text the command prints for the owner to run. ``git filter-repo`` is
-not installed where this was written, so that procedure has never been run: it is unmeasured
-until the first removal, which starts with ``uv tool install git-filter-repo``.
+``.git/redact-expressions.txt`` and ``.git/redact-paths.txt`` (the deleted files and the rewritten
+owner pages, whose original blobs hold the clinician's notes) for a history rewrite, and
+:func:`procedure` is the text the command prints for the owner to run. That procedure has not been
+run: it is unmeasured as of 2026-11-25, and ``git filter-repo`` is not installed where it was
+written.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -189,7 +196,10 @@ def _matches(
             continue
         text = rewritten.get(rel)
         if text is None:
-            text = path.read_bytes().decode("utf-8", errors="replace")
+            try:
+                text = path.read_bytes().decode("utf-8", errors="replace")
+            except OSError as exc:
+                raise ArchiveError(f"{rel}: cannot be read: {exc}") from exc
         if pattern.search(text):
             found.append(rel)
             continue
@@ -203,6 +213,25 @@ def _matches(
     return tuple(found)
 
 
+def _refuse_hidden(top: Path) -> None:
+    """Refuse an archive in which git has been told to hide a path's working-tree state."""
+    listed = _git(top, "ls-files", "-v", "-z")
+    if listed.returncode != 0:
+        raise GitError(f"git ls-files failed: {listed.stderr.strip()}")
+    hidden = sorted(
+        entry[2:]
+        for entry in listed.stdout.split("\0")
+        if len(entry) > 2 and (entry[0] == "S" or entry[0].islower())
+    )
+    if hidden:
+        raise ArchiveError(
+            "git hides changes to these paths (skip-worktree or assume-unchanged), so the plan "
+            f"cannot be trusted: {', '.join(hidden)}; clear it with `git -C "
+            f"{shlex.quote(str(top))} update-index --no-skip-worktree --no-assume-unchanged -- "
+            f"<paths>` and run again"
+        )
+
+
 def _rescan(top: Path, name: str) -> tuple[str, ...]:
     """The files on disk that still name ``name`` (after the changes were made)."""
     return _matches(top, name, frozenset(), {})
@@ -211,6 +240,7 @@ def _rescan(top: Path, name: str) -> tuple[str, ...]:
 def plan_redact(archive: Path, name: str) -> RedactPlan:
     """What removing ``name`` would delete, rewrite, republish, unpublish and leave behind."""
     top = check_archive(archive)
+    _refuse_hidden(top)
     key = _key(name)
     if not key:
         raise ArchiveError("--name is empty")
@@ -268,7 +298,11 @@ def plan_redact(archive: Path, name: str) -> RedactPlan:
     )
 
 
-def _readme_with_removal(text: str, today: date, owner_pages: int) -> str:
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
+def _readme_with_removal(text: str, today: date, deleted: int, owner_pages: int) -> str:
     lines = text.split("\n")
     heads = [i for i, line in enumerate(lines) if line == _HEADING]
     if len(heads) != 1:
@@ -278,8 +312,8 @@ def _readme_with_removal(text: str, today: date, owner_pages: int) -> str:
     start = heads[0] + 1
     end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
     entry = (
-        f"- {today.isoformat()}: one reviewer's files deleted and their name redacted "
-        f"from {owner_pages} owner pages."
+        f"- {today.isoformat()}: one reviewer removed: {_plural(deleted, 'file')} deleted, their "
+        f"name and notes redacted from {_plural(owner_pages, 'owner page')}."
     )
     placeholder = [i for i in range(start, end) if lines[i].strip() == "None yet."]
     if placeholder:
@@ -301,10 +335,11 @@ def apply_redact(archive: Path, name: str, plan: RedactPlan, today: date) -> str
 
     Refuses (:class:`ArchiveError`, nothing changed) an archive that is unclean or has no
     identity, a plan that is not what the archive now yields, a name still found elsewhere, a
-    removal that touches nothing, a README without exactly one ``## Removals`` line, and a
-    ``.git/redact-*.txt`` left by an earlier removal (finish its history rewrite first). A write
-    that fails, a scan that still finds the name, or a commit that fails restores every touched
-    path (``git checkout HEAD``, index included) and raises :class:`GitError`.
+    removal that touches nothing, a missing README or one without exactly one ``## Removals``
+    line, a path git hides (skip-worktree or assume-unchanged), and a ``.git/redact-*.txt`` left
+    by an earlier removal (finish its history rewrite first). A write that fails, a scan that
+    still finds the name, or a commit that fails restores every touched path (``git checkout
+    HEAD``, index included) and raises :class:`GitError`.
     """
     top, _ = open_archive(archive)
     require_identity(top)
@@ -329,8 +364,10 @@ def apply_redact(archive: Path, name: str, plan: RedactPlan, today: date) -> str
     if not plan.delete and not plan.rewrite:
         raise ArchiveError("no file names this reviewer: nothing to remove")
     key = _key(name)
-    readme = (top / _README).read_bytes().decode("utf-8")
-    new_readme = _readme_with_removal(readme, today, len(plan.rewrite)).encode("utf-8")
+    readme = _read_text(top / _README)
+    new_readme = _readme_with_removal(readme, today, len(plan.delete), len(plan.rewrite)).encode(
+        "utf-8"
+    )
     pages = {rel: redacted_page(_read_text(top / rel), key).encode("utf-8") for rel in plan.rewrite}
     touched = [*plan.delete, *plan.rewrite, _README]
     pattern = name_pattern(name)
@@ -341,9 +378,9 @@ def apply_redact(archive: Path, name: str, plan: RedactPlan, today: date) -> str
             write_bytes_atomically(top / rel, content)
         write_bytes_atomically(top / _README, new_readme)
         left = _rescan(top, name)
-    except OSError as exc:
+    except (OSError, ArchiveError) as exc:
         _restore(top, touched)
-        raise GitError(f"cannot change the archive: {exc}") from exc
+        raise GitError(f"cannot change or rescan the archive: {exc}") from exc
     if left:
         _restore(top, touched)
         raise GitError(f"the name is still found after redaction in {', '.join(left)}; restored")
@@ -362,7 +399,7 @@ def apply_redact(archive: Path, name: str, plan: RedactPlan, today: date) -> str
             f"regex:(?i){pattern.pattern}==>{REMOVED}\n", encoding="utf-8"
         )
         (gitdir / "redact-paths.txt").write_text(
-            "".join(f"{p}\n" for p in plan.delete), encoding="utf-8"
+            "".join(f"{p}\n" for p in [*plan.delete, *plan.rewrite]), encoding="utf-8"
         )
     except OSError as exc:
         raise GitError(
@@ -372,26 +409,56 @@ def apply_redact(archive: Path, name: str, plan: RedactPlan, today: date) -> str
 
 
 def procedure(archive: Path, name: str, plan: RedactPlan) -> list[str]:
-    """The lines printed after a removal: the history rewrite and the pages to republish."""
+    """The lines printed after a removal: the history rewrite and the copies to take down.
+
+    The rewrite deletes the clinician's files and the rewritten owner pages from all of history
+    (their original blobs hold the clinician's notes), then re-adds the redacted pages in one
+    commit made with the checkout's own identity. Afterwards the checkout's reflog is expired,
+    because it still holds the name. The copies outside the archive and GitHub's retention of
+    force-pushed-over commits are named, not handled. The last lines say which claude.ai pages to
+    republish (each rewritten owner page's ``.artifact`` URL, or that none is recorded) and which
+    to unpublish (the clinician's own pages). Never run, so unmeasured as of 2026-11-25.
+    """
     d = str(archive.resolve())
+    rw = f"{d}-rewrite"
     pattern = shlex.quote(name_pattern(name).pattern)
-    lines = [
-        "History still holds the name. On the owner's word, in a fresh clone "
-        "(git filter-repo is not installed here):",
-        f"  git clone --no-local {d} {d}-rewrite",
-        f"  git -C {d}-rewrite filter-repo --replace-text {d}/.git/redact-expressions.txt "
+    lines = ["History still holds the name. On the owner's word, in a fresh clone:"]
+    if shutil.which("git-filter-repo") is None:
+        lines.append("git filter-repo is not installed: uv tool install git-filter-repo")
+    lines += [
+        f"  git clone --no-local {d} {rw}",
+        f"  git -C {rw} filter-repo --replace-text {d}/.git/redact-expressions.txt "
         f"--replace-message {d}/.git/redact-expressions.txt --invert-paths "
         f"--paths-from-file {d}/.git/redact-paths.txt",
-        f"  git -C {d}-rewrite log --all -p | grep -ciP {pattern}      must print 0",
-        f"  git -C {d}-rewrite push --force <origin url> main",
+    ]
+    if plan.rewrite:
+        for rel in plan.rewrite:
+            lines.append(f"  mkdir -p {rw}/{Path(rel).parent} && cp {d}/{rel} {rw}/{rel}")
+        lines += [
+            f"  git -C {rw} add -- {' '.join(plan.rewrite)}",
+            f'  git -C {rw} -c user.name="$(git -C {d} config --get user.name)" '
+            f'-c user.email="$(git -C {d} config --get user.email)" '
+            "commit -m 'file the redacted owner pages again'",
+        ]
+    lines += [
+        f"  git -C {rw} log --all -p | grep -ciP {pattern}      must print 0",
+        f"  git -C {rw} push --force <origin url> main",
         f"  git -C {d} fetch origin && git -C {d} reset --hard origin/main "
         f"&& rm {d}/.git/redact-*.txt",
-        "The filter-repo line is unmeasured until the first removal; "
-        "a removal starts with `uv tool install git-filter-repo`.",
+        f"  git -C {d} reflog expire --expire=now --all && git -C {d} gc --prune=now",
+        f"  git -C {d} log --all -g -p | grep -ciP {pattern}      must print 0",
+        "Delete by hand the copies outside the archive: the clinician's page and the file they "
+        "sent back, on this machine (for example the atlas's "
+        f"local/literature/runs/<SYMBOL>/<run>/review-{slug(name)}.html and wherever the returned "
+        "file was saved).",
+        "GitHub may keep the force-pushed-over commits reachable by id until GitHub Support "
+        "removes them (unmeasured).",
     ]
     for rel in plan.rewrite:
         url = _url((Path(d) / rel).with_suffix(".artifact"))
         if url:
             lines.append(f"republish redacted: {url} from {rel}")
+        else:
+            lines.append(f"rewritten, no claude.ai copy recorded: {rel}")
     lines.extend(f"unpublish: {url}" for url in plan.unpublish)
     return lines
