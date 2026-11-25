@@ -163,6 +163,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const STORE_SAVED = ["Saved", "to", "the", "page's", "store"].join(" ");
   const LABEL = { approve: OWNER ? "Approve" : "Agree", fix: "Needs a fix", later: "Ask later" };
   const PAST = { approve: OWNER ? "approved" : "agreed", fix: "needs a fix", later: "ask later" };
+  const BUILT = DATA.page.built_on;
   const state = { decisions: {}, session: {} };
   let db = null, mode = "pending", writable = true;   // mode: pending | store | file
   let openId = null, openSince = null;
@@ -174,6 +175,19 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const fmt = (ms) => { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
   const now = () => new Date().toISOString();
   const items = [{ id: "triage" }, ...DATA.findings.map((f) => ({ id: f.id }))];
+  // A triage state belongs to the page it was made on: its decision and flips were made against that
+  // page's papers and the earlier verdicts it listed. Every triage write is stamped with this page's
+  // built_on; an entry restored without that stamp keeps only the papers this page asks to be read,
+  // and a restored session that is not stamped for this page is not finished.
+  const NEEDED = new Set(DATA.papers_needed.map((p) => p.pmid));
+  function ownEntry(id, entry) {
+    if (id !== "triage" || !entry || entry.built_on === BUILT) return entry;
+    return { papers_seen: (Array.isArray(entry.papers_seen) ? entry.papers_seen : []).filter((p) => NEEDED.has(p)) };
+  }
+  function ownSession(session) {
+    if (!session || !session.finished_at || (session.page && session.page.built_on === BUILT)) return session;
+    return { ...session, finished_at: null };
+  }
   const triage = () => state.decisions.triage || {};
   // The owner's own open flips from the archive, ticked again until the owner changes the flips here.
   const keptFlips = () => OWNER && DATA.triage_earlier ? DATA.triage_earlier.flips.filter((x) => x.role === "owner").map((x) => ({ pmid: x.pmid, to: x.to, note: x.note })) : [];
@@ -432,6 +446,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   function docBody(id, extra) {
     const prev = state.decisions[id] || {};
     const body = { ...prev, ...extra, active_ms: Math.round(activeMs(id)), updated_at: now() };
+    if (id === "triage") body.built_on = BUILT;
     if (!body.first_opened_at) body.first_opened_at = now();
     // a decision made now takes the card's current digest; saving time on an older decision keeps its own
     if (id !== "triage" && extra.decision) body.shown_digest = cardOf(id).shown_digest;
@@ -470,7 +485,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       openId = id; openSince = Date.now();
       // first_opened_at is when the card was first opened here; a value already saved is kept
       const held = state.decisions[id] || {};
-      if (!held.first_opened_at) state.decisions[id] = { ...held, first_opened_at: now() };
+      if (!held.first_opened_at) state.decisions[id] = { ...held, first_opened_at: now(), ...(id === "triage" ? { built_on: BUILT } : {}) };
     } else if (openId === id) {
       closeOpen(true);
     }
@@ -535,7 +550,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const seen = new Set(triage().papers_seen || []);
     if (box.checked) seen.add(box.dataset.seen); else seen.delete(box.dataset.seen);
     const prev = state.decisions.triage || {};
-    state.decisions.triage = { ...prev, papers_seen: [...seen].sort(), active_ms: Math.round(activeMs("triage")), updated_at: now() };
+    state.decisions.triage = { ...prev, papers_seen: [...seen].sort(), active_ms: Math.round(activeMs("triage")), updated_at: now(), built_on: BUILT };
     write("review/triage", state.decisions.triage);
   });
 
@@ -736,14 +751,14 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
             for (const id of Object.keys(saved.decisions)) {
               // a card touched while the store was awaited: a decision made then is the newer choice and
               // wins whole; otherwise the saved entry wins and gains the time saved meanwhile
-              const kept = saved.decisions[id], made = state.decisions[id];
+              const kept = ownEntry(id, saved.decisions[id]), made = state.decisions[id];
               if (!made) { state.decisions[id] = kept; continue; }
               const first = [kept.first_opened_at, made.first_opened_at].filter(Boolean).sort()[0];
               const merged = made.decision ? { ...made } : { ...kept, active_ms: ms(kept.active_ms) + ms(made.active_ms) };
               if (first) merged.first_opened_at = first;
               state.decisions[id] = merged;
             }
-            if (!state.session.started_at && saved.session) state.session = { ...saved.session, ...state.session };
+            if (!state.session.started_at && saved.session) state.session = { ...ownSession(saved.session), ...state.session };
           }
         } catch (e) { /* nothing saved, or storage is blocked */ }
         if (Object.keys(queued).length) persistLocal();
@@ -758,7 +773,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     for (const [path, body] of Object.entries(queued)) { delete queued[path]; write(path, body); }
     storeState("Connecting to the page's store…");
     db.collection("review").onSnapshot((snap) => {
-      for (const d of snap.docs) state.decisions[d.id] = d.data();
+      for (const d of snap.docs) state.decisions[d.id] = ownEntry(d.id, d.data());
       // once "I'm done" is pressed, the line that says what to do next is not replaced by a bare "saved"
       storeState(snap.metadata.hasPendingWrites ? "Saving…" : state.session.finished_at ? finishedLine() : STORE_SAVED);
       if (!openId) render(); else updateBar();
@@ -766,7 +781,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     db.doc("session/main").onSnapshot((snap) => {
       if (!snap.exists) return;
       const was = state.session.finished_at;
-      state.session = snap.data();
+      state.session = ownSession(snap.data());
       if (state.session.finished_at && !was) storeState(finishedLine());
     }, () => {});
   })();

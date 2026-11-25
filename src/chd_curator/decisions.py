@@ -16,7 +16,10 @@ be a paper the page asked to be read. A decided card's ``shown_digest`` must equ
 for that card: the page stores the card's digest with each decision and shows an older one as
 "decided on an earlier version". Such a card is LEFT OUT of the decisions file and named in
 :attr:`Converted.stale`, as the page's own download leaves it out (R-P1-44). A decision stamped
-after ``finished_at`` is refused: it was changed after "I'm done". Notes are copied untouched.
+after ``finished_at`` is refused: it was changed after "I'm done".
+A ``review/triage`` document stamped with another page's ``built_on`` is refused (the page
+stamps every triage write with its own); one with no stamp is read as before. Notes are copied
+untouched.
 
 Exit codes at the CLI: :class:`ExportError` carries ``exit_code`` 1 when the review is not
 finished (or changed after it was) and 2 for everything else.
@@ -199,6 +202,12 @@ def decisions_from_export(
             }
         )
     triage_doc = docs.get("triage", {})
+    made_on = triage_doc.get("built_on")
+    if made_on is not None and made_on != provenance["built_on"]:
+        raise ExportError(
+            f"review/triage was made on another page (built_on {made_on!r}, this page's is "
+            f"{provenance['built_on']!r}): a triage state belongs to the page it was made on"
+        )
     for flip in triage_doc.get("flips", []):
         pmid = flip.get("pmid") if isinstance(flip, dict) else None
         if pmid not in triage_now:

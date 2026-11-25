@@ -13,7 +13,7 @@ from typing import Any
 from chd_curator import review_page
 from chd_curator.archive import compact_utc
 
-BUILT_ON = "2026-11-19T12:00:00+00:00"
+BUILT_ON = "2026-11-19T09:00:00+00:00"
 SHA = "sha256:" + "a" * 64
 
 

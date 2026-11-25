@@ -1591,7 +1591,7 @@ TRIAGE_DRIVER = """
   await wait(300);
   const root = document.getElementById("root");
   const triage = () => root.querySelector('details.card[data-id="triage"]');
-  triage().open = true; await wait(50);
+  if (!window.__idle) { triage().open = true; await wait(50); }
   if (window.__flip) {
     const pmid = window.__flip;
     root.querySelector(`[data-flip="${pmid}"]`).click(); await wait(50);
@@ -1599,13 +1599,15 @@ TRIAGE_DRIVER = """
     root.querySelector(`[data-record="${pmid}"]`).click(); await wait(50);
     triage().open = true; await wait(50);
   }
-  root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await wait(50);
+  if (!window.__idle) {
+    root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await wait(50);
+  }
   const decided = () => root.querySelector('details.card[data-id="triage"] .sum-chips').textContent;
   const afterApprove = decided();
   if (window.__undo) {
     root.querySelector(`[data-unflip="${window.__undo}"]`).click(); await wait(50);
   }
-  document.getElementById("finish").click(); await wait(300);
+  if (!window.__unfinished) { document.getElementById("finish").click(); await wait(300); }
   document.getElementById("download").click(); await wait(300);
   let kept = null;
   try { kept = Object.fromEntries(Object.entries(localStorage)); } catch (e) { /* none */ }
@@ -1618,9 +1620,19 @@ TRIAGE_DRIVER = """
 
 
 def drive_triage(
-    page: Path, *, store: bool, undo: str = "", flip_here: str = "", seed: Any = None
+    page: Path,
+    *,
+    store: bool,
+    undo: str = "",
+    flip_here: str = "",
+    seed: Any = None,
+    idle: bool = False,
+    unfinished: bool = False,
 ) -> dict[str, Any]:
-    """The real page, in store or file mode, approving its triage card (and undoing a flip)."""
+    """The real page, in store or file mode, approving its triage card (and undoing a flip).
+
+    With ``idle`` it touches nothing: it presses "I'm done" and Download my review, as an owner
+    does who opens a page, changes nothing and sends it."""
     text = page.read_text(encoding="utf-8")
     marker = '<script type="application/json" id="data">'
     fake = STORE_FAKE if store else FILE_FAKE
@@ -1628,6 +1640,7 @@ def drive_triage(
         fake = fake.replace("window.__store = {};", f"window.__store = {json.dumps(seed)};")
     head = (
         f"window.__undo = {json.dumps(undo)};window.__flip = {json.dumps(flip_here)};"
+        f"window.__idle = {json.dumps(idle)};window.__unfinished = {json.dumps(unfinished)};"
         f"{TICKING_CLOCK}{fake}"
     )
     if not store and seed is not None:
@@ -1724,3 +1737,133 @@ def test_undoing_a_ticked_again_flip_after_the_verdict_clears_the_verdict(
     if store:
         assert dump["store"]["review/triage"]["flips"] == []
         assert "decision" not in dump["store"]["review/triage"]
+
+
+def two_pages_of_one_literature_file(
+    root: Path, stub: Path, archive: Path, tmp: Path
+) -> tuple[Path, Path]:
+    """Page 1 (copied aside) and page 2, built later from the same literature file."""
+    code, out = build(root, stub, "--archive", str(archive))
+    assert code == 0, out
+    first = tmp / "page1.html"
+    shutil.copy(Path(out.strip().splitlines()[-1]), first)
+    code, out = build(root, stub, "--archive", str(archive))
+    assert code == 0, out
+    second = Path(out.strip().splitlines()[-1])
+    one, two = data_of(first)["page"], data_of(second)["page"]
+    assert one["literature_sha256"] == two["literature_sha256"]
+    assert one["built_on"] < two["built_on"]
+    return first, second
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_a_triage_state_belongs_to_the_page_it_was_made_on(
+    root: Path, stub_atlas: Path, tmp_path: Path, atlas_root: Path, store: bool
+) -> None:
+    """R-P4-18. The owner approves page 1's triage card; page 2 (same literature file, built
+    later) opens in the same browser or the same store, and the owner touches nothing. Page 2's
+    card is undecided, the owner's open flip is ticked, the file carries no triage verdict, and
+    once filed it closes nothing a clinician flipped."""
+    archive = flipped_archive(tmp_path)
+    page1, page2 = two_pages_of_one_literature_file(root, stub_atlas, archive, tmp_path)
+    first = drive_triage(page1, store=store)
+    assert "approved" in first["afterApprove"]
+    seed = first["store"] if store else first["kept"]
+    second = drive_triage(page2, store=store, seed=seed, idle=True)
+    chip = re.search(
+        r'data-id="triage".*?<div class="sum-chips">(.*?)</div></summary>', second["dom"], re.S
+    )
+    assert chip and "approved" not in chip.group(1) and "1 flipped" in chip.group(1)
+    rows = triage_rows(second["dom"])
+    assert "flipped to excluded" in rows[P2] and "flipped to" not in rows[P1]
+    download = json.loads(second["download"])
+    assert download["triage"] is None
+    assert download["session"]["finished_at"] > data_of(page2)["page"]["built_on"]
+    runner = CliRunner()
+    assert (
+        runner.invoke(
+            app,
+            [
+                "archive-page",
+                "TBX5",
+                "--run",
+                "r1",
+                "--page",
+                str(page2),
+                "--archive",
+                str(archive),
+            ],
+        ).exit_code
+        == 0
+    )
+    decisions = tmp_path / "decisions.json"
+    decisions.write_text(second["download"], encoding="utf-8")
+    done = runner.invoke(
+        app,
+        ["archive-decisions", "TBX5", "--run", "r1", "--decisions", str(decisions)]
+        + ["--archive", str(archive), "--root", str(root)],
+    )
+    assert done.exit_code == 0, done.output
+    got = runner.invoke(
+        app,
+        ["archive-state", "TBX5", "--archive", str(archive), "--root", str(root), "--json"]
+        + ["--atlas-cli", str(stub_atlas)],
+    )
+    assert got.exit_code == 0, got.output
+    rows_by_name = {r["name"]: r for r in json.loads(got.output)["triage"]["flips"]}
+    assert (rows_by_name["Dr X"]["pending"], rows_by_name["Dr X"]["closed_by"]) == (True, None)
+    assert rows_by_name["E.A.M"]["pending"] is True
+
+
+@pytest.mark.parametrize("stamp", ["this page", "another page", "none"])
+def test_restoring_a_triage_entry_and_a_session_keeps_only_what_this_page_made(
+    root: Path, stub_atlas: Path, stamp: str
+) -> None:
+    """R-P4-18: from this browser, an entry or session not stamped with this page's built_on keeps
+    only the papers this page asks to be read, and a session not stamped for it is not finished."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    info = data_of(page)["page"]
+    built = {"this page": info["built_on"], "another page": "2020-01-01T00:00:00.000Z"}.get(stamp)
+    triage = {
+        "decision": "fix",
+        "note": "n",
+        "decided_at": "2026-11-19T10:00:00Z",
+        "flips": [{"pmid": P1, "to": "excluded", "note": "r"}],
+        "papers_seen": [P2, "PMID:99999999"],
+        **({"built_on": built} if built else {}),
+    }
+    session = {
+        "started_at": "2026-11-19T09:00:00.000Z",
+        "finished_at": "2026-11-19T10:00:00.000Z",
+        **({"page": {"built_on": built}} if built else {}),
+    }
+    saved = json.dumps({"decisions": {"triage": triage}, "session": session})
+    key = f"chd-review:{info['literature_sha256']}:owner:e-a-m"
+    head = f"localStorage.setItem({json.dumps(key)},{json.dumps(saved)});"
+    restored = selftest_output(dump_dom(_persist_page(page, head), "selftest-restore"))
+    assert restored["session"]["started_at"] == "2026-11-19T09:00:00.000Z"
+    if stamp == "this page":
+        assert restored["session"]["finished_at"] == "2026-11-19T10:00:00.000Z"
+        assert restored["triage"]["decision"] == "fix"
+        assert [f["pmid"] for f in restored["triage"]["flips"]] == [P1]
+        assert restored["papers_seen"] == sorted([P2, "PMID:99999999"])
+    else:
+        assert restored["session"]["finished_at"] is None
+        assert restored["triage"] is None
+        assert restored["papers_seen"] == [P2]
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_a_session_finished_on_another_page_is_not_finished_here(
+    root: Path, stub_atlas: Path, tmp_path: Path, store: bool
+) -> None:
+    """R-P4-18: page 1's "I'm done" is restored with its stamp; on page 2 the session is open."""
+    archive = flipped_archive(tmp_path)
+    page1, page2 = two_pages_of_one_literature_file(root, stub_atlas, archive, tmp_path)
+    first = drive_triage(page1, store=store)
+    assert json.loads(first["download"])["session"]["finished_at"] is not None
+    seed = first["store"] if store else first["kept"]
+    second = drive_triage(page2, store=store, seed=seed, idle=True, unfinished=True)
+    assert json.loads(second["download"])["session"]["finished_at"] is None

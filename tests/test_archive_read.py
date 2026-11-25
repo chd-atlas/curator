@@ -313,15 +313,12 @@ def test_a_decision_takes_the_flips_of_the_page_it_was_made_on_not_another_in_th
     # may carry different names; every owner file is still keyed "owner"). One shows P.
     base = {"built_on": BUILT_ON, "sha": SHA, "name": "E.A.M"}
     other = {
-        "built_on": "2026-11-19T12:30:00+00:00",
+        "built_on": "2026-11-19T10:30:00+00:00",
         "sha": "sha256:" + "b" * 64,
         "name": "Dr Z",
     }
-    variants = [dict(base), {**base, differs: other[differs]}]
-    if shower == "second":
-        variants.reverse()
-    shows_p = [variants[0], variants[1]][0 if shower == "first" else 1]
-    quiet = variants[1] if shower == "first" else variants[0]
+    plain, changed = dict(base), {**base, differs: other[differs]}
+    shows_p, quiet = (plain, changed) if shower == "first" else (changed, plain)
     pages = archive / "TBX5" / "r1" / "pages"
     pages.mkdir(parents=True)
     for v, extra in ((shows_p, shows(("Dr X", "second_opinion", P, T0))), (quiet, {})):
@@ -610,3 +607,27 @@ def test_archive_state_refuses_another_gene_and_a_dirty_archive(
     code, out = run_state(archive, root, stub_atlas)
     assert code == 2
     assert "uncommitted" in out
+
+
+def test_a_file_finished_before_its_page_was_built_is_refused_by_the_reader(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    """The reader refuses what filing refuses: a session that ended before its page existed."""
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("approve"),
+        built_on="2026-11-19T10:30:00+00:00")  # fmt: skip
+    commit_all(archive)
+    with pytest.raises(ArchiveError, match="before its page was built"):
+        view(archive, atlas_root)
+
+
+def test_an_owner_file_finished_before_the_flip_it_claims_to_close_closes_nothing(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    """A page may be said to show a flip filed after the owner finished (a stale restore did
+    that): such a file cannot have closed it, whatever its page's data says."""
+    put(archive, tmp_path, "Dr X", "second_opinion", T2, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "E.A.M", "owner", T1, [], tri("approve"), built_on=T0,
+        page_extra=shows(("Dr X", "second_opinion", P, T2)))  # fmt: skip
+    commit_all(archive)
+    (row,) = flip_rows(archive, atlas_root, UNDECIDED)
+    assert (row["pending"], row["closed_by"]) == (True, None)

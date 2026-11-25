@@ -25,8 +25,8 @@ mention the paper says nothing about it. A flip is *pending* while its paper is 
 literature file's triage with a decision other than the flip's ``to`` (a paper absent from the
 triage is not pending), unless an owner has *closed* it. The owner closes a flip by a triage
 verdict that is ``approve`` or ``fix`` (never ``later``), made on a filed page that showed that
-flip, whose own flips do not include the paper. A page showed a flip when its data has
-``archive.read`` true and lists ``(reviewer key, pmid, finished_at)`` in
+flip, in a file that finished after the flip did, whose own flips do not include the paper. A
+page showed a flip when its data has ``archive.read`` true and lists ``(reviewer key, pmid, finished_at)`` in
 ``triage_earlier.flips``; a page without ``archive.read`` true showed nothing. A clinician's
 verdict never closes a flip.
 """
@@ -375,6 +375,7 @@ def _flips(verdicts: Iterable[Verdict], triage: Mapping[str, str]) -> list[dict[
                 c.file
                 for c in closers
                 if (key, pmid, v.finished_at) in c.shown
+                and c.finished_at > v.finished_at
                 and pmid not in {x["pmid"] for x in c.flips}
             ),
             None,
@@ -410,9 +411,10 @@ def state(
     file), whatever their later triage verdicts say, sorted owner first, then by key and pmid.
     A flip's ``closed_by`` is the earliest (by ``finished_at``, then file) owner triage verdict
     that closed it, else None: an ``approve`` or ``fix`` (never ``later``) made on a filed page
-    that showed this flip (same reviewer key, pmid and instant), whose own flips do not include
-    the paper. A flip is ``pending`` when it is not closed, its pmid is in ``triage`` (a flip of
-    a pmid absent from it is not pending) and that decision is not the flip's ``to``.
+    that showed this flip (same reviewer key, pmid and instant), in a file whose ``finished_at``
+    is after the flip's, whose own flips do not include the paper. A flip is ``pending`` when it
+    is not closed, its pmid is in ``triage`` (a flip of a pmid absent from it is not pending) and
+    that decision is not the flip's ``to``.
     """
     mine = latest(view.verdicts)
     ids = sorted({v.finding for v in mine.values() if v.finding != "triage"})

@@ -467,3 +467,24 @@ def test_an_export_with_no_finding_documents_still_prints_its_count_line(
     assert read(out)["findings"] == []
     assert "0 decisions: 0 approve, 0 fix, 0 later" in output.splitlines()[-2]
     assert "3 cards on the page" in output
+
+
+@pytest.mark.parametrize("stamped", ["this page", "another page"])
+def test_a_triage_document_stamped_for_another_page_is_refused(
+    root: Path, export: Path, page: Path, tmp_path: Path, stamped: str
+) -> None:
+    """R-P4-18: a triage state restored from page 1 into page 2's store must not become page 2's."""
+    built = page_data(page)["page"]["built_on"]
+    edit(
+        export,
+        "review/triage",
+        built_on=built if stamped == "this page" else "2020-01-01T00:00:00+00:00",
+    )
+    code, output = convert(root, export, tmp_path / "decisions.json")
+    if stamped == "this page":
+        assert code == 0, output
+    else:
+        assert code == 2
+        assert "review/triage" in output and "was made on another page" in output
+        assert "2020-01-01T00:00:00+00:00" in output
+        assert not (tmp_path / "decisions.json").exists()
