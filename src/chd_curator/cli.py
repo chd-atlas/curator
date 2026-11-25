@@ -1124,7 +1124,8 @@ def archive_page_command(
     committed). Prints one line per path, then `committed <sha>` when it committed. Exit 2 for
     a refusal (an archive that is not the top of a checkout with its marker committed, no
     `user.name`/`user.email` in the archive's own config, a page for another symbol, a bad id,
-    reviewer name or `--artifact`, a different file already filed, a path git ignores); exit 1
+    reviewer name or `--artifact`, a second opinion whose name reads as `owner`, a different file
+    already filed, a path git ignores); exit 1
     when git fails, a file cannot be written, or a commit leaves a path out of HEAD. Never
     pushes.
     """
@@ -1151,7 +1152,7 @@ def archive_decisions_command(
     """File a finished decisions file beside the page it was made on, and commit it.
 
     The file is filed byte for byte as
-    `<SYMBOL>/<run>/decisions/<finished_at in UTC>--<reviewer>.json`.
+    `<SYMBOL>/<run>/decisions/<finished_at in UTC>--<reviewer slug>.json`.
     Append-only against what is committed: a different file at that name is refused (the
     message names it), an identical one prints `already filed` (restored from the commit if the
     working copy differs, and committed if it was never committed). Prints `filed <path>` or
@@ -1268,9 +1269,10 @@ def agreement_command(
     With no symbol it reads every top-level directory of the archive that is not a
     dot-directory (one that is not a gene symbol is refused). `--json` prints the whole
     report instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
-    decisions file HEAD does not hold, a file that fails the schema, is unfinished, is for
-    another symbol, names a finding twice, is a second opinion keyed as the owner, or is
-    misnamed, or two genes under one symbol); exit 1 when git fails. Unlike `archive-state`
+    non-JSON file under a decisions directory, a decisions file HEAD does not hold, a file
+    that is not valid JSON, fails the schema, is unfinished, is for another symbol, names a
+    finding twice, is a second opinion keyed as the owner, or is misnamed, or two genes under
+    one symbol); exit 1 when git fails. Unlike `archive-state`
     it does not compare the archive's gene with the atlas's. Writes nothing, and the report
     is printed nowhere else.
     """

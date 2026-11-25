@@ -270,6 +270,24 @@ def test_read_archive_refuses_a_decisions_file_that_is_not_in_head(
         view(archive, atlas_root)
 
 
+def test_the_reader_reads_head_not_a_working_copy_git_was_told_to_ignore(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    path = put(
+        archive, tmp_path, "E.A.M", "owner", "2026-11-19T12:00:00Z",
+        [finding(G, "approve", D1, "2026-11-19T12:00:00Z")],
+    )  # fmt: skip
+    commit_all(archive)
+    git(archive, "update-index", "--assume-unchanged", str(path.relative_to(archive)))
+    doc = json.loads(path.read_text("utf-8"))
+    doc["findings"][0]["decision"] = "fix"
+    doc["findings"][0]["note"] = "edited"
+    path.write_text(json.dumps(doc), "utf-8")
+    assert git(archive, "status", "--porcelain") == ""
+    got = latest(view(archive, atlas_root).verdicts)
+    assert got[("owner", G)].decision == "approve"
+
+
 def test_an_archive_with_no_file_for_the_symbol_is_empty(archive: Path, atlas_root: Path) -> None:
     v = view(archive, atlas_root)
     assert (v.gene, v.files, v.reviewers, v.verdicts) == (None, 0, 0, ())

@@ -153,6 +153,7 @@ def _subdir(tmp: Path) -> Path:
         ("badrun", "run id"),
         ("nodata", "data element"),
         ("badartifact", "https://claude.ai/"),
+        ("ownerkey", "keyed as the owner"),
     ],
 )
 def test_archive_page_refuses_and_writes_nothing(tmp_path: Path, case: str, phrase: str) -> None:
@@ -177,6 +178,8 @@ def test_archive_page_refuses_and_writes_nothing(tmp_path: Path, case: str, phra
         page.write_text("<html></html>\n", encoding="utf-8")
     elif case == "badartifact":
         extra = ["--artifact", "http://example.org/a"]
+    elif case == "ownerkey":
+        page = page_html(tmp_path / "o.html", name=" Owner", role="second_opinion")
     repo = tmp_path / "archive" if case == "subdir" else archive
     head = git(repo, "rev-parse", "HEAD").strip() if case not in ("plain",) else None
     result = file_it(archive, page, *extra, run=run)
@@ -470,11 +473,19 @@ def test_the_commit_is_authored_as_the_archives_own_identity(
         ("GIT_AUTHOR_EMAIL", "env-author@example.invalid"),
         ("GIT_COMMITTER_NAME", "Env Committer"),
         ("GIT_COMMITTER_EMAIL", "env-committer@example.invalid"),
+        ("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z"),
+        ("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z"),
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", "user.email"),
+        ("GIT_CONFIG_VALUE_0", "x@example.invalid"),
+        ("GIT_CONFIG_PARAMETERS", "'user.name=Env Params'"),
     ]:
         monkeypatch.setenv(var, value)
     assert file_it(archive, page_html(tmp_path / "p.html")).exit_code == 0
-    got = git(archive, "log", "-1", "--format=%ae %ce")
-    assert got.strip() == "curator@example.invalid curator@example.invalid"
+    got = git(archive, "log", "-1", "--format=%an|%ae|%cn|%ce|%ad")
+    name, email = "Test Curator", "curator@example.invalid"
+    assert got.split("|")[:4] == [name, email, name, email]
+    assert "2001" not in got
 
 
 def _file_both_pages(archive: Path, tmp: Path) -> None:
@@ -556,3 +567,28 @@ def test_a_commit_that_leaves_the_path_out_of_head_is_exit_1(tmp_path: Path) -> 
     result = file_it(archive, page_html(tmp_path / "p.html"))
     assert result.exit_code == 1, result.output
     assert "out of HEAD" in result.output
+
+
+def test_a_second_gene_is_refused_even_when_the_first_one_is_deleted_from_the_working_tree(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    file_it(archive, page_html(tmp_path / "p.html"))
+    first = decisions_doc(
+        tmp_path / "a.json", name="E.A.M", role="owner", finished_at=FINISHED, findings=[]
+    )
+    assert decide(archive, first, atlas_root).exit_code == 0
+    (archive / DECISIONS).unlink()
+    file_it(archive, page_html(tmp_path / "q.html", gene="HGNC:4173"), run="r2")
+    other = decisions_doc(
+        tmp_path / "b.json",
+        name="E.A.M",
+        role="owner",
+        finished_at=FINISHED,
+        findings=[],
+        gene="HGNC:4173",
+    )
+    head = git(archive, "rev-parse", "HEAD").strip()
+    refused = decide(archive, other, atlas_root, run="r2")
+    assert refused.exit_code == 2 and "one gene per symbol" in refused.output, refused.output
+    assert git(archive, "rev-parse", "HEAD").strip() == head

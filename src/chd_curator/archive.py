@@ -13,8 +13,10 @@ same bytes are reported as ``already filed``, the working-tree file being restor
 tree is refused when its bytes differ, and reported as ``already filed`` when they are the
 same. A target that git ignores is refused before anything is written. Whatever is not yet in
 ``HEAD`` is committed with ``git add`` and ``git commit`` limited to exactly those paths, under
-the checkout's own ``user.name`` and ``user.email`` (``--local``; ``GIT_AUTHOR_*`` and
-``GIT_COMMITTER_*`` in the environment are removed for the commit); the commit message holds no
+the checkout's own ``user.name`` and ``user.email`` (read with ``--local`` and passed to the
+commit as ``-c`` values; every ``GIT_AUTHOR_*``, ``GIT_COMMITTER_*``, ``GIT_CONFIG_COUNT``,
+``GIT_CONFIG_KEY_*``, ``GIT_CONFIG_VALUE_*`` and ``GIT_CONFIG_PARAMETERS`` variable is removed
+from the commit's environment, so dates and identity are git's own); the commit message holds no
 reviewer name and no path. After the commit every committed path is read back from ``HEAD``
 and must hold the filed bytes, or :class:`GitError` is raised. A missing identity is refused
 before anything is written. Nothing here pushes.
@@ -87,12 +89,23 @@ def head_bytes(archive: Path, rel: Path) -> bytes | None:
     return done.stdout if done.returncode == 0 else None
 
 
-_IDENTITY_ENV: Final = (
-    "GIT_AUTHOR_NAME",
-    "GIT_AUTHOR_EMAIL",
-    "GIT_COMMITTER_NAME",
-    "GIT_COMMITTER_EMAIL",
+_ENV_PREFIXES: Final = (
+    "GIT_AUTHOR_",
+    "GIT_COMMITTER_",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "GIT_CONFIG_PARAMETERS",
 )
+
+
+def check_reviewer_key(label: str, name: str, role: str) -> None:
+    """Refuse a second opinion whose name would be keyed as the owner (``owner`` once stripped)."""
+    if role != "owner" and name.strip().casefold() == "owner":
+        raise ArchiveError(
+            f"{label}: the second opinion {name!r} would be keyed as the owner: "
+            "a clinician's name must not read as 'owner'"
+        )
 
 
 def check_archive(archive: Path) -> Path:
@@ -163,6 +176,7 @@ def page_identity(page: Path) -> PageIdentity:
         raise ArchiveError(f"{page}: the page's data lacks {exc}") from exc
     except TypeError as exc:
         raise ArchiveError(f"{page}: the page's data has an unexpected shape: {exc}") from exc
+    check_reviewer_key(str(page), identity.reviewer, identity.role)
     if not slug(identity.reviewer):
         raise ArchiveError(
             f"{page}: the reviewer name {identity.reviewer!r} has no ASCII letter or digit "
@@ -171,15 +185,21 @@ def page_identity(page: Path) -> PageIdentity:
     return identity
 
 
+def _local(archive: Path, key: str) -> str:
+    """The checkout's own value of ``key`` (``--local``), refusing when it is unset or empty."""
+    got = _git(archive, "config", "--local", "--get", key)
+    if got.returncode != 0 or not got.stdout.strip():
+        raise ArchiveError(
+            f"the archive checkout has no {key} of its own: "
+            f"set it with `git -C <archive> config {key} <value>`"
+        )
+    return got.stdout.strip()
+
+
 def require_identity(archive: Path) -> None:
     """Refuse unless the checkout's own config sets ``user.name`` and ``user.email``."""
     for key in ("user.name", "user.email"):
-        got = _git(archive, "config", "--local", "--get", key)
-        if got.returncode != 0 or not got.stdout.strip():
-            raise ArchiveError(
-                f"the archive checkout has no {key} of its own: "
-                f"set it with `git -C <archive> config {key} <value>`"
-            )
+        _local(archive, key)
 
 
 def commit(archive: Path, paths: Sequence[Path], message: str, contents: Sequence[bytes]) -> str:
@@ -192,8 +212,21 @@ def commit(archive: Path, paths: Sequence[Path], message: str, contents: Sequenc
     added = _git(archive, "add", "--", *names)
     if added.returncode != 0:
         raise GitError(f"git add failed: {added.stderr.strip()}")
-    clean = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
-    done = _git(archive, "commit", "-m", message, "--", *names, env=clean)
+    clean = {k: v for k, v in os.environ.items() if not k.startswith(_ENV_PREFIXES)}
+    who = [_local(archive, key) for key in ("user.name", "user.email")]
+    done = _git(
+        archive,
+        "-c",
+        f"user.name={who[0]}",
+        "-c",
+        f"user.email={who[1]}",
+        "commit",
+        "-m",
+        message,
+        "--",
+        *names,
+        env=clean,
+    )
     if done.returncode != 0:
         raise GitError(f"git commit failed: {(done.stderr or done.stdout).strip()}")
     for rel, content in zip(paths, contents, strict=True):
@@ -357,11 +390,7 @@ def check_decisions(doc: object, label: str, symbol: str, validator: Draft202012
     if doc["symbol"] != symbol:
         raise ArchiveError(f"{label} is for {doc['symbol']}, not {symbol}")
     name = str(doc["reviewer"]["name"])
-    if doc["reviewer"]["role"] != "owner" and name.strip().casefold() == "owner":
-        raise ArchiveError(
-            f"{label}: the second opinion {name!r} would be keyed as the owner: "
-            "a clinician's name must not read as 'owner'"
-        )
+    check_reviewer_key(label, name, doc["reviewer"]["role"])
     ids = [f["id"] for f in doc["findings"]]
     again = sorted({i for i in ids if ids.count(i) > 1})
     if again:
@@ -374,13 +403,19 @@ def check_decisions(doc: object, label: str, symbol: str, validator: Draft202012
 
 
 def _filed_genes(top: Path, symbol: str) -> set[str]:
-    """The genes named by the decisions files already filed under ``symbol``."""
+    """The genes named by the decisions files ``HEAD`` holds under ``symbol``."""
     genes: set[str] = set()
-    for path in sorted((top / symbol).glob("*/decisions/*.json")):
+    listed = _git(top, "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", symbol)
+    if listed.returncode != 0:
+        raise GitError(f"git ls-tree failed: {listed.stderr.strip()}")
+    for name in sorted(listed.stdout.split("\0")):
+        parts = name.split("/")
+        if len(parts) != 4 or parts[2] != "decisions" or not name.endswith(".json"):
+            continue
         try:
-            gene = json.loads(path.read_bytes()).get("gene")
-        except (OSError, ValueError, AttributeError) as exc:
-            raise ArchiveError(f"{path.relative_to(top)}: cannot be read: {exc}") from exc
+            gene = json.loads(head_bytes(top, Path(name)) or b"").get("gene")
+        except (ValueError, AttributeError) as exc:
+            raise ArchiveError(f"{name}: cannot be read: {exc}") from exc
         if isinstance(gene, str):
             genes.add(gene)
     return genes

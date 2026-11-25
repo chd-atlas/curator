@@ -105,8 +105,10 @@ committed: when the last commit holds the target, a different file is refused (e
 working tree now holds there, and an identical one prints `already filed` and is restored from the
 commit if the working copy is missing or differs; a target git ignores is refused. What is not yet
 committed is committed, with only those paths, under the archive's own `user.name` and `user.email`
-(unset: refused before anything is written; `GIT_AUTHOR_*` and `GIT_COMMITTER_*` in the environment
-are ignored for the commit); the message is `file <SYMBOL> <run id>: page`. A commit that leaves a
+(unset: refused before anything is written; the commit is given those two values explicitly, and
+every `GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`
+and `GIT_CONFIG_PARAMETERS` variable is removed from its environment); a page by a second opinion
+whose name reads as `owner` is refused; the message is `file <SYMBOL> <run id>: page`. A commit that leaves a
 filed path out of the last commit is an error (exit 1). The command never pushes.
 
 `chd-curator archive-decisions <SYMBOL> --run <run id> --decisions <json> --archive <dir> [--root <atlas>]`
@@ -117,7 +119,7 @@ finished, it is for another symbol, it is a second opinion whose name reads as `
 finding twice, the reviewer name has no ASCII letter or digit for a file name, its gene differs from
 the filed page's or from one already filed for the symbol, or no page filed under that run matches
 its `page.built_on`, `page.literature_sha256` and reviewer (a bad symbol or run id is refused too).
-These are the checks the archive reader applies, so the archive does not accept a file it would then
+These include the checks the archive reader applies, so the archive does not accept a file its reader would
 refuse. The same append-only rule applies: a different file at the same name is refused and the
 message names it, an identical one prints `already filed`. The message is `file <SYMBOL> <run id>:
 decisions`. For an owner's file the last line printed is the `chd-atlas literature apply-review`
@@ -144,8 +146,8 @@ clinician verdict on a version no owner decisions file covers is unpaired; a lat
 set against an earlier one, and triage verdicts are not counted. With no symbol it reads every
 top-level directory of the archive that is not a dot-directory. The report is printed here only: the
 command writes nothing, and `--json` prints the whole report instead. It refuses (exit 2) what the
-archive reader refuses (not a review archive, uncommitted changes, a decisions file the last commit
-does not hold, or one that fails the schema, is unfinished, is misnamed, is for another symbol, names
+archive reader refuses (not a review archive, uncommitted changes, a non-JSON file under a decisions
+directory, a decisions file the last commit does not hold, or one that is not valid JSON, fails the schema, is unfinished, is misnamed, is for another symbol, names
 a finding twice or is a second opinion keyed as the owner, or two genes under one symbol) and, with
 no symbol, a top-level directory whose name is not a symbol. Unlike `archive-state`, it does not
 compare the archive's gene with the atlas's.

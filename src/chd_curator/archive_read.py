@@ -2,13 +2,15 @@
 
 :func:`read_archive` reads every ``<SYMBOL>/<run>/decisions/*.json`` in sorted order and
 refuses the archive (:class:`~chd_curator.archive.ArchiveError`, exit 2) when it cannot be
-trusted: uncommitted changes anywhere in the checkout (untracked files included, every one
-listed), a file that is not ``.json`` under a decisions directory (a skipped file would
-silently drop a reviewer's verdicts), a decisions file that ``HEAD`` does not hold (git-ignored,
-say), or a file that fails :func:`~chd_curator.archive.check_decisions` (the atlas's schema, a
-finished session, the right symbol, a second opinion not keyed as the owner, no finding named
-twice), names another gene than the rest, or sits under a name other than
-``<finished_at, compact UTC>--<reviewer slug>.json``.
+trusted: uncommitted changes anywhere in the checkout (untracked files included; the message
+says to commit or discard them, and names no file), a file that is not ``.json`` under a
+decisions directory (a skipped file would silently drop a reviewer's verdicts), a decisions
+file that ``HEAD`` does not hold (git-ignored, say), or a file that fails
+:func:`~chd_curator.archive.check_decisions` (the atlas's schema, a finished session, the right
+symbol, a second opinion not keyed as the owner, no finding named twice), names another gene
+than the rest, or sits under a name other than
+``<finished_at, compact UTC>--<reviewer slug>.json``. Each file is read from ``HEAD``, never
+from the working tree, which git can be told to ignore (``assume-unchanged``).
 
 A reviewer is keyed by role: every owner file is the key ``owner``, and a clinician is
 ``name.strip().casefold()``. "Latest" compares parsed instants, not strings; two verdicts at
@@ -31,6 +33,7 @@ from chd_curator.archive import (
     check_archive,
     check_decisions,
     check_id,
+    head_bytes,
 )
 from chd_curator.atlas import AtlasError, schema_validator
 
@@ -152,21 +155,17 @@ def read_archive(archive: Path, symbol: str, schema_root: Path) -> ArchiveView:
                     )
                 paths.append(path)
 
-    tracked = _git(top, "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", symbol)
-    if tracked.returncode != 0:
-        raise GitError(f"git ls-tree failed: {tracked.stderr.strip()}")
-    in_head = set(tracked.stdout.split("\0"))
-
     verdicts: list[Verdict] = []
     genes: set[str] = set()
     keys: set[str] = set()  # a file holding no verdict still names a reviewer
     for path in paths:
         rel = str(path.relative_to(top))
-        if path.relative_to(top).as_posix() not in in_head:
+        held = head_bytes(top, path.relative_to(top))
+        if held is None:
             raise ArchiveError(f"{rel}: is not in HEAD (git-ignored?): commit it before reading")
         try:
-            doc = json.loads(path.read_bytes())
-        except (OSError, ValueError) as exc:
+            doc = json.loads(held)
+        except ValueError as exc:
             raise ArchiveError(f"{rel}: cannot be read as JSON: {exc}") from exc
         expected = check_decisions(doc, rel, symbol, validator)
         genes.add(doc["gene"])
