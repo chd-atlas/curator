@@ -223,17 +223,32 @@ def _refuse_hidden(top: Path) -> None:
     listed = _git(top, "ls-files", "-v", "-z")
     if listed.returncode != 0:
         raise GitError(f"git ls-files failed: {listed.stderr.strip()}")
-    hidden = sorted(
-        entry[2:]
-        for entry in listed.stdout.split("\0")
-        if len(entry) > 2 and (entry[0] == "S" or entry[0].islower())
-    )
+    # `ls-files -v` tags: S skip-worktree, s both bits, any other lowercase letter assume-unchanged
+    # (measured on git 2.34.1); `--no-skip-worktree --no-assume-unchanged` in one command clears
+    # only the assume-unchanged bit, so each bit gets its own command.
+    commands: list[str] = []
+    hidden: list[str] = []
+    for entry in sorted(e for e in listed.stdout.split("\0") if len(e) > 2):
+        tag, path = entry[0], entry[2:]
+        bits = [
+            flag
+            for flag, set_ in (
+                ("--no-skip-worktree", tag in "Ss"),
+                ("--no-assume-unchanged", tag.islower()),
+            )
+            if set_
+        ]
+        if bits:
+            hidden.append(path)
+            commands += [
+                f"  git -C {shlex.quote(str(top))} update-index {flag} -- {shlex.quote(path)}"
+                for flag in bits
+            ]
     if hidden:
         raise ArchiveError(
             "git hides changes to these paths (skip-worktree or assume-unchanged), so the plan "
-            f"cannot be trusted: {', '.join(hidden)}; clear it with `git -C "
-            f"{shlex.quote(str(top))} update-index --no-skip-worktree --no-assume-unchanged -- "
-            f"<paths>` and run again"
+            f"cannot be trusted: {', '.join(hidden)}; clear each bit with these commands and run "
+            "again:\n" + "\n".join(commands)
         )
 
 
@@ -364,7 +379,11 @@ def apply_redact(archive: Path, name: str, plan: RedactPlan, today: date) -> str
         raise ArchiveError(
             "the name is still found in files redaction does not edit: "
             + ", ".join(plan.elsewhere)
-            + "; edit them, commit, and run again"
+            + "; check each: one that names this reviewer (written another way such as "
+            '"Dr. X", or in the owner\'s own note) is yours to edit or delete, then commit and '
+            'run again; one that names another reviewer whose name contains this one (such as "Dr '
+            'X Smith") must not be changed here: this command cannot remove one without the other, '
+            "so do that removal by hand"
         )
     if not plan.delete and not plan.rewrite:
         raise ArchiveError("no file names this reviewer: nothing to remove")
@@ -427,9 +446,9 @@ def procedure(archive: Path, name: str, plan: RedactPlan) -> list[str]:
     d = str(archive.resolve())
     rw = f"{d}-rewrite"
     pattern = shlex.quote(name_pattern(name).pattern)
-    lines = ["History still holds the name. On the owner's word, in a fresh clone:"]
+    lines = ["History still holds the name and the notes. On the owner's word, in a fresh clone:"]
     if shutil.which("git-filter-repo") is None:
-        lines.append("git filter-repo is not installed: uv tool install git-filter-repo")
+        lines.append("git filter-repo is not on this PATH: uv tool install git-filter-repo")
     lines += [
         f"  git clone --no-local {d} {rw}",
         f"  git -C {rw} filter-repo --replace-text {d}/.git/redact-expressions.txt "
@@ -451,11 +470,13 @@ def procedure(archive: Path, name: str, plan: RedactPlan) -> list[str]:
         f"  git -C {d} fetch origin && git -C {d} reset --hard origin/main "
         f"&& rm {d}/.git/redact-*.txt",
         f"  git -C {d} reflog expire --expire=now --all && git -C {d} gc --prune=now",
-        f"  git -C {d} log --all -g -p | grep -ciP {pattern}      must print 0",
-        "Delete by hand the copies outside the archive: the clinician's page and the file they "
-        "sent back, on this machine (for example the atlas's "
-        f"local/literature/runs/<SYMBOL>/<run>/review-{slug(name)}.html and wherever the returned "
-        "file was saved).",
+        f"  git -C {d} log --all --reflog -p | grep -ciP {pattern}      must print 0",
+        "Delete by hand the copies outside the archive, on this machine: the clinician's page "
+        f"(for example the atlas's local/literature/runs/<SYMBOL>/<run>/review-{slug(name)}.html) "
+        "and the file they sent back, wherever it was saved; the owner's own review pages built "
+        "while their verdicts were in the archive (the run directories' review*.html, e.g. "
+        "local/literature/runs/<SYMBOL>/<run>/review.html); and any store-export directories "
+        "made from those pages.",
         "GitHub may keep the force-pushed-over commits reachable by id until GitHub Support "
         "removes them (unmeasured).",
     ]

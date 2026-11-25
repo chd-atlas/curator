@@ -186,10 +186,15 @@ edited, so a name in an owner's own note, or anywhere else, stops `--apply` (exi
 until you edit that file and commit. A file whose path holds the reviewer's file-name slug (`dr-x` for
 "Dr X") as a whole token also counts as naming them, and `-` is a boundary there. So a name written
 another way ("Dr. X" is another key) or a longer name containing it ("Dr X Smith") stops `--apply`
-too, and needs a hand edit of those files (delete or edit them, commit, and run again). Both the dry
+too. Check each file listed under "still name the reviewer": one that names this reviewer (written
+another way, or in the owner's own note) is yours to edit or delete, then commit and run again; one
+that names another reviewer whose name contains this one ("Dr X Smith") must not be changed here,
+because this command cannot remove one without the other, so do that removal by hand. Both the dry
 run and `--apply` refuse (exit 2) an archive in which a path carries a skip-worktree or
 assume-unchanged bit (git then hides a deleted or edited working copy from `git status`; the message
-names the paths and the `git update-index` command that clears it) and a file the scan cannot read.
+names the paths and prints one `git update-index --no-skip-worktree` or `--no-assume-unchanged`
+command for each bit set, because one command with both flags clears only the assume-unchanged bit)
+and a file the scan cannot read.
 `--apply` also refuses an archive with uncommitted changes, a removal that touches no file, a missing
 README or one without exactly one `## Removals` line, and `.git/redact-*.txt` files left by an earlier
 removal (finish that history rewrite first). It deletes, rewrites, replaces `None yet.` under
@@ -200,13 +205,16 @@ commit restores every touched path and exits 1). It then writes `.git/redact-exp
 `.git/redact-paths.txt` (the deleted files and the rewritten owner pages, whose original blobs hold the
 clinician's notes), and prints the steps to rewrite history in a fresh clone, re-add the redacted owner
 pages in one commit, and expire the checkout's reflog, then the copies outside the archive to delete by
-hand (the clinician's page and the file they sent back, on this machine) and the pages to republish or
-unpublish. History holds the name and the notes until that rewrite is run, which is the owner's word;
+hand (on this machine: the clinician's page and the file they sent back, the owner's own review pages
+built while the clinician's verdicts were in the archive, such as
+`local/literature/runs/<SYMBOL>/<run>/review.html`, and any store-export directories made from them)
+and the pages to republish or unpublish. History holds the name and the notes until that rewrite is
+run, which is the owner's word;
 after it the checkout's reflog still holds them until the printed `reflog expire` and `gc` are run, and
 GitHub may keep the force-pushed-over commits reachable by id until GitHub Support removes them
 (unmeasured). `git filter-repo` is not installed where this was written, so the printed procedure has
-never been run and is unmeasured as of 2026-11-25; when `git-filter-repo` is not on the PATH the output
-says `uv tool install git-filter-repo`. It never pushes.
+never been run and is unmeasured as of 2026-11-25; when `git-filter-repo` is not on this PATH the output
+says `uv tool install git-filter-repo`; the reflog re-check is `git log --all --reflog -p`. It never pushes.
 
 Once a gene has approved findings, `gene-synthesis` (the top model tier) drafts its "In short"
 paragraph into `local/literature/<SYMBOL>.synthesis.yaml` and `chd-curator synthesis <SYMBOL> --draft

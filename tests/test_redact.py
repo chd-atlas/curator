@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -277,9 +279,12 @@ def test_apply_prints_the_procedure_the_copies_to_delete_and_the_republish_lines
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     d, rw = str(archive), f"{archive}-rewrite"
-    hint = "git filter-repo is not installed: uv tool install git-filter-repo"
+    hint = "git filter-repo is not on this PATH: uv tool install git-filter-repo"
     assert (hint in lines) is not installed
-    assert "History still holds the name. On the owner's word, in a fresh clone:" in lines
+    assert (
+        "History still holds the name and the notes. On the owner's word, in a fresh clone:"
+        in lines
+    )
     assert not any("unmeasured until" in line or "not installed here" in line for line in lines)
     assert f"  git clone --no-local {d} {rw}" in lines
     # the owner page's original blobs hold the notes: it leaves history, then returns redacted
@@ -303,13 +308,21 @@ def test_apply_prints_the_procedure_the_copies_to_delete_and_the_republish_lines
     assert order == sorted(order)
     assert f"  git -C {d} reflog expire --expire=now --all && git -C {d} gc --prune=now" in lines
     assert any(
-        line.startswith(f"  git -C {d} log --all -g -p | grep -ciP")
+        line.startswith(f"  git -C {d} log --all --reflog -p | grep -ciP")
         and line.endswith("must print 0")
         for line in lines
     )
     assert sum("must print 0" in line for line in lines) == 2
     copies = [line for line in lines if line.startswith("Delete by hand the copies outside")]
-    assert len(copies) == 1 and "local/literature/runs/<SYMBOL>/<run>/review-dr-x.html" in copies[0]
+    assert len(copies) == 1
+    for kind in (
+        "local/literature/runs/<SYMBOL>/<run>/review-dr-x.html",  # the clinician's page
+        "the file they sent back",
+        "the owner's own review pages built while their verdicts were in the archive",
+        "local/literature/runs/<SYMBOL>/<run>/review.html",
+        "any store-export directories",
+    ):
+        assert kind in copies[0]
     assert (
         "GitHub may keep the force-pushed-over commits reachable by id until GitHub Support "
         "removes them (unmeasured)." in lines
@@ -330,26 +343,54 @@ def test_a_rewritten_owner_page_with_no_artifact_says_so(archive: Path) -> None:
     assert "republish redacted" not in result.output
 
 
-@pytest.mark.parametrize("bit", ["--skip-worktree", "--assume-unchanged"])
+CLEAR = {
+    "--skip-worktree": "--no-skip-worktree",
+    "--assume-unchanged": "--no-assume-unchanged",
+}
+
+
+def _printed_commands(output: str) -> list[list[str]]:
+    """Every `git -C ... update-index ...` line of a refusal, split as a shell would."""
+    return [
+        shlex.split(line)
+        for line in output.splitlines()
+        if line.strip().startswith("git -C") and " update-index " in line
+    ]
+
+
+@pytest.mark.parametrize(
+    "bits",
+    [["--skip-worktree"], ["--assume-unchanged"], ["--skip-worktree", "--assume-unchanged"]],
+    ids=["skip", "assume", "both"],
+)
 @pytest.mark.parametrize("apply", [False, True])
-def test_a_path_git_hides_refuses_the_removal_and_changes_nothing(
-    archive: Path, bit: str, apply: bool
+def test_a_path_git_hides_refuses_the_removal_and_the_printed_commands_clear_it(
+    archive: Path, bits: list[str], apply: bool
 ) -> None:
-    """R-P4-19: with the bit set, deleting the working copy leaves `git status` clean while HEAD
-    still holds the file, so the plan would list nothing for it."""
-    git(archive, "update-index", bit, "--", X_DECISIONS)
+    """R-P4-19: with a bit set, deleting the working copy leaves `git status` clean while HEAD
+    still holds the file, so the plan would list nothing for it. R-P4-21: the printed commands,
+    run as printed, clear exactly the bits set (one `--no-skip-worktree --no-assume-unchanged`
+    command clears only the assume-unchanged bit, measured on git 2.34.1)."""
+    for bit in bits:
+        git(archive, "update-index", bit, "--", X_DECISIONS)
     (archive / X_DECISIONS).unlink()
     head = git(archive, "rev-parse", "HEAD")
-    result = CliRunner().invoke(
-        app,
-        ["archive-redact", "--name", "Dr X", "--archive", str(archive)]
-        + (["--apply"] if apply else []),
-    )
+    args = ["archive-redact", "--name", "Dr X", "--archive", str(archive)]
+    result = CliRunner().invoke(app, args + (["--apply"] if apply else []))
     assert result.exit_code == 2, result.output
-    assert X_DECISIONS in result.output and "update-index --no-skip-worktree" in result.output
+    assert X_DECISIONS in result.output
     assert git(archive, "rev-parse", "HEAD") == head
     assert not (archive / ".git" / "redact-paths.txt").exists()
-    assert "deleted" not in git(archive, "log", "-1", "--format=%s")
+    commands = _printed_commands(result.output)
+    expected = [
+        ["git", "-C", str(archive), "update-index", CLEAR[bit], "--", X_DECISIONS] for bit in bits
+    ]
+    assert sorted(commands) == sorted(expected)
+    for command in commands:
+        subprocess.run(command, check=True, capture_output=True)
+    assert git(archive, "ls-files", "-v", "--", X_DECISIONS).startswith("H ")
+    again = CliRunner().invoke(app, args)
+    assert again.exit_code == 0, again.output
 
 
 def test_an_archive_with_no_readme_is_refused_as_a_missing_removals_line_is(archive: Path) -> None:
@@ -671,3 +712,38 @@ def test_a_name_written_another_way_stops_apply_until_those_files_are_edited_by_
         app, ["archive-redact", "--name", "Dr X", "--archive", str(archive), "--apply"]
     )
     assert result.exit_code == 2 and "still found in files redaction does not edit" in result.output
+    # a longer name must not be edited as if it were this reviewer's file
+    assert "is yours to edit or delete" in result.output
+    assert (
+        'another reviewer whose name contains this one (such as "Dr X Smith") must not be'
+        in result.output
+    )
+
+
+def test_the_printed_reflog_recheck_sees_the_name_before_the_printed_expiry_and_not_after(
+    tmp_path: Path,
+) -> None:
+    """R-P4-21: `git log --all -g -p` prints nothing before the expiry (measured on git 2.34.1),
+    so a re-check written that way printed 0 whether or not the name was still in the reflog. Run
+    the printed lines on a repository (one that never held the name otherwise, as a rewritten
+    archive does not) whose reflog holds a commit naming the reviewer."""
+    archive = make_archive(tmp_path)
+    (archive / "TBX5" / "r1").mkdir(parents=True)
+    (archive / "TBX5" / "r1" / "spill.txt").write_text("Dr X said so\n", encoding="utf-8")
+    git(archive, "add", "--", "TBX5/r1/spill.txt")
+    git(archive, "commit", "-m", "names the reviewer")
+    git(archive, "rm", "-q", "--", "TBX5/r1/spill.txt")
+    git(archive, "commit", "-m", "removes it")
+    git(archive, "reset", "--hard", "HEAD~2")
+    lines = redact.procedure(archive, "Dr X", redact.RedactPlan((), (), (), (), ()))
+    (recheck,) = [line for line in lines if "log --all --reflog -p" in line]
+    (expiry,) = [line for line in lines if "reflog expire" in line]
+    command = recheck.replace("      must print 0", "")
+
+    def count() -> int:
+        done = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+        return int(done.stdout.strip())
+
+    assert count() > 0  # the reflog still holds the name
+    subprocess.run(["bash", "-c", expiry], check=True, capture_output=True)
+    assert count() == 0
