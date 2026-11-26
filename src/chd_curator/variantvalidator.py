@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 from urllib.parse import quote
 
+from chd_curator import http as curator_http
+
 BASE: Final = "https://rest.variantvalidator.org/VariantValidator/variantvalidator/GRCh38"
 TIMEOUT_SECONDS: Final = 60
 _META_KEYS: Final = {
@@ -105,7 +107,9 @@ def urllib_fetch(request_url: str) -> bytes:
     """GET `request_url` with a timeout, at most one request a second."""
     _throttle.wait()
     try:
-        with urllib.request.urlopen(request_url, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
+        with curator_http.open_url(
+            urllib.request.Request(request_url), TIMEOUT_SECONDS
+        ) as response:  # noqa: S310
             body: bytes = response.read()
             return body
     except urllib.error.HTTPError as exc:

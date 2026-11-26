@@ -37,6 +37,8 @@ from dataclasses import dataclass
 from typing import Any, Final
 from urllib.parse import urlencode
 
+from chd_curator import http as curator_http
+
 Fetch = Callable[[str], bytes]
 
 BASE_URL: Final = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
@@ -287,7 +289,7 @@ def urllib_fetch(url: str) -> bytes:
     """
     _throttle.wait(url)
     try:
-        with urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
+        with curator_http.open_url(urllib.request.Request(url), TIMEOUT_SECONDS) as response:  # noqa: S310
             body: bytes = response.read()
             return body
     except urllib.error.HTTPError as exc:
