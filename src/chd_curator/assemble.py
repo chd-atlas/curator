@@ -4,11 +4,16 @@ applied to the gene's curated literature file.
 A merged and compared run is assembled in one pass. Everything is read once, every output is
 built in memory and checked, and only then is anything written; a refusal is an
 :class:`AssembleError` (or one of the readers' errors) raised before the first write, so a
-refused run leaves every file as it was. The writes go in this order: ``assemble.json``; the id
-registry (when findings were added); the literature file. ``assemble.json`` is first because the
-ids it maps are what stops a re-run numbering an added finding twice: written last, a crash
-between the two files would let a re-run number it again. Written first, a crash leaves a map
-naming ids the file lacks, and a re-run refuses until the curator removes ``assemble.json``.
+refused run leaves every file as it was. The writes go in this order: ``assemble.prev.json`` (a
+copy of the ``assemble.json`` there was, removed when there was none); ``assemble.json``; the id
+registry (when findings were added); the literature file; ``assemble.json`` again. The first
+``assemble.json`` carries the ids it maps, which stop a re-run numbering an added finding twice,
+but the ``judged`` and ``approvals`` of the last completed assemble: a crash before the literature
+file is written must not leave a record saying a judge's finding was applied that was not. A crash
+between the two leaves a map naming ids the file lacks when findings were added, and a re-run
+refuses until the curator replaces ``assemble.json`` with ``assemble.prev.json`` (or removes it
+when there is none); removing it in a later round would number the earlier rounds' additions
+twice. A re-run that would change nothing writes nothing.
 
 What is applied, in this order:
 
@@ -42,7 +47,11 @@ the write (``approvals``). A changed finding replaces the file's finding and kee
 fields (a void approval stays void), except that it is refused, naming its id, when the file's
 ``approved_digest`` now differs from the recorded one: the owner approved it after that assemble.
 The record of a finding a re-run skips is left as it was: it describes the assemble that applied
-it.
+it. So is the record of an id the judges' files no longer decide (a finding dropped in one round
+and changed in a later one meets its old record, and the approval refusal applies). In a new or
+reread run a judge finding applied for the first time to a finding that carries ``approved_by`` is
+refused, because merge writes no approval: the owner approved it. A backfill is exempt, since
+changing approved findings is its purpose.
 
 In a new or reread run (a reread plan is handled like a new one; no command writes one yet, so
 that path is untested), whatever a judge changed in a finding that ``differs`` lists must be a
@@ -58,8 +67,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+import shutil
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -118,6 +128,10 @@ _JUDGE_MANIFEST: Final = re.compile(r"judge-[0-9]{2,}\.md")
 LOCAL_ID: Final = re.compile(r"CHDA:LIT:07[0-9]{5}")
 _FINDING_IDS: Final = re.compile(r"CHDA:LIT:[0-9]{7}")
 _ANY: Final = frozenset({"*"})
+_APPROVED: Final = (
+    "approved; a judge may not change an approved finding. No command removes an approval: "
+    "undo the judge's change to it, or ask the owner"
+)
 
 
 class AssembleError(Exception):
@@ -394,7 +408,9 @@ def read_state(root: Path, run: RunPaths, approved: str, only: str | None = None
         if final not in c.findings:
             raise AssembleError(
                 f"{run.assemble}: maps {local} to {final}, which {c.lit_path} lacks. A previous "
-                "assemble stopped part-way: remove assemble.json and run it again"
+                "assemble stopped part-way: replace assemble.json with assemble.prev.json "
+                "(remove assemble.json when there is no assemble.prev.json) and run it again; a "
+                "LIT number that run already took from the counter is not used again"
             )
     decisions: dict[str, tuple[JudgeDecision, ...]] = {}
     blind: dict[str, str] = {}
@@ -431,20 +447,22 @@ class Accepted:
 
 def blind_only_decisions(
     state: RunState,
-    judge_ids: Collection[str],
+    judge_papers: Mapping[str, str],
     in_scope: Callable[[str], bool] = lambda _: True,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """The judge's decision, by id, for each finding only the blind reader reported (an
     ``only_second`` id of `in_scope`), and the judge's local id of the finding that adopted each
     ``second`` one.
 
-    The decision is that of the ``finding`` row of the id's entry in the judge's decisions file
-    (the first row when there are several). Every such id must have one, or the blind reader's
-    finding would vanish without a record, and the entry must sit in ``judge-NN.decisions.yaml``
-    for the id's own batch NN. A ``second`` decision names in its ``value`` exactly one judge
-    finding of that batch, a local id among `judge_ids` (this run's judge findings and the local
-    ids an earlier assemble mapped); a ``first`` or ``neither`` decision names none. Every breach
-    is reported, each naming its id."""
+    The decision is that of the one ``finding`` row of the id's entry in the judge's decisions
+    file. Every such id must have one, or the blind reader's finding would vanish without a
+    record, and the entry must sit in ``judge-NN.decisions.yaml`` for the id's own batch NN. A
+    ``second`` decision names in its ``value`` exactly one judge finding of that batch, a local id
+    among `judge_papers` (each of this run's judge findings and each local id an earlier assemble
+    mapped, with the paper it cites), and that finding must cite the blind finding's paper, which
+    puts it in ``judging/judge-NN.findings.yaml`` (a judge's file holds only its batch's papers);
+    a ``first`` or ``neither`` decision names none. Every breach is reported, each naming its
+    id."""
     found: dict[str, str] = {}
     links: dict[str, str] = {}
     missing: list[str] = []
@@ -456,6 +474,11 @@ def blind_only_decisions(
         if not rows:
             missing.append(sid)
             continue
+        if len(rows) > 1:
+            problems.append(
+                f"{sid}: has {len(rows)} 'finding' rows in the judge's decisions; keep one"
+            )
+            continue
         batch = sid[11:13]
         where = state.decision_batches.get(sid, batch)
         if where != batch:
@@ -466,7 +489,7 @@ def blind_only_decisions(
             continue
         decision = rows[0]
         named = _FINDING_IDS.findall(decision.value)
-        judge_named = [i for i in named if i in judge_ids]
+        judge_named = [i for i in named if i in judge_papers]
         if decision.decision == "second":
             own = [i for i in judge_named if LOCAL_ID.fullmatch(i) and i[11:13] == batch]
             if len(own) != 1 or len(judge_named) != 1:
@@ -475,6 +498,14 @@ def blind_only_decisions(
                     f"exactly one judge finding of batch {batch} (write the local id "
                     f"CHDA:LIT:07{batch}nnn of the finding the judge wrote for it, which "
                     f"judge-{batch}.findings.yaml must hold)"
+                )
+                continue
+            paper, blind_paper = judge_papers[own[0]], state.blind.get(sid)
+            if paper != blind_paper:
+                problems.append(
+                    f"{sid}: adopted (second) as {own[0]}, which cites {paper}, but the blind "
+                    f"finding is on {blind_paper}; the finding that adopts it must cite that "
+                    f"paper, in judging/judge-{batch}.findings.yaml"
                 )
                 continue
             links[sid] = own[0]
@@ -519,8 +550,10 @@ def accept_judged(
     A changed judge finding is refused (naming its id) only when the owner approved the file's
     finding after the assemble that applied it: an earlier assemble recorded the finding's digest
     and its ``approved_digest``, and the file's now differs. A finding that still carries the
-    approval it had then (a backfill's first assemble leaves it void) is replaced, and
-    ``apply_judged`` keeps its approval fields."""
+    approval it had then (a backfill's first assemble leaves it void) is replaced; a backfill
+    writes only the declared fields, so its approval fields stay. A judge finding with no record
+    (its first application) in a new or reread run is refused when the file's finding carries
+    ``approved_by``: merge writes no approval, so the owner approved it."""
     merged, plan, comparison = state.merged, state.plan, state.comparison
     c, schema, previous = state.curated, state.schema, state.previous
     backfill = plan.mode == "backfill"
@@ -557,21 +590,25 @@ def accept_judged(
         if recorded == digest:
             unchanged[target] = digest
             continue
+        held = c.findings.get(target, {})
         if (
             recorded is not None
             and target in previous.approvals
-            and target in c.findings
-            and c.findings[target].get("approved_digest") != previous.approvals[target]
-        ):
-            raise AssembleError(f"{target}: approved; a judge may not change an approved finding")
+            and held.get("approved_digest") != previous.approvals[target]
+        ) or (recorded is None and not backfill and "approved_by" in held):
+            raise AssembleError(f"{target}: {_APPROVED}")
         replacements[target] = {**finding, "id": target}
     decided = {*replacements, *unchanged}
     needed = {fid for fid in differs if in_scope(fid)}
     for fid in sorted(needed):
         if fid not in decided:
             raise AssembleError(f"{fid}: differs, but no judge finding decides it")
-    judge_ids = {str(f["id"]) for f in judged} | set(previous.added)
-    blind_only, blind_links = blind_only_decisions(state, judge_ids, in_scope)
+    judge_papers = {
+        local: str(c.findings[final]["publication"])
+        for local, final in previous.added.items()
+        if final in c.findings
+    } | {str(f["id"]): str(f["publication"]) for f in judged}
+    blind_only, blind_links = blind_only_decisions(state, judge_papers, in_scope)
     for fid in sorted(decided):
         if fid not in c.findings:
             raise AssembleError(f"{fid}: a judge finding replaces it, but {c.lit_path} lacks it")
@@ -675,13 +712,7 @@ def apply_judged(state: RunState, run: RunPaths, accepted: Accepted) -> AppliedJ
             backfill_allowed[fid] = permitted
             literature = with_fields_set(literature, fid, fields, drop)
     else:
-        kept = {
-            fid: {k: v for k, v in c.findings[fid].items() if k in APPROVAL_FIELDS}
-            for fid in replacements
-        }
-        literature = replace_judged(
-            literature, {fid: {**f, **kept[fid]} for fid, f in replacements.items()}, mapping, held
-        )
+        literature = replace_judged(literature, replacements, mapping, held)
     if triage:
         literature = with_triage(literature, triage)
     return AppliedJudged(literature, new_map, new_counter, mapping, held, new_ids, backfill_allowed)
@@ -756,16 +787,23 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
     replaced = tuple(
         sorted(fid for fid in (*replacements, *accepted.unchanged) if fid not in prior_final)
     )
-    judged_digests = {
+    decided = {
         **accepted.digests,
         **{applied.new_map[local]: d for local, d in accepted.addition_digests.items()},
     }
     after = {str(f["id"]): f for f in safe_load(literature, c.lit_path).get("findings") or []}
     approvals = {
-        fid: previous.approvals[fid]
-        if fid in accepted.unchanged
-        else after[fid].get("approved_digest")
-        for fid in judged_digests
+        **{fid: a for fid, a in previous.approvals.items() if fid not in decided},
+        **{
+            fid: previous.approvals[fid]
+            if fid in accepted.unchanged
+            else after[fid].get("approved_digest")
+            for fid in decided
+        },
+    }
+    judged_digests = {
+        **{fid: d for fid, d in previous.judged.items() if fid not in decided},
+        **decided,
     }
     record = AssembleRecord(
         replaced,
@@ -800,8 +838,9 @@ def _check_agreement_still_holds(run: RunPaths, state: RunState, ids: Sequence[s
         raise AssembleError(str(exc)) from None
     for fid, sid in stale:
         raise AssembleError(
-            f"{fid}: no longer agrees with the blind pass's {sid} (it was edited after "
-            "compare); compare must be re-run"
+            f"{fid}: no longer agrees with the blind pass's {sid} (it was edited after compare). "
+            "Undo the edit, or remove the judges' files (judge/*.decisions.yaml and "
+            "judging/*.findings.yaml), run compare again and run the judges again"
         )
 
 
@@ -815,14 +854,29 @@ def _excluded_by_merge(merged: MergeRecord, pmid: str) -> bool:
 
 
 def commit(run: RunPaths, built: Assembled) -> None:
-    """Check every write, then write ``assemble.json``, the registry and the literature file."""
+    """Check every write, then write ``assemble.prev.json``, ``assemble.json`` (keeping the last
+    completed assemble's ``judged`` and ``approvals``), the registry, the literature file and
+    ``assemble.json`` again with the whole record. Nothing is written when the result is the
+    state the files are in."""
     c = built.curated
     check_literature(
         c.lit_path, built.literature, c.lit_validator, expected=c.lit, added=built.added
     )
     if built.registry is not None:
         check_registry(c.reg_path, built.registry, expected=c.reg)
-    write_assemble(run, built.record)
+    previous = load_assemble(run)
+    if previous == built.record and built.registry is None and built.literature == c.lit:
+        return
+    if previous is None:
+        run.assemble_prev.unlink(missing_ok=True)
+    else:
+        shutil.copyfile(run.assemble, run.assemble_prev)
+    first = replace(
+        built.record,
+        judged=previous.judged if previous else {},
+        approvals=previous.approvals if previous else {},
+    )
+    write_assemble(run, first)
     written = [run.assemble]
     try:
         if built.registry is not None:
@@ -832,7 +886,18 @@ def commit(run: RunPaths, built: Assembled) -> None:
             c.lit_path, built.literature, c.lit_validator, expected=c.lit, added=built.added
         )
     except WriteRefused as exc:
-        raise refused_after_writes(exc, written) from None
+        stopped = refused_after_writes(exc, written)
+        if built.added:
+            then = (
+                "assemble.json names the findings this run numbered but not what it applied, so "
+                "before running assemble again replace it with assemble.prev.json (or remove it "
+                "when there is no assemble.prev.json)"
+            )
+        else:
+            then = "assemble.json does not yet record what this run applied, so run assemble again"
+        raise WriteRefused(f"{stopped}; {then}") from None
+    if first != built.record:
+        write_assemble(run, built.record)
 
 
 def summary(record: AssembleRecord) -> str:

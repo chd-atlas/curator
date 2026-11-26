@@ -331,7 +331,9 @@ def test_a_finding_edited_after_compare_is_not_marked_verified_and_nothing_is_wr
         p,
         stub_atlas,
         "CHDA:LIT:0009002: no longer agrees with the blind pass's CHDA:LIT:0801001 "
-        "(it was edited after compare); compare must be re-run",
+        "(it was edited after compare). Undo the edit, or remove the judges' files "
+        "(judge/*.decisions.yaml and judging/*.findings.yaml), run compare again and run the "
+        "judges again",
     )
 
 
@@ -969,7 +971,13 @@ def test_a_crash_after_assemble_json_leaves_it_in_place_and_a_rerun_refuses_unti
     assert load_assemble(p) is not None  # written first: a re-run cannot number the finding again
     monkeypatch.undo()
     _pubmed(monkeypatch)
-    _expect_refused(p, stub_atlas, "stopped part-way: remove assemble.json")
+    _expect_refused(
+        p,
+        stub_atlas,
+        "A previous assemble stopped part-way: replace assemble.json with assemble.prev.json "
+        "(remove assemble.json when there is no assemble.prev.json) and run it again",
+    )
+    assert not (p.dir / "assemble.prev.json").exists()  # the crashed run had no earlier record
     (p.dir / "assemble.json").unlink()
     assert _assemble(p, stub_atlas)[0] == 0
     # the crashed run had already raised the counter to 9005, so the re-run's added finding takes
@@ -996,7 +1004,9 @@ def test_a_write_refused_after_assemble_json_says_what_was_already_written(
     assert code == 2
     assert out == (
         f"error: {reg}: the file changed since it was read; this command had already written "
-        f"{p.dir / 'assemble.json'}, which stays as written\n"
+        f"{p.dir / 'assemble.json'}, which stays as written; assemble.json names the findings "
+        "this run numbered but not what it applied, so before running assemble again replace it "
+        "with assemble.prev.json (or remove it when there is no assemble.prev.json)\n"
     )
     assert load_assemble(p) is not None
     assert _lit(p).read_bytes() == lit and reg.read_bytes() == registry
@@ -1212,7 +1222,9 @@ def test_a_backfilled_field_edited_after_compare_is_not_marked_verified(
         p,
         stub_atlas,
         "CHDA:LIT:0009001: no longer agrees with the blind pass's CHDA:LIT:0009001 "
-        "(it was edited after compare); compare must be re-run",
+        "(it was edited after compare). Undo the edit, or remove the judges' files "
+        "(judge/*.decisions.yaml and judging/*.findings.yaml), run compare again and run the "
+        "judges again",
         "--verifier",
         "agent:literature-verify/test-model",
     )
@@ -1264,9 +1276,7 @@ def test_a_backfill_takes_only_the_declared_fields_from_a_judge_and_drops_verifi
         "replaced 1 judged findings, added 0, fixed 0 names by rule, marked 0 verified, "
         "0 blind-only decided"
     )
-    # a judge that changed anything else in a backfill is refused (with no record of the first
-    # round, the approved-finding refusal of a re-run does not apply)
-    p.assemble.unlink()
+    # a judge that changed anything else in a backfill is refused on a re-run too
     _edit(p.judging / "judge-01.findings.yaml", "screened: 1", "screened: 3")
     _expect_refused(
         p,
@@ -1661,4 +1671,212 @@ def test_a_blind_only_decision_must_sit_in_its_own_batchs_decisions_file(
         stub_atlas,
         f"{BLIND_ONLY}: its decision is in the file for batch 02, but a finding only the blind "
         "reader reported in batch 01 is decided in judge-01.decisions.yaml",
+    )
+
+
+# -- R-P2-66(f)-(h): the two writes of assemble.json, records across rounds ----------------------
+
+APPROVED_REFUSAL = (
+    "{}: approved; a judge may not change an approved finding. No command removes an approval: "
+    "undo the judge's change to it, or ask the owner"
+)
+
+
+def _round_one_then_a_correction(p: RunPaths, stub: Path) -> tuple[bytes, AssembleRecord]:
+    """Round 1 assembles; the judge then corrects the unapproved 0009003 (round 2). Returns
+    round 1's assemble.json bytes and record."""
+    assert _assemble(p, stub)[0] == 0
+    first = p.assemble.read_bytes()
+    record = load_assemble(p)
+    assert record is not None
+    _edit(_judge1(p), "three relatives had", "four relatives had")
+    return first, record
+
+
+@pytest.mark.parametrize(
+    "failure, exit_code",
+    [
+        pytest.param(OSError("disk full"), 1, id="OSError (m9)"),
+        pytest.param(WriteRefused("x: the file changed since it was read"), 2, id="refused (m9b)"),
+    ],
+)
+def test_a_judge_correction_is_applied_by_the_rerun_after_a_literature_write_that_failed(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    exit_code: int,
+) -> None:
+    """R-P2-66(f), m9 and m9b: the first write of assemble.json keeps the last completed
+    assemble's `judged` and `approvals`, so a literature write that fails after it does not make
+    the re-run skip the correction as already applied. Measured before: exit 0 and the file still
+    said "three relatives"."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    first_bytes, first = _round_one_then_a_correction(p, stub_atlas)
+
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise failure
+
+    monkeypatch.setattr(assemble_module, "write_literature", crash)
+    code, out = _assemble(p, stub_atlas)
+    assert code == exit_code, out
+    stopped = load_assemble(p)
+    assert stopped is not None
+    assert (stopped.judged, stopped.approvals) == (first.judged, first.approvals)
+    assert p.dir.joinpath("assemble.prev.json").read_bytes() == first_bytes
+    assert "three relatives had" in _findings(p)[JUDGED]["summary"]
+    monkeypatch.undo()
+    _pubmed(monkeypatch)
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert "four relatives had" in _findings(p)[JUDGED]["summary"]
+    done = load_assemble(p)
+    assert done is not None and done.judged[JUDGED] != first.judged[JUDGED]
+
+
+def test_a_crash_after_an_addition_in_round_two_is_undone_by_assemble_prev_json(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(f): the stopped-part-way refusal names assemble.prev.json, and restoring it and
+    running again numbers nothing twice. Removing assemble.json instead would number 0701001 a
+    second time (it is in the file as 0009005 already)."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    first_bytes = p.assemble.read_bytes()
+    rows = YAML_SAFE.load(_judge1(p).read_text())["findings"]
+    added = next(r for r in rows if r["id"] == ADDED)
+    rows.append({**added, "id": "CHDA:LIT:0701002", "summary": "A second carrier, added later."})
+    _judge1(p).write_text(json.dumps({"findings": rows}))
+
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(assemble_module, "write_literature", crash)
+    assert _assemble(p, stub_atlas)[0] == 1
+    monkeypatch.undo()
+    _pubmed(monkeypatch)
+    assert json.loads(p.assemble.read_text())["added"] == {
+        ADDED: ADDED_FINAL,
+        "CHDA:LIT:0701002": "CHDA:LIT:0009006",
+    }
+    _expect_refused(
+        p,
+        stub_atlas,
+        "A previous assemble stopped part-way: replace assemble.json with assemble.prev.json "
+        "(remove assemble.json when there is no assemble.prev.json) and run it again",
+    )
+    shutil.copyfile(p.dir / "assemble.prev.json", p.assemble)
+    assert p.assemble.read_bytes() == first_bytes
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    ids = list(_findings(p))
+    assert len(ids) == len(set(ids))
+    assert ADDED_FINAL in ids and "CHDA:LIT:0009006" not in ids and "CHDA:LIT:0009007" in ids
+    assert _findings(p)["CHDA:LIT:0009007"]["summary"].startswith("A second carrier")
+    assert _findings(p)[ADDED_FINAL]["summary"].startswith("A third carrier listed")
+
+
+def test_assemble_prev_json_is_the_record_of_the_assemble_before_and_absent_when_there_was_none(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    prev = p.dir / "assemble.prev.json"
+    prev.write_text("stale\n")  # left by an earlier removal of assemble.json
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert not prev.exists()
+    first_bytes, _ = _round_one_then_a_correction(p, stub_atlas)
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert prev.read_bytes() == first_bytes
+
+
+def test_a_judge_finding_dropped_in_one_round_and_changed_in_a_later_one_is_still_refused(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(g), re-review observation 5: round 2's judge file lacks 0701001; the record of
+    0009005 must be carried, or round 3's changed finding meets no record and voids the approval
+    the owner gave in between (LIT015) instead of being refused."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    kept = YAML_SAFE.load(_judge1(p).read_text())["findings"]
+    dropped = next(r for r in kept if r["id"] == ADDED)
+    _judge1(p).write_text(json.dumps({"findings": [r for r in kept if r["id"] != ADDED]}))
+    assert _assemble(p, stub_atlas)[0] == 0
+    carried = load_assemble(p)
+    assert carried is not None
+    assert sorted(carried.judged) == [JUDGED, ADDED_FINAL]
+    assert carried.approvals == {JUDGED: None, ADDED_FINAL: None}
+    _approve_in_the_file(p, ADDED_FINAL)
+    changed = {**dropped, "summary": "A third carrier, changed after approval, listed"}
+    _judge1(p).write_text(
+        json.dumps({"findings": [*(r for r in kept if r["id"] != ADDED), changed]})
+    )
+    _expect_refused(p, stub_atlas, APPROVED_REFUSAL.format(ADDED_FINAL))
+
+
+def test_a_new_run_refuses_a_first_application_to_a_finding_carrying_an_approval(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(g): merge writes no approvals, so a finding approved before any judge finding
+    was applied to it was approved by the owner."""
+    p = _only_first_run(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    copy_judge_round(p)
+    merged = _findings(p)["CHDA:LIT:0009002"]
+    _approve_in_the_file(p, "CHDA:LIT:0009002")
+    both = json.loads(json.dumps(YAML_SAFE.load(_judge1(p).read_text())))
+    both["findings"].append({**merged, "design": "cohort_screen", "summary": "A judge's."})
+    _judge1(p).write_text(json.dumps(both))
+    _expect_refused(p, stub_atlas, APPROVED_REFUSAL.format("CHDA:LIT:0009002"))
+
+
+def test_the_approved_finding_refusal_names_its_remedy(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-review observation 1: the atlas's apply-review writes nothing for a "Needs a fix", so
+    the refusal cannot name a command that removes the approval."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    _edit(_judge1(p), "three relatives had", "four relatives had")
+    _expect_refused(p, stub_atlas, APPROVED_REFUSAL.format(JUDGED))
+
+
+def test_an_adopting_finding_must_cite_the_blind_findings_paper_in_its_batchs_file(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(h) N3, m10: 0701002 in judge-02.findings.yaml about PMID:91000003 was accepted
+    as adopting 0801003 (PMID:91000002, batch 01) and the page would have said "adopted as" a
+    finding on another paper."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    rows = YAML_SAFE.load(_judge1(p).read_text())["findings"]
+    other = {
+        **next(r for r in rows if r["id"] == ADDED),
+        "id": "CHDA:LIT:0701002",
+        "publication": "PMID:91000003",
+        "summary": "A carrier in another paper of batch 02.",
+    }
+    (p.judging / "judge-02.findings.yaml").write_text(json.dumps({"findings": [other]}))
+    _set_entry(p, value="CHDA:LIT:0701002")
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: adopted (second) as CHDA:LIT:0701002, which cites PMID:91000003, but "
+        "the blind finding is on PMID:91000002; the finding that adopts it must cite that "
+        "paper, in judging/judge-01.findings.yaml",
+    )
+
+
+def test_a_blind_only_key_with_several_finding_rows_is_refused(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-review observation 4: only the first row was read, so a contradicting later row was
+    ignored though the page shows it."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    data[BLIND_ONLY].append({**data[BLIND_ONLY][0], "decision": "neither", "value": "not added"})
+    _decisions1(p).write_text(json.dumps(data))
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: has 2 'finding' rows in the judge's decisions; keep one",
     )

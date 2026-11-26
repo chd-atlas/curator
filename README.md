@@ -147,9 +147,9 @@ they are the papers of `--findings` (default every finding whose declared fields
 absent, null, `[]` or `{}`), `--fields` is required, a backfill fills fields a finding lacks and
 never rewrites a filled one,
 and each name must be a `Finding` property of the exported schema other than `id`, `publication`,
-`approved_by`, `approved_on`, `approved_digest`, `extracted_by` and `verified_by`, and not a field `compare` never reads
-(`summary`, `locators`, `shares_probands_with`, `review_status`, `review_note` and
-`review_settled_by`, because a difference in it would pass as agreement); the manifest then
+`approved_by`, `approved_on`, `approved_digest`, `extracted_by` and `verified_by`, and not a field `compare` does not compare as a field of its own
+(`summary`, `locators`, `shares_probands_with` and `review_note`, which it ignores, and
+`review_status` and `review_settled_by`, which it reports only together as `review marks`); the manifest then
 lists the fields and each paper's findings as curated, with `approved_by`, `approved_on` and
 `approved_digest` left out because a reader needs none of them. A manifest gives absolute paths to
 each paper's text, abstract and supplements (with sizes) and names no other file of the run.
@@ -274,11 +274,11 @@ schema and carry no approval field or `verified_by`). The steps, in this order:
    A finding only the blind reader reported (`comparison.json` lists it as read by the blind pass only; there is none in
    a backfill, whose blind fields `compare` pairs by finding id) is the judge's to account for: the
    judge's decisions file needs an entry keyed by that blind id (`CHDA:LIT:08NNnnn`) holding a
-   row whose `field` is `finding`, in the decisions file of the id's own batch
+   single row whose `field` is `finding` (several rows exit 2), in the decisions file of the id's own batch
    (`judge-NN.decisions.yaml`, NN being digits 3 and 4 of the id's number). Its `decision` is
    `second` when the judge adopted the finding: the `value` then names the local `07` id of the
-   finding the judge wrote for it, which that batch's `judging/judge-NN.findings.yaml` must hold
-   (or an earlier assemble must have mapped). It is `first` or `neither` when the judge did not
+   finding the judge wrote for it, which must cite the blind finding's paper, so that it sits in
+   that batch's `judging/judge-NN.findings.yaml` (or an earlier assemble must have mapped it). It is `first` or `neither` when the judge did not
    add it, and the `value` then names no judge finding; `quote`, `where` and `rule` give the
    reason. `assemble` exits 2, with nothing
    written, naming every such id that has no entry or whose entry has no `finding` row
@@ -303,7 +303,9 @@ schema and carry no approval field or `verified_by`). The steps, in this order:
    judged or added finding carries none. Before marking an id an earlier assemble did not mark,
    the command derives its verdict again with `compare`'s own pair verdict, on the file's finding
    as it stands and the blind finding `comparison.json` paired it with; a finding edited since
-   `compare` and no longer agreed exits 2 naming the id and saying compare must be re-run (an
+   `compare` and no longer agreed exits 2 naming the id; its remedy is to undo the edit, or to
+   remove the judges' files (`judge/*.decisions.yaml` and `judging/*.findings.yaml`), run `compare`
+   again and run the judges again, because `compare` refuses a run the judges have read (an
    already marked id is not re-derived, because `normalise` rewrites variants after the first
    assemble). In a `new` run the name is the verify
    findings' `extracted_by` (one value across `verify/`, else exit 2; `--verifier` is refused); a
@@ -313,17 +315,26 @@ A last check re-reads the result and refuses it if anything but these steps move
 dropped, reordered or added unexpectedly, a field changed that no step above is entitled to
 change, another triage entry, or a top-level key.
 
-The files are written in this order: `assemble.json`; the id registry (only when findings were
-added); the literature file. `assemble.json` goes first on purpose: it maps each judge's local id
-to the final id, and written last, a crash between it and the literature file would let a re-run
-number the same added finding again. A crash after it leaves a map naming ids the file lacks, and
-a re-run then exits 2 saying a previous assemble stopped part-way; the curator removes
-`assemble.json` and runs again. The registry is written before the literature file, so a crash
-between them has already raised the `LIT` counter: the re-run numbers the added finding from the
-raised counter, and the number the crashed run would have used is never used. After a complete assemble a re-run changes no byte. After a fix
-round (the judge edited a finding, an added one still under its local id) a re-run replaces the
-findings it numbered before under their final ids, numbers only local ids it has not seen, and
-keeps every earlier mapping and notation record in `assemble.json`.
+The files are written in this order: `assemble.prev.json` (a copy of the `assemble.json` there was,
+removed when there was none); `assemble.json`; the id registry (only when findings were added);
+the literature file; `assemble.json` again. The first `assemble.json` maps each judge's local id
+to the final id and records the other results of this run, but keeps `judged` and `approvals` as
+the last completed assemble recorded them; the second records the new ones. The map goes first on
+purpose: written last, a crash between it and the literature file would let a re-run number the
+same added finding again. Its `judged` stays old on purpose: a crash before the literature file
+is written would otherwise leave a record saying a judge's correction was applied that was not,
+and the re-run would skip it (measured: the file kept the judge's earlier wording and the run
+exited 0). A crash after the first write leaves a map naming ids the file lacks when findings were
+added, and a re-run then exits 2 saying a previous assemble stopped part-way; the curator replaces
+`assemble.json` with `assemble.prev.json` (or removes it when there is no `assemble.prev.json`)
+and runs again. Removing `assemble.json` in a later round would number the earlier rounds'
+additions a second time. The registry is written before the literature file, so a crash between
+them has already raised the `LIT` counter: the re-run numbers the added finding from the raised
+counter, and the number the crashed run would have used is never used. A re-run that would change
+nothing writes nothing, `assemble.prev.json` included: after a complete assemble a re-run changes
+no byte. After a fix round (the judge edited a finding, an added one still under its local id) a
+re-run replaces the findings it numbered before under their final ids, numbers only local ids it
+has not seen, and keeps every earlier mapping and notation record in `assemble.json`.
 
 `assemble.json` also records, in `judged`, the sha256 of each judge finding it applied, keyed by
 the final id it decides (the finding as parsed from the judge's file: sorted-key compact JSON,
@@ -331,11 +342,17 @@ UTF-8). A re-run does not apply a finding whose digest is unchanged, so what the
 since (an approval `apply-review` wrote, a placement `normalise` wrote) stays as it is: the judges'
 file keeps its findings across fix rounds, the owner approves some findings between rounds, and
 the re-run still works. `assemble.json` records, in `approvals`, the `approved_digest` each of
-those findings carried just after the write (null when none). A judge finding whose digest changed
-replaces the file's finding and keeps its approval fields: a void approval (a backfill's first
-assemble voids the one a finding carried) stays void. The one refusal is exit 2 naming the id
-(`approved; a judge may not change an approved finding`) when the file's `approved_digest` now
-differs from the recorded one, that is when the owner approved the finding after that assemble.
+those findings carried just after the write (null when none). The record of an id the judges' files no
+longer decide is kept as it was, so a finding dropped in one round and changed in a later one
+meets its old record. A judge finding whose digest changed replaces the file's finding; in a
+backfill only the declared fields are written, so a void approval (a backfill's first assemble
+voids the one a finding carried) stays void. The refusal is exit 2 naming the id (`approved; a
+judge may not change an approved finding`) when the file's `approved_digest` now differs from the
+recorded one, that is when the owner approved the finding after that assemble; and, in a `new` or
+`reread` run, when a judge finding with no record yet meets a file finding carrying `approved_by`
+(merge writes no approval, so the owner gave it). No command removes an approval (the atlas's
+`apply-review` writes nothing for a "Needs a fix"), so the message names the two ways out: undo the
+judge's change to the finding, or ask the owner.
 
 Example output: `replaced 1 judged findings, added 1 (CHDA:LIT:0009005), fixed 0 names by rule,
 marked 2 verified, 1 blind-only decided`. The line states the totals `assemble.json` records: `replaced` counts the
@@ -343,13 +360,13 @@ judged findings that replaced a merged one (a fix round's second replacement of 
 is not counted again), `added` every finding numbered, across rounds, `blind-only decided`
 the findings only the blind reader reported whose decisions `assemble.json` records. It exits 2, with every file
 unchanged, for every refusal found before the first write (and a write refused after earlier ones
-exits 2 naming the files already written, `assemble.json` first; they stay as written): no
+exits 2 naming the files already written, `assemble.json` first, and what to do before running again): no
 `merge.json` or `comparison.json`; modes in `batches.json` and
 `merge.json` that disagree; a judge file that is misnamed or for a batch the plan lacks; a judge
 finding with an approval field or `verified_by`, citing a paper outside its batch, repeating an
 id, or with an id that is neither a `differs` id, a first-pass-only id, an id of an earlier assemble
 nor `CHDA:LIT:07...`; a `differs` id with no judge finding, or one `comparison.json` also lists as
-agreed; a finding only the blind reader reported with no `finding` decision of the judge; a finding to be marked `verified_by` that no longer agrees with its blind finding; a changed judge finding for a finding approved since the assemble that applied it; a field changed that
+agreed; a finding only the blind reader reported with no `finding` decision of the judge; a finding to be marked `verified_by` that no longer agrees with its blind finding; a changed judge finding for a finding approved since the assemble that applied it, or a first one for a finding already approved (new and reread runs); a field changed that
 no decision names; a paper with no Publication; a triage entry
 someone else excluded; an `assemble.json` naming ids the file lacks; a blind pass with more than
 one `extracted_by`; a file any write would refuse (the atlas's schema, an anchor, an approval
@@ -394,6 +411,11 @@ How the pass is applied, by the run's mode in `batches.json`:
 - `backfill`, `--pass extract` or `verify`: the declared fields are filled by `merge`'s own
   backfill functions, so a field a finding already holds is refused (exit 2). Check a backfill
   pass before `merge`; after it the fields are filled.
+
+Check an extract or verify pass before `merge`. Checked after it, a verify pass whose
+`papers.json` excludes a paper the first pass cited makes the validator print `LIT004` lines
+naming the first pass's finding ids (measured on the fixture), which tells the blind reader what
+the first reader cited.
 
 It prints the validator's summary line, then either `OK: only the errors expected before merge and
 normalise` (exit 0) or `UNEXPECTED ERRORS:` and each error line the validator printed that is not

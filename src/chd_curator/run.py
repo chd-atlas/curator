@@ -121,6 +121,10 @@ class RunPaths:
     def assemble(self) -> Path:
         return self.dir / "assemble.json"
 
+    @property
+    def assemble_prev(self) -> Path:
+        return self.dir / "assemble.prev.json"
+
 
 @dataclass(frozen=True)
 class Attempt:

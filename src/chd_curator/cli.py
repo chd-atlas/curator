@@ -1034,7 +1034,7 @@ def batch(
     batch. A backfill's summary line says how many findings its default selection left out for
     holding a declared field. Exit 2, nothing written, when the run is already batched, has no
     texts.json, a selected paper has no text or year, or a field is unknown, forbidden or one
-    that compare never reads.
+    that compare does not compare as a field of its own.
     """
     _require_root(root)
     if mode not in ("new", "backfill"):
@@ -1158,13 +1158,15 @@ def assemble(
 
     A judge's finding replaces the finding of its id, or is added under the next LIT id; the
     notation rules then fix every finding of the run; and each finding the readers agreed on
-    gains `verified_by`. Writes assemble.json, the id registry (when findings were added) and the
-    literature file, in that order. A re-run replaces the findings it already numbered, skips
+    gains `verified_by`. Writes assemble.prev.json (a copy of the earlier assemble.json),
+    assemble.json, the id registry (when findings were added), the literature file and
+    assemble.json again, in that order. A re-run replaces the findings it already numbered, skips
     each judge finding whose digest assemble.json records unchanged, and changes no byte when
     nothing was edited. Exit 2, nothing written, for every refusal found before the first write
     (a write refused after earlier ones exits 2 naming the files already written): no merge.json or
     comparison.json, a judge finding no decision covers, a changed judge finding for a finding
-    approved since the assemble that applied it, a finding edited after compare that no longer
+    approved since the assemble that applied it (or a first one for an approved finding in a new
+    run), a finding edited after compare that no longer
     agrees with its blind finding, a field changed that no decision names, a judged paper with no
     Publication, an assemble.json naming ids the file lacks, or a file changed since it was read.
     Exit 1 on an OS error.
