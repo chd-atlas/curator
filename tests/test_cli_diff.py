@@ -566,6 +566,7 @@ def test_the_cli_has_no_command_or_option_that_approves() -> None:
         "archive-state",
         "agreement",
         "archive-redact",
+        "check-site",
     }
     forbidden = {"--approve", "--by", "--on"}
     for name, command in group.commands.items():
