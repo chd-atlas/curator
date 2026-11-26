@@ -332,16 +332,22 @@ How the pass is applied, by the run's mode in `batches.json`:
   the pass's own `batch-NN.papers.json` are applied to the copy's triage by the function `merge`
   uses, so an excluded paper is not reported as cited by no finding; a paper of the batch that is
   neither excluded nor cited is reported (`LIT003`). A missing `papers.json`, or an exclusion
-  `merge` would refuse, exits 2. A `shares_probands_with` entry naming a local id of another batch of
-  `batches.json` is dropped in the copy only, and the command prints `NOT CHECKED: <finding>
-  shares_probands_with <local id> (batch NN; merge resolves it)` before the summary line; any other
-  entry that names no finding of the pass or of the file exits 2.
+  `merge` would refuse, exits 2. A `shares_probands_with` entry naming a `CHDA:LIT:09NNnnn` id of
+  another batch of `batches.json` is dropped in the copy only (`merge` numbers every batch
+  together), and the command prints `NOT CHECKED: <finding> shares_probands_with <local id>
+  (batch NN; merge resolves it)` before the summary line. Any other entry that names no finding of
+  the pass or of the file exits 2, an `08` or `07` id of an extract pass included, which `merge`
+  would refuse. The deferral is per pass: a verify pass defers another batch's `08NNnnn` id
+  (`compare does not read it`) and a judge pass another batch's `07NNnnn` id (`assemble resolves
+  it`); every other unresolvable ref exits 2 with the message of the command that would refuse it.
 - `--pass judge`: the findings of `judging/judge-NN.findings.yaml` (the other batches' judge
   files are not read) go through `assemble`'s own acceptance and application functions, for this
   batch: the same id classes, the same limits on what a judge may change (the fields
   `comparison.json` lists for a `differs` id in a `new` or `reread` run; the declared fields in a
   backfill), the same Publication and triage rules for an added finding. It needs `merge.json` and
-  `comparison.json` and exits 2 with `assemble`'s message where `assemble` would refuse. It does
+  `comparison.json` and exits 2 with `assemble`'s message where `assemble` would refuse; the
+  check that a judge changed only the fields a `differs` id names covers every `differs` id a
+  judge finding of this batch's file replaces, as in `assemble`. It does
   not run the notation rules or write `verified_by`.
 - `backfill`, `--pass extract` or `verify`: the declared fields are filled by `merge`'s own
   backfill functions, so a field a finding already holds is refused (exit 2). Check a backfill

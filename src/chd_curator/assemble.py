@@ -404,7 +404,9 @@ def accept_judged(
     lacks, one comparison.json also lists as agreed, a ``differs`` id left undecided or changed
     in a field its decisions do not name (new and reread runs), and a paper with no Publication
     or whose triage someone else set. `in_scope` limits which ``differs`` ids must be decided
-    (the default is all, as assemble does; check-batch passes its batch's). `digests` maps each
+    (the default is all, as assemble does; check-batch passes its batch's); the check that a
+    judge changed only the fields a ``differs`` id names covers every ``differs`` id a judge
+    finding replaces, in scope or not. `digests` maps each
     judge finding's id to ``judge_digest`` of the finding as read, before any caller edited it.
 
     A changed finding for an approved file finding is refused, but only where an earlier assemble
@@ -461,7 +463,7 @@ def accept_judged(
         raise AssembleError(f"{fid}: comparison.json lists it as agreed and as judged")
 
     if not backfill:
-        for fid in sorted(needed & set(replacements)):
+        for fid in sorted(differs & set(replacements)):
             stray = sorted(
                 set(differing_fields(c.findings[fid], replacements[fid], schema))
                 - set(comparison.differs[fid])

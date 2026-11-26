@@ -7,7 +7,11 @@ root is written.
 
 * An extract or verify pass of a ``new`` or ``reread`` run is appended with ``append_numbered``,
   so its findings are numbered from the ``LIT`` counter (which is raised in the copy: ``ID002`` is
-  not hidden). No Publication is added. The exclusions of the pass's own
+  not hidden). No Publication is added. A ``shares_probands_with`` entry naming another batch's
+  local id of the kind the pass's next command resolves is dropped in the copy and reported as
+  ``NOT CHECKED``: an extract pass's ``09NN...`` (merge resolves it), a verify pass's ``08NN...``
+  (compare does not read it); every other unresolvable ref is refused as the next command would
+  refuse it. The exclusions of the pass's own
   ``batch-NN.papers.json`` are applied to the copy's triage by the function ``merge`` uses
   (``exclusion_changes``), so an excluded paper is not reported as cited by no finding; a paper
   of the batch that is neither excluded nor cited is.
@@ -15,7 +19,8 @@ root is written.
   (``accept_judged``, ``apply_judged``): a finding replaces the finding of its id, or is numbered
   when its local id is ``CHDA:LIT:07...``; an id an earlier ``assemble.json`` mapped is a
   replacement of the finding it was numbered as; a finding whose digest ``assemble.json`` records
-  unchanged is not applied again.
+  unchanged is not applied again. Another batch's ``07NN...`` id in ``shares_probands_with`` is
+  dropped in the copy and reported as ``NOT CHECKED`` (assemble resolves it).
 * In a ``backfill`` run an extract or verify pass goes through merge's backfill (the same
   functions, so a field a finding already holds is refused), and a judge pass takes the declared
   fields of each judged finding by ``assemble``'s edit.
@@ -159,15 +164,26 @@ def _read_findings(path: Path, schema: Mapping[str, Any]) -> list[dict[str, Any]
         raise CheckError(f"{path}: {exc}") from None
 
 
-_LOCAL_ID: Final = re.compile(r"CHDA:LIT:0[789]([0-9]{2})[0-9]{3}")
+_LOCAL_ID: Final = re.compile(r"CHDA:LIT:0([789])([0-9]{2})[0-9]{3}")
+# What each pass defers: the shape of another batch's local id its next command resolves (or
+# ignores), and what the NOT CHECKED line says about it.
+_DEFERRED: Final = {
+    "extract": ("9", "merge resolves it"),
+    "judge": ("7", "assemble resolves it"),
+    "verify": ("8", "compare does not read it"),
+}
 
 
 def _defer_other_batches(
-    findings: Sequence[Mapping[str, Any]], plan: BatchPlan, batch: Batch
+    findings: Sequence[Mapping[str, Any]], plan: BatchPlan, batch: Batch, which: str
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """`findings` without the ``shares_probands_with`` entries that name a local id of another
-    batch of `plan` (merge numbers every batch together and resolves them; this check applies
-    one batch alone), and a ``NOT CHECKED`` line for each one dropped."""
+    """`findings` without the ``shares_probands_with`` entries that name another batch's local id
+    of the kind `which` pass's next command resolves, and a ``NOT CHECKED`` line for each one
+    dropped: an extract pass's ``09NN...`` (``merge`` numbers every batch together), a judge
+    pass's ``07NN...`` (``assemble`` numbers every judge's additions together) and a verify
+    pass's ``08NN...`` (``compare`` does not read the field). This check applies one batch alone;
+    every other ref stays, and is refused as the next command would refuse it."""
+    kind, ending = _DEFERRED[which]
     others = {b.id for b in plan.batches} - {batch.id}
     out: list[dict[str, Any]] = []
     notes: list[str] = []
@@ -178,10 +194,10 @@ def _defer_other_batches(
             kept = []
             for ref in shared:
                 found = _LOCAL_ID.fullmatch(ref) if isinstance(ref, str) else None
-                if found is not None and found.group(1) in others:
+                if found is not None and found.group(1) == kind and found.group(2) in others:
                     notes.append(
                         f"NOT CHECKED: {row['id']} shares_probands_with {ref} "
-                        f"(batch {found.group(1)}; merge resolves it)"
+                        f"(batch {found.group(2)}; {ending})"
                     )
                 else:
                     kept.append(ref)
@@ -203,7 +219,7 @@ def _applied(
         c = state.curated
         read = judge_findings(run, plan, state.schema, only=batch.id)
         digests = {str(f["id"]): judge_digest(f) for f in read}
-        judged, notes = _defer_other_batches(read, plan, batch)
+        judged, notes = _defer_other_batches(read, plan, batch, which)
         if plan.mode == "backfill":
 
             def in_scope(fid: str) -> bool:
@@ -227,7 +243,7 @@ def _applied(
             declared = check_backfill_declaration(plan, schema)
             literature = apply_backfill(c, backfill_fields(path, batch, c, declared))
         else:
-            found, notes = _defer_other_batches(_read_findings(path, schema), plan, batch)
+            found, notes = _defer_other_batches(_read_findings(path, schema), plan, batch, which)
             check_new_findings(found, batch, c, {})
             years = paper_years(c, run, sorted({str(f["publication"]) for f in found}))
             literature, _, new_counter = append_numbered(c.lit, found, years, counter)

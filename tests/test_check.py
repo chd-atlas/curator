@@ -27,7 +27,7 @@ from typer.testing import CliRunner
 from chd_curator import check as check_module
 from chd_curator.atlas import AtlasError
 from chd_curator.cli import app
-from run_fixture import RUN_FIXTURE
+from run_fixture import RUN_FIXTURE, copy_judge_round
 from test_assemble import (
     JUDGED,
     JUDGED_BACKFILL,
@@ -42,6 +42,7 @@ from test_assemble import (
     _ready,
     _review_marks_not_in_differs,
 )
+from test_compare import _compare
 from test_merge import _VARIANT, _backfill_run, _fresh, _merge, _pubmed
 
 runner = CliRunner()
@@ -756,6 +757,33 @@ def test_a_judge_pass_needs_the_runs_comparison_and_the_decided_differences(
     _judge_refused(p, cli, "the run has no comparison.json", scratch_parent)
 
 
+def test_a_judge_finding_that_replaces_another_batchs_differing_finding_is_refused_as_assemble_does(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scratch_parent: Path,
+) -> None:
+    """m1: batch 02's pair differs in ``screened``; batch 01's judge file carries a finding under
+    that id citing batch 01's paper. The stray-field check runs over every replaced ``differs``
+    id, not only the batch's own, so the check says what ``assemble`` says."""
+    p = _fresh(tmp_path, atlas_root)
+    _pubmed(monkeypatch)
+    assert _merge(p, stub_atlas)[0] == 0
+    _edit(p.verify / "batch-02.findings.yaml", "  screened: 1", "  screened: 3")
+    assert _compare(p, stub_atlas)[0] == 0
+    copy_judge_round(p)
+    rows = YAML_SAFE.load(_judge1(p).read_text())
+    rows["findings"].append({**rows["findings"][0], "id": "CHDA:LIT:0009004"})
+    _judge1(p).write_text(json.dumps(rows))
+    assert "CHDA:LIT:0009004" in json.loads((p.dir / "comparison.json").read_text())["differs"]
+    cli = _fake(tmp_path, _stdout())
+    message = "CHDA:LIT:0009004: the judge changed ["
+    _judge_refused(p, cli, message, scratch_parent)
+    code, out = _assemble(p, stub_atlas)
+    assert code == 2 and message in out and "(differs lists ['screened'])" in out
+
+
 def test_a_judge_added_finding_on_a_paper_without_a_publication_is_refused(
     tmp_path: Path,
     atlas_root: Path,
@@ -858,19 +886,82 @@ def test_a_ref_to_an_id_of_no_batch_exits_2_saying_what_it_is(
     assert list(scratch_parent.iterdir()) == []
 
 
-def test_a_judge_ref_to_another_batchs_local_id_is_deferred_too(
-    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+def _judge_share(p: Any, ref: str) -> None:
     _edit(
         _judge1(p),
         "shares_probands_with: unknown\n  summary: One family",
-        "shares_probands_with: [CHDA:LIT:0902001]\n  summary: One family",
+        f"shares_probands_with: [{ref}]\n  summary: One family",
     )
+
+
+def test_a_judge_ref_to_an_extract_id_is_refused_as_assemble_refuses_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-65(f) amended, measured as m5: assemble resolves a judge's local 07 ids and nothing
+    else, so a 09 id of another batch was never "resolved by merge"."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _judge_share(p, "CHDA:LIT:0902001")
+    before = _snapshot(p.root)
+    code, out = _check(p.root, _fake(tmp_path, _stdout()), pass_="judge")
+    assert (code, out) == (
+        2,
+        "error: CHDA:LIT:0009003: shares_probands_with names CHDA:LIT:0902001, which is "
+        "neither a finding the judges added nor one in the file\n",
+    )
+    assert _snapshot(p.root) == before
+    assert _assemble(p, stub_atlas)[0] == 2  # and the next command refuses it too
+
+
+def test_a_judge_ref_to_another_batchs_judge_id_is_deferred_to_assemble(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _judge_share(p, "CHDA:LIT:0702001")
     cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
     code, out = _check(p.root, cli, pass_="judge")
     assert (code, out) == (
         0,
-        "NOT CHECKED: CHDA:LIT:0009003 shares_probands_with CHDA:LIT:0902001 "
-        "(batch 02; merge resolves it)\n0 error(s), 3 warning(s)\n" + OK_LINE,
+        "NOT CHECKED: CHDA:LIT:0009003 shares_probands_with CHDA:LIT:0702001 "
+        "(batch 02; assemble resolves it)\n0 error(s), 3 warning(s)\n" + OK_LINE,
+    )
+
+
+def test_a_verify_ref_to_another_batchs_verify_id_is_deferred_because_compare_ignores_it(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    path = p.verify / "batch-02.findings.yaml"
+    _edit(path, "shares_probands_with: unknown", "shares_probands_with: [CHDA:LIT:0801001]")
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    code, out = _check(p.root, cli, batch="02", pass_="verify")
+    assert (code, out) == (
+        0,
+        "NOT CHECKED: CHDA:LIT:0802001 shares_probands_with CHDA:LIT:0801001 "
+        "(batch 01; compare does not read it)\n0 error(s), 3 warning(s)\n" + OK_LINE,
+    )
+
+
+@pytest.mark.parametrize(
+    ("pass_", "ref", "id_"),
+    [
+        ("extract", "CHDA:LIT:0801001", "CHDA:LIT:0009002"),  # a verify id: merge refuses it
+        ("verify", "CHDA:LIT:0901001", "CHDA:LIT:0009002"),  # an extract id: not a verify id
+        ("extract", "CHDA:LIT:0701001", "CHDA:LIT:0009002"),  # a judge id
+    ],
+)
+def test_a_ref_the_next_command_would_refuse_exits_2_with_that_commands_message(
+    tmp_path: Path, atlas_root: Path, pass_: str, ref: str, id_: str
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    folder = p.extract if pass_ == "extract" else p.verify
+    _edit(
+        folder / "batch-02.findings.yaml",
+        "shares_probands_with: unknown",
+        f"shares_probands_with: [{ref}]",
+    )
+    code, out = _check(p.root, _fake(tmp_path, _stdout()), batch="02", pass_=pass_)
+    assert (code, out) == (
+        2,
+        f"error: {id_}: shares_probands_with names {ref}, which is neither a finding of this "
+        "run nor one in the file\n",
     )
