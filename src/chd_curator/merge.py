@@ -20,7 +20,7 @@ only checks a batch can number it the way a merge will.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -142,7 +142,7 @@ def append_numbered(
 
 
 @dataclass(frozen=True)
-class _Curated:
+class Curated:
     lit_path: Path
     pub_path: Path
     reg_path: Path
@@ -155,16 +155,14 @@ class _Curated:
     triage: dict[str, dict[str, Any]]
 
 
-def _safe(raw: bytes, path: Path) -> Any:
+def safe_load(raw: bytes, path: Path) -> Any:
     try:
         return plain(YAML(typ="safe").load(raw))
     except (YAMLError, ValueError) as exc:
         raise MergeError(f"{path}: cannot be read as YAML: {exc}") from exc
 
 
-def _read_curated(
-    root: Path, run: RunPaths, symbol: str, *, refuse_merged: bool = True
-) -> _Curated:
+def read_curated(root: Path, run: RunPaths, symbol: str, *, refuse_merged: bool = True) -> Curated:
     if refuse_merged and run.merge.exists():
         raise MergeError(
             f"{run.merge}: the run is already merged; nothing was written. Remove the file only "
@@ -182,12 +180,12 @@ def _read_curated(
     except AtlasError as exc:
         raise MergeError(str(exc)) from None
     lit = lit_path.read_bytes()
-    data = _safe(lit, lit_path)
+    data = safe_load(lit, lit_path)
     if not isinstance(data, dict):
         raise MergeError(f"{lit_path}: is not a mapping")
     findings = {str(f["id"]): f for f in data.get("findings") or [] if "id" in f}
     triage = {str(t["pmid"]): t for t in data.get("triage") or [] if "pmid" in t}
-    return _Curated(
+    return Curated(
         lit_path,
         pub_path,
         reg_path,
@@ -216,9 +214,9 @@ def _study_types(root: Path) -> list[str]:
         raise MergeError("the atlas's publication_file schema has no StudyType enum") from exc
 
 
-def _years(c: _Curated, run: RunPaths, wanted: Sequence[str]) -> dict[str, int]:
+def paper_years(c: Curated, run: RunPaths, wanted: Sequence[str]) -> dict[str, int]:
     """Each wanted paper's year: ``publications.yaml``'s, else ``texts.json``'s (as ``batch``)."""
-    rows = _safe(c.pubs, c.pub_path)
+    rows = safe_load(c.pubs, c.pub_path)
     known = {str(r["id"]): r.get("year") for r in (rows or {}).get("publications") or []}
     texts = {t.pmid: t.year for t in load_texts(run)}
     years: dict[str, int] = {}
@@ -257,7 +255,7 @@ class _Writes:
     added: frozenset[str]
 
 
-def _commit(root: Path, run: RunPaths, c: _Curated, w: _Writes) -> None:
+def _commit(root: Path, run: RunPaths, c: Curated, w: _Writes) -> None:
     check_literature(c.lit_path, w.literature, c.lit_validator, expected=c.lit, added=w.added)
     if w.publications is not None:
         check_publications(c.pub_path, w.publications, c.pub_validator, expected=c.pubs)
@@ -291,7 +289,7 @@ def merge_run(
     ``WriteRefused`` from the files it reads and writes) before any write, and
     ``pubmed.PubMedError`` or ``OSError`` for the failures that exit 1.
     """
-    curated = _read_curated(root, run, approved or run.symbol)
+    curated = read_curated(root, run, approved or run.symbol)
     schema: Any = curated.lit_validator.schema
     if plan.mode == "new":
         writes = _plan_new(root, run, plan, study_types, fetch, api_key, curated, schema)
@@ -312,7 +310,7 @@ def _plan_new(
     study_types: Mapping[str, str],
     fetch: pubmed.Fetch,
     api_key: str | None,
-    c: _Curated,
+    c: Curated,
     schema: Mapping[str, Any],
 ) -> _Writes:
     allowed_types = _study_types(root)
@@ -346,20 +344,7 @@ def _plan_new(
                 raise MergeError(f"{papers_path}: names {pmid}, which is not in batch {batch.id}")
         outcomes.update({o.pmid: o for o in papers})
         local_ids = {str(f["id"]) for f in found}
-        for finding in found:
-            local = str(finding["id"])
-            if local in local_batch:
-                raise MergeError(f"{local} is in batch {local_batch[local]} and batch {batch.id}")
-            if local in c.findings:
-                raise MergeError(f"{local}: is already a finding in {c.lit_path}")
-            local_batch[local] = batch.id
-            if finding["publication"] not in batch.papers:
-                raise MergeError(
-                    f"{local}: cites {finding['publication']}, which is not in batch {batch.id}"
-                )
-            for name in (*APPROVAL_FIELDS, "verified_by"):
-                if name in finding:
-                    raise MergeError(f"{local}: carries {name}; an agent's finding may not")
+        check_new_findings(found, batch, c, local_batch)
         for key in quotes:
             if key not in local_ids:
                 raise MergeError(f"{evidence_path}: {key} is not a finding of batch {batch.id}")
@@ -374,8 +359,8 @@ def _plan_new(
                 f"{', '.join(allowed_types)}"
             )
     cited = sorted({str(f["publication"]) for f in flat}, key=pmid_key)
-    years = _years(c, run, cited)
-    registered = {str(r["id"]) for r in _safe(c.pubs, c.pub_path).get("publications") or []}
+    years = paper_years(c, run, cited)
+    registered = {str(r["id"]) for r in safe_load(c.pubs, c.pub_path).get("publications") or []}
     needed = sorted(
         (p for p in cited if p not in registered), key=lambda p: (years[p], pmid_key(p))
     )
@@ -412,8 +397,30 @@ def _plan_new(
     )
 
 
+def check_new_findings(
+    found: Sequence[Mapping[str, Any]], batch: Batch, c: Curated, local_batch: dict[str, str]
+) -> None:
+    """Refuse an agent's findings for `batch` unless each has a local id that no other batch
+    (`local_batch`, which this adds to) and no finding of the file holds, cites a paper of the
+    batch, and carries no approval field or ``verified_by``."""
+    for finding in found:
+        local = str(finding["id"])
+        if local in local_batch:
+            raise MergeError(f"{local} is in batch {local_batch[local]} and batch {batch.id}")
+        if local in c.findings:
+            raise MergeError(f"{local}: is already a finding in {c.lit_path}")
+        local_batch[local] = batch.id
+        if finding["publication"] not in batch.papers:
+            raise MergeError(
+                f"{local}: cites {finding['publication']}, which is not in batch {batch.id}"
+            )
+        for name in (*APPROVAL_FIELDS, "verified_by"):
+            if name in finding:
+                raise MergeError(f"{local}: carries {name}; an agent's finding may not")
+
+
 def _exclusions(
-    c: _Curated,
+    c: Curated,
     outcomes: Mapping[str, PaperOutcome],
     findings: Sequence[Mapping[str, Any]],
     reasons: Sequence[str],
@@ -514,9 +521,8 @@ def backfill_edit(current: Mapping[str, Any], values: Mapping[str, Any]) -> Back
     return BackfillEdit({**changed, **extra}, drop, frozenset(allowed))
 
 
-def _plan_backfill(
-    run: RunPaths, plan: BatchPlan, c: _Curated, schema: Mapping[str, Any]
-) -> _Writes:
+def check_backfill_declaration(plan: BatchPlan, schema: Mapping[str, Any]) -> frozenset[str]:
+    """The fields `plan` declares, refused unless a backfill may set them all."""
     declared = set(plan.fields)
     if not declared:
         raise MergeError("batches.json declares no fields to backfill")
@@ -529,36 +535,44 @@ def _plan_backfill(
         schema, "FindingDesign"
     ) or COMMON_VARIANT_CLASS not in _enum(schema, "FindingVariantClass"):
         raise MergeError("the schema has no common-variant design or snv_indel class to rely on")
+    return frozenset(declared)
 
+
+def backfill_fields(
+    path: Path,
+    batch: Batch,
+    c: Curated,
+    declared: frozenset[str],
+    taken: Collection[str] = (),
+) -> dict[str, dict[str, Any]]:
+    """A backfill pass file's fields by finding id, refused unless each id is a finding of the
+    file and of `batch` that no other pass in `taken` fills, and each field is declared and
+    still empty in the finding (R-P2-63)."""
     sets: dict[str, dict[str, Any]] = {}
-    evidence: dict[str, dict[str, tuple[Quote, ...]]] = {}
-    for batch in plan.batches:
-        findings_path = _require(_pass_paths(run, batch)[0])
-        evidence_path = _require(_pass_paths(run, batch)[2])
-        for fid, fields in load_backfill_pass(findings_path).items():
-            if fid not in c.findings:
-                raise MergeError(f"{findings_path}: {fid} is not a finding in {c.lit_path}")
-            if fid not in batch.findings:
-                raise MergeError(f"{findings_path}: {fid} is not a finding of batch {batch.id}")
-            if fid in sets:
-                raise MergeError(f"{fid} is in more than one batch's findings file")
-            for name in fields:
-                if name not in declared:
-                    raise MergeError(
-                        f"{findings_path}: {fid} sets {name!r}, which batches.json does not declare"
-                    )
-                if not is_empty(c.findings[fid].get(name)):
-                    raise MergeError(
-                        f"{findings_path}: {fid} already holds {name}; a backfill fills a field "
-                        "a finding lacks and never rewrites a filled one"
-                    )
-            sets[fid] = fields
-        quotes = load_evidence_file(evidence_path)
-        for key in quotes:
-            if key not in batch.findings:
-                raise MergeError(f"{evidence_path}: {key} is not a finding of batch {batch.id}")
-        evidence[batch.id] = quotes
+    for fid, fields in load_backfill_pass(path).items():
+        if fid not in c.findings:
+            raise MergeError(f"{path}: {fid} is not a finding in {c.lit_path}")
+        if fid not in batch.findings:
+            raise MergeError(f"{path}: {fid} is not a finding of batch {batch.id}")
+        if fid in taken:
+            raise MergeError(f"{fid} is in more than one batch's findings file")
+        for name in fields:
+            if name not in declared:
+                raise MergeError(
+                    f"{path}: {fid} sets {name!r}, which batches.json does not declare"
+                )
+            if not is_empty(c.findings[fid].get(name)):
+                raise MergeError(
+                    f"{path}: {fid} already holds {name}; a backfill fills a field "
+                    "a finding lacks and never rewrites a filled one"
+                )
+        sets[fid] = fields
+    return sets
 
+
+def apply_backfill(c: Curated, sets: Mapping[str, Mapping[str, Any]]) -> bytes:
+    """The literature file with each finding of `sets` given its fields, by ``backfill_edit``,
+    refused unless nothing but the allowed fields moved."""
     literature = c.lit
     allowed: dict[str, set[str]] = {}
     for fid, fields in sets.items():
@@ -571,6 +585,26 @@ def _plan_backfill(
         except RecordError as exc:
             raise MergeError(str(exc)) from None
     _only_declared_changes(c, literature, allowed)
+    return literature
+
+
+def _plan_backfill(
+    run: RunPaths, plan: BatchPlan, c: Curated, schema: Mapping[str, Any]
+) -> _Writes:
+    declared = check_backfill_declaration(plan, schema)
+    sets: dict[str, dict[str, Any]] = {}
+    evidence: dict[str, dict[str, tuple[Quote, ...]]] = {}
+    for batch in plan.batches:
+        findings_path = _require(_pass_paths(run, batch)[0])
+        evidence_path = _require(_pass_paths(run, batch)[2])
+        sets.update(backfill_fields(findings_path, batch, c, declared, sets))
+        quotes = load_evidence_file(evidence_path)
+        for key in quotes:
+            if key not in batch.findings:
+                raise MergeError(f"{evidence_path}: {key} is not a finding of batch {batch.id}")
+        evidence[batch.id] = quotes
+
+    literature = apply_backfill(c, sets)
     return _Writes(
         evidence,
         MergeRecord("backfill", {}, (), (), ()),
@@ -585,10 +619,10 @@ def _without_findings(data: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k != "findings"}
 
 
-def _only_declared_changes(c: _Curated, after: bytes, allowed: Mapping[str, set[str]]) -> None:
+def _only_declared_changes(c: Curated, after: bytes, allowed: Mapping[str, set[str]]) -> None:
     """Refuse a backfilled file where anything but the allowed fields of a finding moved."""
-    before = _safe(c.lit, c.lit_path)
-    now = _safe(after, c.lit_path)
+    before = safe_load(c.lit, c.lit_path)
+    now = safe_load(after, c.lit_path)
     if _without_findings(before) != _without_findings(now):
         raise MergeError(f"{c.lit_path}: a top-level key other than findings changed")
     old, new = before.get("findings") or [], now.get("findings") or []

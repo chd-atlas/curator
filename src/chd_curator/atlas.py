@@ -130,8 +130,8 @@ def _ask(root: Path, subcommand: str, symbol: str, atlas_cli: Path) -> dict[str,
     return answer
 
 
-def validate_summary(root: Path, atlas_cli: Path) -> tuple[int, str]:
-    """Run ``chd-atlas validate --root <root>``: its exit code and last non-empty line."""
+def run_validate(root: Path, atlas_cli: Path) -> tuple[int, str, str]:
+    """Run ``chd-atlas validate --root <root>``: its exit code, stdout and stderr."""
     try:
         run = subprocess.run(
             [str(atlas_cli), "validate", "--root", str(root)],
@@ -142,10 +142,16 @@ def validate_summary(root: Path, atlas_cli: Path) -> tuple[int, str]:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise AtlasError(f"the atlas CLI {atlas_cli} could not be run: {exc}") from exc
-    lines = [line for line in run.stdout.splitlines() if line.strip()]
+    return run.returncode, run.stdout, run.stderr
+
+
+def validate_summary(root: Path, atlas_cli: Path) -> tuple[int, str]:
+    """Run ``chd-atlas validate --root <root>``: its exit code and last non-empty line."""
+    code, stdout, _ = run_validate(root, atlas_cli)
+    lines = [line for line in stdout.splitlines() if line.strip()]
     if not lines:
-        raise AtlasError(f"chd-atlas validate printed nothing (exit {run.returncode})")
-    return run.returncode, lines[-1].strip()
+        raise AtlasError(f"chd-atlas validate printed nothing (exit {code})")
+    return code, lines[-1].strip()
 
 
 def _check_shape(answer: dict[str, Any], expected: frozenset[str], version: int) -> None:

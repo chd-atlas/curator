@@ -38,6 +38,7 @@ from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, sources, variantvalidator
 from chd_curator import assemble as assemble_module
 from chd_curator import batch as batch_module
+from chd_curator import check as check_module
 from chd_curator import compare as compare_module
 from chd_curator import merge as merge_module
 from chd_curator import texts as texts_module
@@ -1172,6 +1173,48 @@ def assemble(
     except OSError as exc:
         raise _fail(str(exc), 1) from None
     typer.echo(assemble_module.summary(built.record))
+
+
+@app.command("check-batch")
+def check_batch(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    batch: str = typer.Option(..., "--batch", help="The batch id, as in batches.json (NN)."),
+    pass_: str = typer.Option(..., "--pass", help="extract, verify or judge."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Check one batch's pass against the atlas's validator, on a scratch copy of the root.
+
+    The pass is applied to a temporary copy of `curation/` (every other top-level entry but
+    `local`, `.git` and `.venv` is linked), `chd-atlas validate` runs on the copy, and the copy
+    is removed. Nothing under `--root` is written. Prints the validator's summary line, then
+    `OK: only the errors expected before merge and normalise` (exit 0), or `UNEXPECTED ERRORS:`
+    and each error line (exit 1). The expected errors are LIT003, LIT011, LIT022 for a mane
+    variant lacking hgvs_c, grch38 or normalisation, and LIT025 for a p. with no hgvs_p. A
+    validator that crashes, exits other than 0 or 1, or prints a summary that does not match its
+    error lines is never OK: its raw output is printed and the exit code is 1. Exit 2 for a batch
+    file that does not load.
+    """
+    _require_root(root)
+    cli = _atlas_cli(root, atlas_cli)
+    try:
+        approved = target(root, symbol, cli).symbol
+        checked = check_module.check_batch(root, symbol, approved, run, batch, pass_, cli)
+    except (
+        AtlasError,
+        check_module.CheckError,
+        merge_module.MergeError,
+        assemble_module.AssembleError,
+        RunFormatError,
+        RecordError,
+        DiffError,
+    ) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo("\n".join(checked.lines))
+    raise typer.Exit(code=checked.code)
 
 
 def _atlas_commit(root: Path) -> str | None:

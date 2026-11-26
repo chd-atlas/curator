@@ -44,12 +44,12 @@ from chd_curator.compare import differing_fields
 from chd_curator.diff import DiffError, parse_findings_file
 from chd_curator.merge import (
     PREFIX,
-    _Curated,
-    _read_curated,
-    _safe,
-    _years,
+    Curated,
     append_numbered,
     backfill_edit,
+    paper_years,
+    read_curated,
+    safe_load,
 )
 from chd_curator.notation import NotationChange, apply_rules
 from chd_curator.records import (
@@ -85,7 +85,7 @@ from chd_curator.write import (
 
 _JUDGE_FILE: Final = re.compile(r"judge-([0-9]{2,})\.findings\.yaml")
 _JUDGE_MANIFEST: Final = re.compile(r"judge-[0-9]{2,}\.md")
-_LOCAL_ID: Final = re.compile(r"CHDA:LIT:07[0-9]{5}")
+LOCAL_ID: Final = re.compile(r"CHDA:LIT:07[0-9]{5}")
 _ANY: Final = frozenset({"*"})
 
 
@@ -97,17 +97,20 @@ class AssembleError(Exception):
 class Assembled:
     """Everything an assemble writes, built and checked before the first write."""
 
-    curated: _Curated
+    curated: Curated
     record: AssembleRecord
     literature: bytes
     registry: bytes | None
     added: frozenset[str]
 
 
-def _judge_findings(
-    run: RunPaths, plan: BatchPlan, schema: Mapping[str, Any]
+def judge_findings(
+    run: RunPaths, plan: BatchPlan, schema: Mapping[str, Any], only: str | None = None
 ) -> list[dict[str, Any]]:
-    """Every finding of ``judging/judge-NN.findings.yaml``, each citing a paper of batch NN."""
+    """Every finding of ``judging/judge-NN.findings.yaml``, each citing a paper of batch NN.
+
+    With `only` (a batch id) the other batches' files are name-checked but not read, so one
+    judge's file can be checked without another's being well formed."""
     batches = {b.id: b for b in plan.batches}
     found: list[dict[str, Any]] = []
     seen: dict[str, Path] = {}
@@ -122,6 +125,8 @@ def _judge_findings(
                 f"{path}: is not a judge file of a batch in batches.json (judge-NN.md or "
                 "judge-NN.findings.yaml); a misnamed file would drop its findings without a sound"
             )
+        if only is not None and match.group(1) != only:
+            continue
         batch = batches[match.group(1)]
         try:
             rows = parse_findings_file(path.read_bytes(), schema)
@@ -144,7 +149,7 @@ def _judge_findings(
     return found
 
 
-def _rewrite_refs(
+def rewrite_refs(
     finding: Mapping[str, Any],
     mapping: Mapping[str, str],
     held: frozenset[str],
@@ -171,6 +176,34 @@ def _rewrite_refs(
                 )
         out["shares_probands_with"] = rewritten
     return out
+
+
+def add_judged(
+    c: Curated,
+    run: RunPaths,
+    previous: Mapping[str, str],
+    additions: Sequence[Mapping[str, Any]],
+    counter: int,
+) -> tuple[bytes, dict[str, str], int]:
+    """`c.lit` with the judges' added findings numbered from `counter`: `(bytes, local -> final
+    ids, counter)`. A ``shares_probands_with`` entry naming a local id that `previous` (an earlier
+    assemble's map) numbered becomes its final id; the rest is ``append_numbered``'s."""
+    prepared = [rewrite_refs(f, previous, frozenset(c.findings), others_ok=True) for f in additions]
+    years = paper_years(c, run, sorted({str(f["publication"]) for f in additions}))
+    return append_numbered(c.lit, prepared, years, counter)
+
+
+def replace_judged(
+    literature: bytes,
+    replacements: Mapping[str, Mapping[str, Any]],
+    mapping: Mapping[str, str],
+    held: frozenset[str],
+) -> bytes:
+    """`literature` with each finding of `replacements` (final id -> the judge's finding)
+    replacing the finding of its id, in id order, its ``shares_probands_with`` local ids read
+    through `mapping`; an id in neither `mapping` nor `held` is refused."""
+    whole = [rewrite_refs(replacements[fid], mapping, held) for fid in sorted(replacements)]
+    return with_findings_replaced(literature, whole) if whole else literature
 
 
 def _verifier(run: RunPaths, plan: BatchPlan, given: str | None, to_mark: bool) -> str | None:
@@ -243,7 +276,7 @@ def _declared_edit(
 
 
 def _check_nothing_else_moved(
-    c: _Curated,
+    c: Curated,
     after: bytes,
     *,
     new_ids: frozenset[str],
@@ -252,7 +285,7 @@ def _check_nothing_else_moved(
     verifier: str | None,
 ) -> None:
     """Refuse a result where anything moved that no step above is entitled to move."""
-    before, now = _safe(c.lit, c.lit_path), _safe(after, c.lit_path)
+    before, now = safe_load(c.lit, c.lit_path), safe_load(after, c.lit_path)
     other = {"findings", "triage"}
     if {k: v for k, v in before.items() if k not in other} != {
         k: v for k, v in now.items() if k not in other
@@ -301,7 +334,7 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
             f"merge.json is a {merged.mode} merge but batches.json plans {plan.mode}"
         )
     comparison = load_comparison(run)
-    c = _read_curated(root, run, approved, refuse_merged=False)
+    c = read_curated(root, run, approved, refuse_merged=False)
     schema: Any = c.lit_validator.schema
     previous = load_assemble(run) or AssembleRecord((), {}, (), (), None)
     for local, final in previous.added.items():
@@ -310,7 +343,7 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
                 f"{run.assemble}: maps {local} to {final}, which {c.lit_path} lacks. A previous "
                 "assemble stopped part-way: remove assemble.json and run it again"
             )
-    judged = _judge_findings(run, plan, schema)
+    judged = judge_findings(run, plan, schema)
     backfill = plan.mode == "backfill"
     declared = frozenset(plan.fields)
 
@@ -326,7 +359,7 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
             target = previous.added[jid]
         elif not backfill and jid in prior_final:
             target = jid
-        elif not backfill and _LOCAL_ID.fullmatch(jid):
+        elif not backfill and LOCAL_ID.fullmatch(jid):
             additions.append(finding)
             continue
         else:
@@ -360,7 +393,7 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
                 )
 
     # Papers of judge-added findings: a Publication and an `included` triage entry each.
-    registered = {str(r["id"]) for r in _safe(c.pubs, c.pub_path).get("publications") or []}
+    registered = {str(r["id"]) for r in safe_load(c.pubs, c.pub_path).get("publications") or []}
     added_back = {fid for fid in replacements if fid in prior_final}
     cited = sorted(
         {str(f["publication"]) for f in [*additions, *(replacements[i] for i in added_back)]}
@@ -399,12 +432,7 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
     new_map: dict[str, str] = {}
     new_counter = counter
     if additions:
-        prepared = [
-            _rewrite_refs(f, previous.added, frozenset(c.findings), others_ok=True)
-            for f in additions
-        ]
-        years = _years(c, run, sorted({str(f["publication"]) for f in additions}))
-        literature, new_map, new_counter = append_numbered(literature, prepared, years, counter)
+        literature, new_map, new_counter = add_judged(c, run, previous.added, additions, counter)
     mapping = {**previous.added, **new_map}
     held = frozenset(c.findings) | frozenset(new_map.values())
     new_ids = frozenset(new_map.values())
@@ -416,9 +444,7 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
             backfill_allowed[fid] = permitted
             literature = with_fields_set(literature, fid, fields, drop)
     else:
-        whole = [_rewrite_refs(replacements[fid], mapping, held) for fid in sorted(replacements)]
-        if whole:
-            literature = with_findings_replaced(literature, whole)
+        literature = replace_judged(literature, replacements, mapping, held)
     if triage:
         literature = with_triage(literature, triage)
 
@@ -427,7 +453,7 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
         scope = sorted(comparison.pairs) if "variants" in declared else []
     else:
         scope = sorted({*merged.ids.values(), *replacements, *new_ids})
-    now = {str(f["id"]): f for f in _safe(literature, c.lit_path).get("findings") or []}
+    now = {str(f["id"]): f for f in safe_load(literature, c.lit_path).get("findings") or []}
     for fid in scope:
         if fid not in now:
             raise AssembleError(f"{fid}: is in the run but not in {c.lit_path}")

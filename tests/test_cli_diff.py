@@ -558,6 +558,7 @@ def test_the_cli_has_no_command_or_option_that_approves() -> None:
         "merge",
         "compare",
         "assemble",
+        "check-batch",
         "review-page",
         "review-decisions",
         "archive-page",

@@ -302,6 +302,45 @@ someone else excluded; an `assemble.json` naming ids the file lacks; a blind pas
 one `extracted_by`; a file any write would refuse (the atlas's schema, an anchor, an approval
 changed) or changed since it was read. It exits 1 on an OS error.
 
+### Check a batch before handing it back
+
+`chd-curator check-batch <SYMBOL> --run <run id> --batch <NN> --pass extract|verify|judge [--root .]
+[--atlas-cli PATH]` is what an extract, verify or judge agent runs on its own batch before it
+reports. It applies that one pass to a copy of the atlas root in a temporary directory, runs
+`chd-atlas validate` on the copy, and removes the copy. The copy holds `curation/` (copied) and a
+symlink to every other top-level entry of `--root` except `local`, `.git` and `.venv`; nothing
+under `--root` is written.
+
+How the pass is applied, by the run's mode in `batches.json`:
+
+- `new` or `reread`, `--pass extract` or `verify`: the findings of `extract/batch-NN.findings.yaml`
+  (or `verify/`) are appended as `merge` would number them, from the `LIT` counter (raised in the
+  copy, so `ID002` is not among the expected errors). No Publication is added and no triage
+  entry changes. A `shares_probands_with` naming a local id of another batch is refused (exit 2),
+  because the batch is applied alone.
+- `new` or `reread`, `--pass judge`: the findings of `judging/judge-NN.findings.yaml` (the other
+  batches' judge files are not read). A finding whose id the file holds replaces it; a local id
+  `CHDA:LIT:07...` is added and numbered; an id an earlier `assemble.json` mapped replaces the
+  finding it was numbered as. It does not need `comparison.json`.
+- `backfill`, `--pass extract` or `verify`: the declared fields are filled by `merge`'s own
+  backfill functions, so a field a finding already holds is refused (exit 2). Check a backfill
+  pass before `merge`; after it the fields are filled. `--pass judge` replaces findings by id.
+
+It prints the validator's summary line, then either `OK: only the errors expected before merge and
+normalise` (exit 0) or `UNEXPECTED ERRORS:` and each error line the validator printed that is not
+expected (exit 1). The expected errors, which are not listed, are `LIT003`, `LIT011`, `LIT022`
+when its message ends `a mane variant needs hgvs_c`, `... grch38` or `... normalisation`, and
+`LIT025` when it ends `but the variant has no hgvs_p`. Warnings are never listed.
+
+The validator's answer is believed only when it exits 0 or 1, its last line is `N error(s), M
+warning(s)`, exactly N lines begin `ERROR [`, the exit code agrees with N (0 only for none), and
+nothing printed holds a traceback. Otherwise the command prints `UNEXPECTED ERRORS:`, the reason
+and the validator's raw output, and exits 1: a crashed validator is never `OK`. It also exits 1
+when the validator cannot be run. Exit 2, with nothing validated, for a `--pass` that is not one of
+the three, a batch not in `batches.json`, a missing or unreadable pass file, a pass that does not
+apply (an unknown `shares_probands_with`, a backfill field already filled, a judge id of no known
+kind), or an unreadable gene or run. It exits 1 on an OS error while a file is read.
+
 ### Review a run
 
 `chd-curator quotes <SYMBOL> --run <run id>` checks every quote in a run's `evidence/` and
