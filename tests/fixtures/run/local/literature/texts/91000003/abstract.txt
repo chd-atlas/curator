@@ -1,0 +1,4 @@
+A synthetic TBX5 splice variant in a fetus
+Year: 2022
+Publication types: Case Reports
+Exome sequencing of a fetus with an atrial septal defect found a heterozygous TBX5 splice-donor variant, c.700+1G>A.

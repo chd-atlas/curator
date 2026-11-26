@@ -1,0 +1,14 @@
+CHDA:LIT:0901001:
+- field: design
+  quote: We report a proband with a ventricular septal defect
+  where: Abstract
+- field: variant 1 phase
+  quote: The proband carried both variants in trans
+  where: Results - Patients
+CHDA:LIT:0901002:
+- field: design
+  quote: a second family carried a heterozygous c.835C>T, p.(Arg279Ter) variant
+  where: Results - Family B
+- field: phenotypes
+  quote: three relatives had an atrial septal defect
+  where: Results - Family B

@@ -130,8 +130,8 @@ def _ask(root: Path, subcommand: str, symbol: str, atlas_cli: Path) -> dict[str,
     return answer
 
 
-def validate_summary(root: Path, atlas_cli: Path) -> tuple[int, str]:
-    """Run ``chd-atlas validate --root <root>``: its exit code and last non-empty line."""
+def run_validate(root: Path, atlas_cli: Path) -> tuple[int, str, str]:
+    """Run ``chd-atlas validate --root <root>``: its exit code, stdout and stderr."""
     try:
         run = subprocess.run(
             [str(atlas_cli), "validate", "--root", str(root)],
@@ -142,10 +142,7 @@ def validate_summary(root: Path, atlas_cli: Path) -> tuple[int, str]:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise AtlasError(f"the atlas CLI {atlas_cli} could not be run: {exc}") from exc
-    lines = [line for line in run.stdout.splitlines() if line.strip()]
-    if not lines:
-        raise AtlasError(f"chd-atlas validate printed nothing (exit {run.returncode})")
-    return run.returncode, lines[-1].strip()
+    return run.returncode, run.stdout, run.stderr
 
 
 def _check_shape(answer: dict[str, Any], expected: frozenset[str], version: int) -> None:
@@ -215,6 +212,8 @@ def digests(root: Path, symbol: str, atlas_cli: Path) -> Digests:
         for key in ("approved", "verified", "approval_void"):
             if type(row[key]) is not bool:
                 raise AtlasError(f"the atlas's finding {key} is not a boolean: {row[key]!r}")
+        if any(f.id == row["id"] for f in findings):
+            raise AtlasError(f"the atlas's answer lists finding {row['id']} twice")
         findings.append(
             FindingDigests(
                 row["id"],

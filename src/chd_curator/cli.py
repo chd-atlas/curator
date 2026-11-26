@@ -36,6 +36,11 @@ from ruamel.yaml.error import YAMLError
 from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, sources, variantvalidator
+from chd_curator import assemble as assemble_module
+from chd_curator import batch as batch_module
+from chd_curator import check as check_module
+from chd_curator import compare as compare_module
+from chd_curator import merge as merge_module
 from chd_curator import texts as texts_module
 from chd_curator.atlas import (
     AtlasError,
@@ -44,9 +49,9 @@ from chd_curator.atlas import (
     digests,
     frame,
     plain,
+    run_validate,
     schema_validator,
     target,
-    validate_summary,
 )
 from chd_curator.decisions import ExportError, decisions_from_export
 from chd_curator.diff import DiffError, diff_findings, parse_findings_file, stripped
@@ -67,7 +72,7 @@ from chd_curator.records import (
     with_verified,
 )
 from chd_curator.review_data import ReviewDataError, Reviewer, build_review_data
-from chd_curator.run import RUN_FORMAT, RunFormatError, RunPaths
+from chd_curator.run import RUN_FORMAT, RunFormatError, RunPaths, load_batches
 from chd_curator.write import (
     WriteRefused,
     refuse_anchors,
@@ -1006,6 +1011,231 @@ def quotes(
         typer.echo(f"over {LONG_QUOTE_WORDS} words ({c.words}): {c.finding} {c.origin} {c.field}")
 
 
+@app.command("batch")
+def batch(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    mode: str = typer.Option(..., "--mode", help="new or backfill."),
+    fields: str = typer.Option("", "--fields", help="Backfill: comma-separated Finding fields."),
+    findings: list[str] = typer.Option(
+        [],
+        "--findings",
+        help="Backfill: finding ids to re-read (default every finding whose declared fields "
+        "are all empty).",
+    ),
+    budget_kb: int = typer.Option(170, "--budget-kb", min=1, help="Text budget per batch."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Plan a run's reading batches under a text budget; write batches.json and the manifests.
+
+    SYMBOL may be an alias or a previous symbol: the run directory is named as typed and the
+    literature file by the approved symbol. The budget is budget-kb x 1,000 bytes of main text per
+    batch. A backfill's summary line says how many findings its default selection left out for
+    holding a declared field. Exit 2, nothing written, when the run is already batched, has no
+    texts.json, a selected paper has no text or year, or a field is unknown, forbidden or one
+    that compare does not compare as a field of its own.
+    """
+    _require_root(root)
+    if mode not in ("new", "backfill"):
+        raise _fail(f"--mode {mode!r} is not new or backfill", 2)
+    paths = RunPaths(root, symbol, run)
+    names = tuple(n.strip() for n in fields.split(",") if n.strip())
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        prepared = batch_module.prepare_batches(
+            paths,
+            "new" if mode == "new" else "backfill",
+            names,
+            tuple(findings),
+            budget_kb * 1000,
+            approved,
+        )
+    except (AtlasError, batch_module.BatchError, RunFormatError) as exc:
+        raise _fail(str(exc), 2) from None
+    try:
+        batch_module.write_plan(paths, prepared)
+    except OSError as exc:
+        raise _fail(f"{paths.dir}: cannot be written: {exc}", 1) from None
+    typer.echo(batch_module.summary(prepared.plan, prepared.skipped))
+
+
+@app.command("merge")
+def merge(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    study_type: list[str] = typer.Option(
+        [],
+        "--study-type",
+        help="PMID:<n>=<study type> for a paper whose reader left the study type null.",
+    ),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Merge a run's extraction batches into the gene's literature file.
+
+    New findings get final ids from the LIT counter; a paper newly cited gets a Publication; an
+    excluded paper's triage entry is set to excluded. A backfill run fills the declared fields of
+    existing findings that lack them, and never rewrites a filled field. Exit 2, nothing
+    written, for every refusal found before the first write: an inconsistent batch, an already
+    merged run, a curated file that is missing, malformed or not UTF-8. Exit 1 when PubMed fails
+    or an OS error occurs while reading or writing a file. A curated file that changes between
+    the merge reading and writing it is refused at the write (exit 2), naming the files already
+    written, which stay.
+    """
+    _require_root(root)
+    given: dict[str, str] = {}
+    for item in study_type:
+        pmid, _, value = item.partition("=")
+        if not re.fullmatch(r"PMID:[0-9]+", pmid) or not value or pmid in given:
+            raise _fail(f"--study-type {item!r} is not PMID:<n>=<type>, or repeats a PMID", 2)
+        given[pmid] = value
+    key = _api_key()
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        paths = RunPaths(root, symbol, run)
+        plan = load_batches(paths)
+        record = merge_module.merge_run(root, paths, plan, given, _fetch, key, approved=approved)
+        line = merge_module.summary(root, plan, record, paths)
+    except (
+        AtlasError,
+        merge_module.MergeError,
+        RunFormatError,
+        RecordError,
+        DiffError,
+        WriteRefused,
+    ) as exc:
+        raise _fail(_redact(str(exc), key), 2) from None
+    except (PubMedError, urllib.error.URLError, OSError) as exc:
+        raise _fail(_redact(str(exc), key), 1) from None
+    typer.echo(line)
+
+
+@app.command("compare")
+def compare(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Compare a merged run's blind pass with its first pass and write the judges' manifests.
+
+    Writes comparison.json and judging/judge-NN.md for each batch with something to judge. A
+    re-run replaces the manifests, so a corrected verify file can be compared again. Exit 2,
+    nothing written, when the judges have already written decisions or findings, the run has no
+    merge.json, or a batch's blind pass is missing, misplaced or inconsistent. Exit 1 on an OS
+    error.
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        paths = RunPaths(root, symbol, run)
+        prepared = compare_module.prepare(paths, approved)
+    except (AtlasError, compare_module.CompareError, RunFormatError, DiffError) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    try:
+        compare_module.write_outputs(paths, prepared)
+    except OSError as exc:
+        raise _fail(f"{paths.dir}: cannot be written: {exc}", 1) from None
+    typer.echo(compare_module.summary(prepared.comparison))
+
+
+@app.command("assemble")
+def assemble(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    verifier: str | None = typer.Option(
+        None,
+        "--verifier",
+        help="The blind reader's name for verified_by; a backfill needs it, other runs read it.",
+    ),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Apply a run's judge findings, the notation rules and the blind agreement to the gene's file.
+
+    A judge's finding replaces the finding of its id, or is added under the next LIT id; the
+    notation rules then fix every finding of the run; and each finding the readers agreed on
+    gains `verified_by`. Writes assemble.prev.json (a copy of the earlier assemble.json),
+    assemble.json, the id registry (when findings were added), the literature file and
+    assemble.json again, in that order. A re-run replaces the findings it already numbered, skips
+    each judge finding whose digest assemble.json records unchanged, and changes no byte when
+    nothing was edited. Exit 2, nothing written, for every refusal found before the first write
+    (a write refused after earlier ones exits 2 naming the files already written): no merge.json or
+    comparison.json, a judge finding no decision covers, a changed judge finding for a finding
+    approved since the assemble that applied it (or a first one for an approved finding in a new
+    run), a finding edited after compare that no longer
+    agrees with its blind finding, a field changed that no decision names, a judged paper with no
+    Publication, an assemble.json naming ids the file lacks, or a file changed since it was read.
+    Exit 1 on an OS error.
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        paths = RunPaths(root, symbol, run)
+        built = assemble_module.assemble_run(root, paths, approved, verifier)
+        assemble_module.commit(paths, built)
+    except (
+        AtlasError,
+        assemble_module.AssembleError,
+        merge_module.MergeError,
+        RunFormatError,
+        RecordError,
+        DiffError,
+        WriteRefused,
+    ) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(assemble_module.summary(built.record))
+
+
+@app.command("check-batch")
+def check_batch(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    batch: str = typer.Option(..., "--batch", help="The batch id, as in batches.json (NN)."),
+    pass_: str = typer.Option(..., "--pass", help="extract, verify or judge."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Check one batch's pass against the atlas's validator, on a scratch copy of the root.
+
+    The pass is applied to a temporary copy of `curation/` (every other top-level entry but
+    `local`, `.git` and `.venv` is linked), `chd-atlas validate` runs on the copy, and the copy
+    is removed. Nothing under `--root` is written. Prints the validator's summary line, then
+    `OK: only the errors expected before merge and normalise` (exit 0), or `UNEXPECTED ERRORS:`
+    and each error line (exit 1). The expected errors are LIT003 for a paper outside the batch,
+    LIT011, LIT022 for a mane variant lacking hgvs_c, grch38 or normalisation, and LIT025 for a
+    p. with no hgvs_p. An extract or verify pass is applied with the exclusions of its own
+    papers.json, so a paper of the batch that is neither excluded nor cited is reported. A
+    validator that crashes, exits other than 0 or 1, or prints a summary that does not match its
+    error lines is never OK: its raw output is printed and the exit code is 1. Exit 2 for a batch
+    file that does not load.
+    """
+    _require_root(root)
+    cli = _atlas_cli(root, atlas_cli)
+    try:
+        approved = target(root, symbol, cli).symbol
+        checked = check_module.check_batch(root, symbol, approved, run, batch, pass_, cli)
+    except (
+        AtlasError,
+        check_module.CheckError,
+        merge_module.MergeError,
+        assemble_module.AssembleError,
+        RunFormatError,
+        RecordError,
+        DiffError,
+    ) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo("\n".join(checked.lines))
+    raise typer.Exit(code=checked.code)
+
+
 def _atlas_commit(root: Path) -> str | None:
     """The checkout's short HEAD commit, or None when it is not a git checkout."""
     try:
@@ -1078,7 +1308,10 @@ def review_page_command(
     and shows no approval state and no other reviewer's verdict. Opened as a claude.ai
     artifact the page saves to its store; opened as a file it saves in the browser and
     offers "Download my review" (a decisions file for `chd-atlas literature apply-review`).
-    Refuses (exit 1) to build when `chd-atlas validate` reports an error; exit 2 for a bad
+    Refuses (exit 1) to build when `chd-atlas validate` reports an error, except an approval
+    changed since it was given (LIT015) on a finding the page shows as a card, which reads
+    "approval void: re-approve"; a LIT015 on a finding the page does not show is refused,
+    naming it. Exit 2 for a bad
     argument, an unreadable run, or a `--with` file that is not a finished second opinion on this
     gene (two files from one reviewer are refused too). Validate is asked first, so a gene the atlas
     cannot digest still reports its validate errors.
@@ -1095,10 +1328,24 @@ def review_page_command(
     cli = _atlas_cli(root, atlas_cli)
     paths = RunPaths(root, symbol, run)
     try:
-        code, line = validate_summary(root, cli)
+        code, stdout, stderr = run_validate(root, cli)
     except AtlasError as exc:
         raise _fail(str(exc), 2) from None
-    if code != 0 or not re.match(r"0 error\(s\)", line):
+    answer = check_module.read_validate(code, stdout, stderr)
+    if answer.summary is None:
+        raise _fail(f"chd-atlas validate printed nothing (exit {code})", 2)
+    line = answer.summary
+    if answer.problem is not None:
+        raise _fail(
+            f"chd-atlas validate's answer cannot be trusted ({answer.problem}); fix it before "
+            "building a page",
+            1,
+        )
+    # An approval changed since the owner gave it (LIT015) is an error the page exists to show:
+    # a card reads "approval void: re-approve". It is the only error a page is built over, and
+    # only for a finding the page shows (checked once the cards are known).
+    voided = {fid for fid in map(check_module.void_approval, answer.errors) if fid is not None}
+    if any(check_module.void_approval(e) is None for e in answer.errors):
         raise _fail(
             f"chd-atlas validate reports errors ({line}); fix them before building a page", 1
         )
@@ -1121,6 +1368,14 @@ def review_page_command(
         )
     except (ReviewDataError, RunFormatError, ValueError) as exc:
         raise _fail(str(exc), 2) from None
+    unshown = sorted(voided - {str(c["id"]) for c in data["findings"]})
+    if unshown:
+        raise _fail(
+            f"chd-atlas validate reports errors ({line}), among them an approval changed since "
+            f"it was given on {', '.join(unshown)}, which this page does not show; fix them "
+            "before building a page",
+            1,
+        )
     out = paths.dir / ("review.html" if role == "owner" else f"review-{name_slug}.html")
     try:
         out.write_text(review_page.render(data), encoding="utf-8")

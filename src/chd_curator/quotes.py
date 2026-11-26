@@ -40,6 +40,7 @@ from chd_curator.fs import write_bytes_atomically
 from chd_curator.run import (
     RunFormatError,
     RunPaths,
+    load_blind_only,
     load_evidence,
     load_judge,
     load_texts,
@@ -158,9 +159,16 @@ def _papers_by_finding(run: RunPaths) -> dict[str, str]:
 
 
 def check_quotes(run: RunPaths) -> tuple[QuoteCheck, ...]:
-    """Check every evidence and judge quote; order: finding id, origin, file order."""
+    """Check every evidence and judge quote; order: finding id, origin, file order. A decision
+    keyed by a finding only the blind reader reported is checked against that finding's own
+    paper."""
     evidence, judge = load_evidence(run), load_judge(run)
-    paper_of = _papers_by_finding(run)
+    # a finding only the blind reader reported is in no literature file: its paper is its
+    # publication in the verify pass
+    paper_of = {
+        **{fid: str(row["publication"]) for fid, row in load_blind_only(run).items()},
+        **_papers_by_finding(run),
+    }
     papers = {paper.pmid: paper for paper in load_texts(run)}
     cache: dict[str, tuple[str, ...]] = {}
 

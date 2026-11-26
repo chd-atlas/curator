@@ -23,10 +23,13 @@ from chd_curator.atlas import plain, schema_validator
 from chd_curator.write import (
     APPROVAL_FIELDS,
     WriteRefused,
+    check_registry,
     refuse_anchors,
     refuse_approval_change,
+    refused_after_writes,
     write_literature,
     write_publications,
+    write_registry,
 )
 
 HEADER = (
@@ -461,3 +464,168 @@ def test_a_change_that_lands_during_the_checks_is_refused_and_the_other_writers_
         f"{pub_path}: the file changed since it was read; nothing was written"
     )
     assert pub_path.read_bytes() == stamped[pub_path]
+
+
+ADDED = {
+    "an added id that carries approved_by": (
+        BEFORE + _finding(3, "    approved_by: agent:x\n"),
+        frozenset({"CHDA:LIT:0000003"}),
+        "CHDA:LIT:0000003.*may not carry approved_by",
+    ),
+    "an added id that carries verified_by": (
+        BEFORE + _finding(3, "    verified_by: agent:x\n"),
+        frozenset({"CHDA:LIT:0000003"}),
+        "CHDA:LIT:0000003.*may not carry verified_by",
+    ),
+    "a new id the caller did not name": (
+        BEFORE + _finding(3) + _finding(4),
+        frozenset({"CHDA:LIT:0000003"}),
+        "CHDA:LIT:0000004.*adding a finding",
+    ),
+    "a named id that is not in the content": (
+        BEFORE,
+        frozenset({"CHDA:LIT:0000003"}),
+        "CHDA:LIT:0000003.*named as added but not in the new content",
+    ),
+    "a named id that was already in the file": (
+        BEFORE,
+        frozenset({"CHDA:LIT:0000002"}),
+        "CHDA:LIT:0000002.*named as added but already in the file",
+    ),
+    "a removed id, even beside a named one": (
+        HEADER + _finding(1, APPROVED) + _finding(3),
+        frozenset({"CHDA:LIT:0000003"}),
+        "CHDA:LIT:0000002.*removing a finding",
+    ),
+}
+
+
+@pytest.mark.parametrize("after, added, message", ADDED.values(), ids=ADDED)
+def test_the_write_path_admits_only_the_named_new_findings(
+    lit: Path,
+    literature_schema: Draft202012Validator,
+    after: str,
+    added: frozenset[str],
+    message: str,
+) -> None:
+    before = _digest(lit)
+    with pytest.raises(WriteRefused, match=message):
+        write_literature(
+            lit, after.encode(), literature_schema, expected=BEFORE.encode(), added=added
+        )
+    assert _digest(lit) == before
+
+
+def test_a_named_new_finding_with_no_approval_lands_and_an_old_approval_still_cannot_change(
+    lit: Path, literature_schema: Draft202012Validator
+) -> None:
+    after = BEFORE + _finding(3)
+    write_literature(
+        lit,
+        after.encode(),
+        literature_schema,
+        expected=BEFORE.encode(),
+        added=frozenset({"CHDA:LIT:0000003"}),
+    )
+    assert lit.read_bytes() == after.encode()
+    with pytest.raises(WriteRefused, match="CHDA:LIT:0000001.*approved_on"):
+        refuse_approval_change(
+            BEFORE.encode(),
+            after.replace("approved_on: 2026-11-03", "approved_on: 2026-11-04").encode(),
+            frozenset({"CHDA:LIT:0000003"}),
+        )
+
+
+REGISTRY = b"prefixes:\n  AST: 2\n  LIT: 9001\n"
+REGISTRY_REFUSALS = {
+    "a prefix that falls": (
+        b"prefixes:\n  AST: 2\n  LIT: 9000\n",
+        "prefix LIT would fall from 9001 to 9000",
+    ),
+    "a prefix that vanishes": (b"prefixes:\n  LIT: 9001\n", "prefix AST would vanish"),
+    "a counter that is not an integer": (
+        b"prefixes:\n  AST: 2\n  LIT: '9002'\n",
+        "prefix 'LIT' is not a non-negative integer",
+    ),
+    "a counter that is a boolean": (
+        b"prefixes:\n  AST: 2\n  LIT: true\n",
+        "prefix 'LIT' is not a non-negative integer",
+    ),
+    "another top-level key": (
+        b"prefixes:\n  AST: 2\n  LIT: 9002\nextra: 1\n",
+        "holding only 'prefixes'",
+    ),
+    "a new prefix that is negative": (
+        b"prefixes:\n  AST: 2\n  LIT: 9001\n  NEW: -1\n",
+        "prefix 'NEW' is not a non-negative integer",
+    ),
+    "an anchor": (b"prefixes:\n  AST: 2\n  LIT: &n 9002\n", r"a YAML anchor \(&n\)"),
+}
+
+
+@pytest.mark.parametrize("content, message", REGISTRY_REFUSALS.values(), ids=REGISTRY_REFUSALS)
+def test_write_registry_refuses_what_would_corrupt_the_counters(
+    tmp_path: Path, content: bytes, message: str
+) -> None:
+    path = tmp_path / ".id_registry.yaml"
+    path.write_bytes(REGISTRY)
+    with pytest.raises(WriteRefused, match=message):
+        write_registry(path, content, expected=REGISTRY)
+    assert path.read_bytes() == REGISTRY
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_write_registry_writes_a_higher_counter_and_refuses_a_file_changed_since_it_was_read(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / ".id_registry.yaml"
+    path.write_bytes(REGISTRY)
+    write_registry(path, b"prefixes:\n  AST: 2\n  LIT: 9004\n", expected=REGISTRY)
+    assert path.read_bytes() == b"prefixes:\n  AST: 2\n  LIT: 9004\n"
+    with pytest.raises(WriteRefused, match="the file changed since it was read"):
+        write_registry(path, b"prefixes:\n  AST: 2\n  LIT: 9005\n", expected=REGISTRY)
+    assert path.read_bytes() == b"prefixes:\n  AST: 2\n  LIT: 9004\n"
+
+
+def test_a_registry_change_that_lands_during_the_checks_is_refused_and_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first comparison passes and a person bumps the counter while the checks run; only the
+    comparison made just before the rename sees it."""
+    real = write._counters
+    path = tmp_path / ".id_registry.yaml"
+    path.write_bytes(REGISTRY)
+    stamped = b"prefixes:\n  AST: 2\n  LIT: 9500\n"
+    calls: list[int] = []
+
+    def edit_during_checks(content: bytes, what: str) -> dict[str, int]:
+        found = real(content, what)
+        calls.append(1)
+        if len(calls) == 2:  # the check of the new content, the last thing the checks do
+            path.write_bytes(stamped)
+        return found
+
+    monkeypatch.setattr(write, "_counters", edit_during_checks)
+    with pytest.raises(WriteRefused) as raised:
+        write_registry(path, b"prefixes:\n  AST: 2\n  LIT: 9004\n", expected=REGISTRY)
+    assert str(raised.value) == f"{path}: the file changed since it was read; nothing was written"
+    assert path.read_bytes() == stamped
+
+
+def test_check_registry_alone_refuses_a_file_that_is_not_the_bytes_read(tmp_path: Path) -> None:
+    path = tmp_path / ".id_registry.yaml"
+    path.write_bytes(b"prefixes:\n  AST: 2\n  LIT: 9500\n")
+    with pytest.raises(WriteRefused, match="the file changed since it was read"):
+        check_registry(path, b"prefixes:\n  AST: 2\n  LIT: 9600\n", expected=REGISTRY)
+
+
+def test_a_refusal_after_other_writes_names_them_instead_of_claiming_nothing_was_written() -> None:
+    first = WriteRefused("/r/lit.yaml: the file changed since it was read; nothing was written")
+    assert refused_after_writes(first, []) is first
+    one = refused_after_writes(first, [Path("/r/assemble.json")])
+    assert str(one) == (
+        "/r/lit.yaml: the file changed since it was read; this command had already written "
+        "/r/assemble.json, which stays as written"
+    )
+    two = refused_after_writes(first, [Path("/r/a"), Path("/r/b")])
+    assert str(two).endswith("had already written /r/a, /r/b, which stay as written")

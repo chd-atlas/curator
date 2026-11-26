@@ -61,9 +61,20 @@ FRAMES = {
 }
 if sys.argv[1] == "validate":
     if os.environ.get("STUB_VALIDATE_ERRORS"):
-        print("error GEN001 [mirrors/genes.tsv]: stub error")
+        for _ in range(int(os.environ["STUB_VALIDATE_ERRORS"])):
+            print("ERROR [GEN001] mirrors/genes.tsv: stub error")
         print()
         print(os.environ["STUB_VALIDATE_ERRORS"] + " error(s), 3 warning(s)")
+        sys.exit(1)
+    if os.environ.get("STUB_VALIDATE_VOID"):
+        ids = os.environ["STUB_VALIDATE_VOID"].split(",")
+        for fid in ids:
+            print(
+                "ERROR [LIT015] curation/literature/TBX5.yaml:finding " + fid
+                + ": approved content changed since approval; approve it again with a command"
+            )
+        print()
+        print(str(len(ids)) + " error(s), 3 warning(s)")
         sys.exit(1)
     print("warning SCP003 [curation/chd_scope.yaml]: stub candidate report")
     print("warning SCP007 [curation/chd_scope.yaml]: stub Orphanet digest")

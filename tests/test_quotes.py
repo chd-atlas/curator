@@ -1,9 +1,10 @@
 """``chd-curator quotes``: every quote a review page shows, checked against its paper.
 
-The fixture run (tests/fixtures/review, run r1) holds 11 quotes: 5 evidence on 0000901, 1
-evidence and 5 judge on 0000902. Counts below were read from those files: one quote is
-invented (found nowhere), one is present only through normalisation (a U+FB01 ligature in
-the source; measured by swapping ``normalise_text`` for whitespace-and-case folding alone, which
+The fixture run (tests/fixtures/review, run r1) holds 12 quotes: 5 evidence on 0000901, 1
+evidence and 5 judge on 0000902, and 1 judge quote on 0801004 (a finding only the blind reader
+reported). Counts below were read from those files: one quote is invented (found nowhere), one
+is present only through normalisation (a U+FB01 ligature in the source; measured by swapping
+``normalise_text`` for whitespace-and-case folding alone, which
 changes only that quote's answer) and one is 40 words and present. The fixture source also
 carries a U+2010 hyphen, but its quote is found without any mapping, so this fixture does not
 pin the U+2010 entry of the translation table; the parametrised test does.
@@ -96,7 +97,7 @@ def test_check_quotes_on_the_fixture_run(run_copy: RunPaths) -> None:
     checks = check_quotes(run_copy)
     assert [(c.finding[-4:], c.origin) for c in checks] == [("0901", "evidence")] * 5 + [
         ("0902", "evidence")
-    ] + [("0902", "judge")] * 5
+    ] + [("0902", "judge")] * 5 + [("1004", "judge")]
     not_found = [c.field for c in checks if not c.found]
     assert not_found == ["variant 1 carriers"]
     by_field = {c.field: c for c in checks}
@@ -182,14 +183,14 @@ def test_the_command_writes_quotes_json_and_names_what_it_found(run_copy: RunPat
     result = runner.invoke(app, args)
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert lines[0] == "11 quotes checked, 1 not found, 1 over 30 words"
+    assert lines[0] == "12 quotes checked, 1 not found, 1 over 30 words"
     assert len(lines) == 3
     assert "not found: CHDA:LIT:0000901 evidence variant 1 carriers" in lines[1]
     assert "over 30 words (40): CHDA:LIT:0000901 evidence summary" in lines[2]
 
     first = run_copy.quotes.read_bytes()
     payload = json.loads(first)
-    assert payload["format"] == 1 and len(payload["checks"]) == 11
+    assert payload["format"] == 1 and len(payload["checks"]) == 12
     assert set(payload["checks"][0]) == {
         "finding", "origin", "field", "quote", "where", "found", "checked", "paper", "words",
         "parts"
@@ -213,7 +214,7 @@ def test_the_command_counts_only_checked_quotes_and_names_the_unchecked(
     result = runner.invoke(app, ["quotes", "TBX5", "--run", "r1", "--root", str(run_copy.root)])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert lines[0] == "5 quotes checked, 1 not found, 1 over 30 words"
+    assert lines[0] == "6 quotes checked, 1 not found, 1 over 30 words"
     assert "6 quotes not checked: no text (PMID:90000099)" in lines
     payload = json.loads(run_copy.quotes.read_bytes())
     assert [c["checked"] for c in payload["checks"]].count(False) == 6
@@ -241,3 +242,31 @@ def test_a_finding_with_no_id_or_publication_is_refused_not_skipped(
     path.write_text(text.replace(line, "  - note: x\n" if drop == "id" else ""), encoding="utf-8")
     with pytest.raises(RunFormatError, match="no id or no publication"):
         check_quotes(run_copy)
+
+
+def test_a_blind_only_decisions_quote_is_checked_against_the_blind_findings_paper(
+    run_copy: RunPaths,
+) -> None:
+    """R-P2-66(b): 0801004 is in no literature file, so its paper is its publication in the
+    verify pass (PMID:90000001, which holds the quote): found. A quote the paper lacks reads
+    not found, and a blind finding of a paper with no text reads not checked."""
+    blind = [c for c in check_quotes(run_copy) if c.finding == "CHDA:LIT:0801004"]
+    assert [(c.origin, c.paper, c.checked, c.found) for c in blind] == [
+        ("judge", "PMID:90000001", True, True)
+    ]
+    decisions = run_copy.judge / "judge-01.decisions.yaml"
+    decisions.write_text(
+        decisions.read_text(encoding="utf-8").replace(
+            "Family 1: father, atrial septal defect, c.1085delC", "a quote the paper never made"
+        ),
+        encoding="utf-8",
+    )
+    blind = [c for c in check_quotes(run_copy) if c.finding == "CHDA:LIT:0801004"]
+    assert [(c.paper, c.checked, c.found) for c in blind] == [("PMID:90000001", True, False)]
+    verify = run_copy.verify / "batch-01.findings.yaml"
+    verify.write_text(
+        verify.read_text(encoding="utf-8").replace("PMID:90000001", "PMID:90000099"),
+        encoding="utf-8",
+    )
+    blind = [c for c in check_quotes(run_copy) if c.finding == "CHDA:LIT:0801004"]
+    assert [(c.paper, c.checked, c.found) for c in blind] == [("PMID:90000099", False, False)]

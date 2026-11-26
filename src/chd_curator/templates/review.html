@@ -349,6 +349,19 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
         ${actions(f.id)}
       </div></details>`;
   }
+  // Findings only the blind reader reported: in no literature file, so no card, no digest and no
+  // decision control; a decisions file never names one.
+  function blindOnlySection() {
+    const list = DATA.blind_only || [];
+    if (!list.length) return "";
+    const cards = list.map((b) => `<div class="static-card" data-blind="${esc(b.id)}">
+      <div class="paperline"><span class="mono">${esc(b.id)}</span> · ${b.paper.title ? esc(b.paper.title) : "title not recorded in this run"} · ${esc(b.paper.year)} · <a href="${esc(b.paper.pubmed_url)}" target="_blank" rel="noopener">PubMed</a></div>
+      <p class="summary">${esc(b.summary)}</p>
+      ${b.adopted_as ? `<div class="both">The judge adopted this finding: adopted as <span class="mono">${esc(b.adopted_as)}</span></div>` : ""}
+      ${b.rows.map((r) => `<div class="frow judged"><div class="fleft"><div class="fname">${esc(r.name)} ${stateChip("judged")}</div><div class="fval">${esc(r.value)}</div>${disagreement({ state: "judged", first: r.first, verify: r.verify, judge: r.judge })}</div><div class="fright">${quotes(r.quotes)}</div></div>`).join("")}
+    </div>`).join("");
+    return `<h2 class="section">Only the blind reader reported this</h2><div class="paperline">The blind reader reported these, and compare paired these with no finding of the first reader. A judge decided whether to add each as a finding of its own. They have no card and need no decision from you.</div>${cards}`;
+  }
   function render() {
     const typed = {};
     root.querySelectorAll("textarea, input[type=text]").forEach((el) => { typed[el.id] = el.value; });
@@ -356,7 +369,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       const cards = DATA.findings.filter((f) => f.group === g.key);
       return cards.length ? `<h2 class="section">${esc(g.title)}</h2>${cards.map(findingCard).join("")}` : "";
     }).join("");
-    root.innerHTML = `${neededCard()}<h2 class="section">Papers</h2>${triageCard()}${groups}`;
+    root.innerHTML = `${neededCard()}<h2 class="section">Papers</h2>${triageCard()}${groups}${blindOnlySection()}`;
     root.querySelectorAll("textarea, input[type=text]").forEach((el) => { if (typed[el.id]) el.value = typed[el.id]; });
     updateBar();
     updateBanner();

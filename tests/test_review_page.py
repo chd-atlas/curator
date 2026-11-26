@@ -1247,3 +1247,81 @@ def test_a_placement_reading_is_rendered_in_its_variant_card_as_text(
     assert any(plain(p) == reading for p in placed), placed
     assert "<b>bold</b>" not in mine and "&lt;b&gt;bold&lt;/b&gt;" in mine
     assert "CP-D8" not in card_html(dom, J)
+
+
+def blind_only_html(dom: str) -> str:
+    """The "Only the blind reader reported this" section's markup: from its heading to the next."""
+    shown = visible(dom)
+    start = shown.index("Only the blind reader reported this")
+    ends = [
+        i for i in (shown.find('<h2 class="section">', start), shown.find("<pre", start)) if i > 0
+    ]
+    return shown[start : min(ends)]
+
+
+def test_a_finding_only_the_blind_reader_reported_is_listed_read_only_and_never_downloaded(
+    root: Path, stub_atlas: Path
+) -> None:
+    """R-P2-66(b): the section shows the id, its paper, the blind reader's summary, the judge's
+    decision and the quote with its check, and has no decision control and no card; the
+    selftest's own download names no such id."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    dom = dump_dom(page)
+    section = blind_only_html(dom)
+    text = plain(section)
+    assert text.startswith("Only the blind reader reported this")
+    # N2: only_second means compare paired the finding with none, not that the first reader
+    # never reported that study (m14)
+    assert "compare paired these with no finding of the first reader" in text
+    assert "did not report these findings" not in text
+    assert "CHDA:LIT:0801004" in text
+    assert "A synthetic Holt-Oram family with a TBX5 frameshift." in text
+    assert "A sibling listed in the supplementary table carried the same heterozygous" in text
+    assert "finding" in text and "not added" in text and "chose neither reader" in text
+    assert "Family 1: father, atrial septal defect, c.1085delC" in text
+    assert "Supplementary table S1" in text
+    assert "not found in text" not in text
+    assert not re.search(r"<(button|textarea|input)\b", section)
+    assert 'data-id="CHDA:LIT:0801004"' not in visible(dom)
+    downloaded = selftest_output(dom)
+    assert "CHDA:LIT:0801004" not in json.dumps(downloaded)
+    assert [f["id"] for f in downloaded["findings"]] == [J, A]
+
+
+def test_review_page_builds_over_an_approval_void_on_a_card_and_says_so(
+    root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(e): a backfill's edit voids an approval, which validate reports as LIT015. A card
+    reads `void` (the stub's digests list A as approved-but-void), and the page's validate line is
+    the count as validate printed it."""
+    monkeypatch.setenv("STUB_VALIDATE_VOID", A)
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    data = data_of(Path(out.strip().splitlines()[-1]))
+    assert data["page"]["validate"] == "1 error(s), 3 warning(s)"
+    assert {c["id"]: c["approval"] for c in data["findings"]}[A] == "void"
+
+
+def test_review_page_refuses_an_approval_void_on_a_finding_it_does_not_show(
+    root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STUB_VALIDATE_VOID", f"{A},CHDA:LIT:0000555")
+    code, out = build(root, stub_atlas)
+    assert code == 1
+    assert "2 error(s), 3 warning(s)" in out and "CHDA:LIT:0000555" in out
+    assert f", {A}" not in out and "does not show" in out
+    assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+
+
+def test_the_blind_only_section_says_which_finding_adopted_it(root: Path, stub_atlas: Path) -> None:
+    from chd_curator.run import AssembleRecord, RunPaths, write_assemble
+
+    run = RunPaths(root, "TBX5", "r1")
+    write_assemble(run, AssembleRecord((), {}, (), (), None, {}, {}, {"CHDA:LIT:0801004": A}))
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]))
+    assert f"adopted as {A}" in plain(blind_only_html(dom))
+    assert "adopted as" not in plain(card_html(dom, J))

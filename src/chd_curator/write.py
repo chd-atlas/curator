@@ -1,14 +1,16 @@
 """curator's one write path.
 
-Every file curator writes goes through ``write_literature`` or
-``write_publications``. Each checks first and writes only if every check passes,
-so a refused write leaves the file's bytes as they were. These are refused:
+Every file curator writes goes through ``write_literature``, ``write_publications`` or
+``write_registry``. Each checks first and writes only if every check passes, so a refused
+write leaves the file's bytes as they were. These are refused:
 
 - content the atlas's exported JSON Schema refuses;
-- any change to an approval (a finding's or the synthesis's), a finding added or removed,
-  or a finding id repeated, because an agent must never approve: approval is a named
-  person's act, done in the atlas (``chd-atlas literature review --approve`` for a finding,
-  ``--approve-synthesis`` for the synthesis), not here;
+- any change to an approval (a finding's or the synthesis's), a finding added (except the
+  ids the caller names as added, which must arrive with no approval field and no
+  ``verified_by``) or removed, or a finding id repeated, because an agent must never
+  approve: approval is a named person's act, done in the atlas
+  (``chd-atlas literature review --approve`` for a finding, ``--approve-synthesis`` for the
+  synthesis), not here;
 - a YAML anchor, alias or merge key, which the atlas refuses (YAML002) and which
   would otherwise copy an approval onto a finding nobody approved while still
   validating: the atlas found that with a merge key;
@@ -22,6 +24,7 @@ so a refused write leaves the file's bytes as they were. These are refused:
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -128,8 +131,27 @@ def _synthesis_approval(content: bytes | None, what: str) -> tuple[Any, ...]:
     return tuple(block.get(name) for name in APPROVAL_FIELDS)
 
 
-def refuse_approval_change(before: bytes | None, after: bytes) -> None:
+def _unreviewed_additions(after: bytes, added: frozenset[str]) -> None:
+    """Refuse an added finding that carries an approval field or ``verified_by``."""
+    data = plain(_safe_load(after, "the new content"))
+    findings = ((data or {}).get("findings") or []) if isinstance(data, dict) else []
+    for finding in findings:
+        if isinstance(finding, dict) and str(finding.get("id")) in added:
+            for name in (*APPROVAL_FIELDS, "verified_by"):
+                if finding.get(name) is not None:
+                    raise WriteRefused(
+                        f"{finding['id']}: a finding added here may not carry {name} "
+                        f"({finding[name]!r})"
+                    )
+
+
+def refuse_approval_change(
+    before: bytes | None, after: bytes, added: frozenset[str] = frozenset()
+) -> None:
     """Refuse a write that adds, removes or alters any finding's approval.
+
+    `added` names the ids that may be new: each must be absent from `before`, present in
+    `after`, and carry no approval field and no ``verified_by``. Any other new id is refused.
 
     The synthesis block's approval is held to the same rule, as one more tuple of
     `APPROVAL_FIELDS`: an approved synthesis cannot be added, and no field of an existing
@@ -148,8 +170,13 @@ def refuse_approval_change(before: bytes | None, after: bytes) -> None:
         raise WriteRefused(f"{finding_id}: more than one finding has this id")
     old = dict(_approvals(before, "the current file"))
     new = dict(new_list)
-    for finding_id in sorted(set(new) - set(old)):
+    for finding_id in sorted(set(new) - set(old) - added):
         raise WriteRefused(f"{finding_id}: adding a finding is not allowed here")
+    for finding_id in sorted(added & set(old)):
+        raise WriteRefused(f"{finding_id}: named as added but already in the file")
+    for finding_id in sorted(added - set(new)):
+        raise WriteRefused(f"{finding_id}: named as added but not in the new content")
+    _unreviewed_additions(after, added)
     for finding_id in sorted(set(old) - set(new)):
         raise WriteRefused(f"{finding_id}: removing a finding is not allowed here")
     for finding_id in sorted(old):
@@ -161,6 +188,19 @@ def refuse_approval_change(before: bytes | None, after: bytes) -> None:
     for name, was, now in zip(APPROVAL_FIELDS, synthesis_was, synthesis_now, strict=True):
         if was != now:
             raise WriteRefused(f"synthesis: {name} may not change ({was!r} -> {now!r})")
+
+
+def refused_after_writes(exc: WriteRefused, written: Sequence[Path]) -> WriteRefused:
+    """`exc`, a refusal raised by a write that came after others in one command, worded for that
+    case: its own "; nothing was written" is true of its own file only, so the files the command
+    had already written are named. With none written, `exc` itself."""
+    if not written:
+        return exc
+    names = ", ".join(str(path) for path in written)
+    return WriteRefused(
+        f"{str(exc).removesuffix('; nothing was written')}; this command had already written "
+        f"{names}, which {'stays' if len(written) == 1 else 'stay'} as written"
+    )
 
 
 def _refuse_constructs(path: Path, content: bytes) -> None:
@@ -177,22 +217,52 @@ def _refuse_if_changed(path: Path, expected: bytes | None) -> None:
         raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
 
 
+def check_literature(
+    path: Path,
+    content: bytes,
+    validator: Draft202012Validator,
+    *,
+    expected: bytes | None,
+    added: frozenset[str] = frozenset(),
+) -> None:
+    """Every refusal `write_literature` makes before it writes, without writing.
+
+    A command that writes several files checks all of them first, so a refusal in the last
+    one cannot leave the earlier ones written.
+    """
+    _refuse_if_changed(path, expected)
+    _refuse_constructs(path, content)
+    _refuse_schema(path, content, validator)
+    refuse_approval_change(expected, content, added)
+
+
 def write_literature(
-    path: Path, content: bytes, validator: Draft202012Validator, *, expected: bytes | None
+    path: Path,
+    content: bytes,
+    validator: Draft202012Validator,
+    *,
+    expected: bytes | None,
+    added: frozenset[str] = frozenset(),
 ) -> None:
     """Write a gene's literature file, or raise `WriteRefused` and leave it as it was.
 
     `expected` is the file's bytes as the caller read them and built `content` from
     (None: the file did not exist). If the file now holds anything else, the write is
     refused, so a read made before a slow PubMed call cannot overwrite an edit made
-    during it.
+    during it. `added` names the finding ids the write may add (see `refuse_approval_change`).
     """
+    check_literature(path, content, validator, expected=expected, added=added)
+    _refuse_if_changed(path, expected)
+    write_bytes_atomically(path, content)
+
+
+def check_publications(
+    path: Path, content: bytes, validator: Draft202012Validator, *, expected: bytes | None
+) -> None:
+    """Every refusal `write_publications` makes before it writes, without writing."""
     _refuse_if_changed(path, expected)
     _refuse_constructs(path, content)
     _refuse_schema(path, content, validator)
-    refuse_approval_change(expected, content)
-    _refuse_if_changed(path, expected)
-    write_bytes_atomically(path, content)
 
 
 def write_publications(
@@ -203,8 +273,45 @@ def write_publications(
     `expected` is the file's bytes as the caller read them and built `content` from
     (None: the file did not exist), with the same meaning as for `write_literature`.
     """
+    check_publications(path, content, validator, expected=expected)
+    _refuse_if_changed(path, expected)
+    write_bytes_atomically(path, content)
+
+
+def _counters(content: bytes, what: str) -> dict[str, int]:
+    data = plain(_safe_load(content, what))
+    prefixes = data.get("prefixes") if isinstance(data, dict) else None
+    if not isinstance(data, dict) or set(data) != {"prefixes"} or not isinstance(prefixes, dict):
+        raise WriteRefused(f"{what} is not a mapping holding only 'prefixes'")
+    for name, value in prefixes.items():
+        if type(value) is not int or value < 0:
+            raise WriteRefused(f"{what}: prefix {name!r} is not a non-negative integer: {value!r}")
+    return {str(name): value for name, value in prefixes.items()}
+
+
+def check_registry(path: Path, content: bytes, *, expected: bytes) -> None:
+    """Every refusal `write_registry` makes before it writes, without writing."""
     _refuse_if_changed(path, expected)
     _refuse_constructs(path, content)
-    _refuse_schema(path, content, validator)
+    before = _counters(expected, "the current registry")
+    after = _counters(content, "the new registry")
+    for name in sorted(before):
+        if name not in after:
+            raise WriteRefused(f"{path}: prefix {name} would vanish")
+        if after[name] < before[name]:
+            raise WriteRefused(
+                f"{path}: prefix {name} would fall from {before[name]} to {after[name]}"
+            )
+
+
+def write_registry(path: Path, content: bytes, *, expected: bytes) -> None:
+    """Write ``curation/.id_registry.yaml``, or raise `WriteRefused` and leave it as it was.
+
+    The file must hold exactly ``prefixes:`` mapping each name to a non-negative integer, with
+    no anchor, alias or merge key; no prefix may vanish or decrease; and the file must still
+    hold `expected`, the bytes the caller built `content` from (checked again just before the
+    rename). A registry that did not exist is not created here.
+    """
+    check_registry(path, content, expected=expected)
     _refuse_if_changed(path, expected)
     write_bytes_atomically(path, content)

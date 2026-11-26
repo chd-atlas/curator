@@ -36,6 +36,7 @@ anywhere leaves the file as it was.
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -46,6 +47,7 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from chd_curator.run import TriageChange
 from chd_curator.write import APPROVAL_FIELDS
 
 
@@ -480,3 +482,314 @@ def with_normalised(
     else:
         normalisations.append(record)
     return dump_bytes(data), run_id
+
+
+def _counter_pattern(prefix: str) -> re.Pattern[str]:
+    return re.compile(
+        r"(?P<head>[ \t]+"
+        + re.escape(prefix)
+        + r":[ \t]*)(?P<value>[0-9]+)(?P<tail>[ \t]*(?:#.*)?)"
+    )
+
+
+def is_empty(value: Any) -> bool:
+    """Whether a finding's field holds nothing: absent (None), ``[]`` or ``{}``.
+
+    The one definition ``batch`` and ``merge`` share for "a backfill may fill this field".
+    """
+    return value is None or value == [] or value == {}
+
+
+def read_counter(raw: bytes, prefix: str) -> int:
+    """The id counter ``prefixes.<prefix>`` of ``curation/.id_registry.yaml``."""
+    try:
+        data = YAML(typ="safe").load(raw)
+        value = data["prefixes"][prefix]
+    except Exception as exc:
+        raise RecordError(f"the id registry holds no counter for {prefix}: {exc!r}") from exc
+    if type(value) is not int or value < 0:
+        raise RecordError(f"the id registry's {prefix} is not a non-negative integer: {value!r}")
+    return value
+
+
+def with_counter(raw: bytes, prefix: str, value: int) -> bytes:
+    """The registry with ``<prefix>``'s counter set to `value`; that one line changes.
+
+    A lower value than the current one is refused, and so is a registry whose counter is not
+    written as one ``  <prefix>: <digits>`` line.
+    """
+    current = read_counter(raw, prefix)
+    if value < current:
+        raise RecordError(f"the {prefix} counter would fall from {current} to {value}")
+    pattern = _counter_pattern(prefix)
+    try:
+        lines = raw.decode("utf-8").splitlines(keepends=True)
+    except UnicodeDecodeError as exc:
+        raise RecordError(f"the id registry is not UTF-8 text: {exc}") from None
+    hits = [i for i, line in enumerate(lines) if pattern.fullmatch(line.rstrip("\r\n"))]
+    if len(hits) != 1:
+        raise RecordError(f"the {prefix} counter is not written as exactly one '{prefix}: n' line")
+    line = lines[hits[0]]
+    body = line.rstrip("\r\n")
+    m = pattern.fullmatch(body)
+    if m is None:
+        raise RecordError(f"the {prefix} counter line cannot be read")
+    lines[hits[0]] = f"{m['head']}{value}{m['tail']}{line[len(body) :]}"
+    return "".join(lines).encode("utf-8")
+
+
+# The model's field order for a finding (the exported schema sorts its keys, so the model's
+# order cannot be read from it). A key the file does not know goes after these.
+_FINDING_ORDER = (
+    "id",
+    "publication",
+    "design",
+    "methods",
+    "comparator",
+    "burden_study",
+    "count_unit",
+    "screened",
+    "carriers",
+    "variant_classes",
+    "variants",
+    "cases",
+    "controls",
+    "p_value",
+    "odds_ratio",
+    "phenotypes",
+    "lesion_groups",
+    "syndromic",
+    "cohorts",
+    "shares_probands_with",
+    "locators",
+    "summary",
+    "extracted_by",
+    "verified_by",
+    "approved_by",
+    "approved_on",
+    "approved_digest",
+    "review_status",
+    "review_note",
+    "review_settled_by",
+)
+_FLOW_LISTS = frozenset(
+    {
+        "methods",
+        "variant_classes",
+        "phenotypes",
+        "lesion_groups",
+        "cohorts",
+        "shares_probands_with",
+        "with",
+    }
+)
+_FLOW_MAPS = frozenset({"carriers", "reported", "locator"})
+
+
+def _flow_map(value: Mapping[str, Any]) -> CommentedMap:
+    """A flow mapping; ``kind`` (a locator's) goes first, as the curated files write it."""
+    out = CommentedMap(sorted(value.items(), key=lambda item: item[0] != "kind"))
+    out.fa.set_flow_style()
+    return out
+
+
+def _flow_seq(value: Sequence[Any]) -> CommentedSeq:
+    out = CommentedSeq(value)
+    out.fa.set_flow_style()
+    return out
+
+
+def _ordered(value: Mapping[str, Any], order: Sequence[str]) -> list[str]:
+    return [k for k in order if k in value] + sorted(k for k in value if k not in order)
+
+
+def _styled_variant(variant: Mapping[str, Any]) -> CommentedMap:
+    out = CommentedMap()
+    for key in _ordered(variant, _VARIANT_ORDER):
+        value = variant[key]
+        if key in _FLOW_MAPS and isinstance(value, Mapping):
+            out[key] = _flow_map(value)
+        elif key in _FLOW_LISTS and isinstance(value, list):
+            out[key] = _flow_seq(value)
+        elif key == "unclear" and isinstance(value, Mapping):
+            out[key] = CommentedMap(
+                (f, _flow_map(e) if isinstance(e, Mapping) else e) for f, e in value.items()
+            )
+        else:
+            out[key] = value
+    return out
+
+
+def _styled_value(key: str, value: Any) -> Any:
+    """One finding field as the file writes it: flow lists and maps for the short ones."""
+    if key == "variants" and isinstance(value, list):
+        seq = CommentedSeq(_styled_variant(v) if isinstance(v, Mapping) else v for v in value)
+        seq.fa.set_block_style()
+        return seq
+    if key == "locators" and isinstance(value, list):
+        seq = CommentedSeq(_flow_map(v) if isinstance(v, Mapping) else v for v in value)
+        seq.fa.set_block_style()
+        return seq
+    if key in _FLOW_MAPS and isinstance(value, Mapping):
+        return _flow_map(value)
+    if key in _FLOW_LISTS and isinstance(value, list):
+        return _flow_seq(value)
+    return value
+
+
+def _styled_finding(finding: Mapping[str, Any]) -> CommentedMap:
+    out = CommentedMap()
+    for key in _ordered(finding, _FINDING_ORDER):
+        out[key] = _styled_value(key, finding[key])
+    return out
+
+
+def with_findings_added(raw: bytes, findings: Sequence[Mapping[str, Any]]) -> bytes:
+    """The file's new content with `findings` appended, in the file's own style.
+
+    Each finding's keys follow the model's order; ``methods``, ``variant_classes``,
+    ``phenotypes``, ``lesion_groups``, ``cohorts``, ``shares_probands_with`` (a list) and a
+    variant's ``with`` are flow lists, ``carriers``, ``reported``, a variant's ``locator`` and
+    each entry of ``locators`` flow maps. No value is dropped or defaulted. Nothing else in the
+    file moves; not validated here (the caller's write is).
+    """
+    data = load_round_trip(raw)
+    seq = data.get("findings")
+    if seq is None:
+        seq = CommentedSeq()
+        seq.fa.set_block_style()
+        data["findings"] = seq
+    for finding in findings:
+        seq.append(_styled_finding(finding))
+    return dump_bytes(data)
+
+
+def _delete_key(entry: CommentedMap, key: str) -> None:
+    """Delete `key`; what followed it (a blank line, a note) moves to the new last key."""
+    keys = list(entry)
+    if keys[-1] != key or len(keys) == 1:
+        del entry[key]
+        return
+    found = _trailing_slot(entry, key)
+    moved: Any = None
+    if found is not None:
+        container, inner, slot = found
+        token = container.ca.items[inner][slot]
+        first, _, rest = token.value.partition("\n")
+        if not first.strip() or rest:
+            moved = copy.copy(token)
+            moved.value = "\n" + rest if first.strip() else token.value
+    del entry[key]
+    if moved is None:
+        return
+    held = entry.ca.items.get(keys[-2])
+    if held and held[2] is not None:
+        held[2].value = held[2].value.rstrip("\n") + moved.value
+    else:
+        entry.ca.items[keys[-2]] = [None, None, moved, None]
+
+
+def _set_fields(
+    data: CommentedMap, finding_id: str, fields: Mapping[str, Any], drop: Sequence[str]
+) -> None:
+    """`with_fields_set`'s edit, done in place on a loaded file."""
+    entry = next((f for f in data.get("findings") or [] if str(f.get("id")) == finding_id), None)
+    if entry is None:
+        raise RecordError(f"no such finding: {finding_id}")
+    for key in (*fields, *drop):
+        if key not in _FINDING_ORDER:
+            raise RecordError(f"{finding_id}: {key!r} is not a Finding field")
+    for key, value in fields.items():
+        styled = _styled_value(key, value)
+        if key in entry:
+            entry[key] = styled
+            continue
+        before = _FINDING_ORDER[: _FINDING_ORDER.index(key)]
+        position = max((list(entry).index(k) + 1 for k in before if k in entry), default=0)
+        at_end = position == len(entry)
+        entry.insert(position, key, styled)
+        if at_end and len(entry) > 1:
+            _carry_trailing_comment(entry, key)
+    for key in drop:
+        if key in entry:
+            _delete_key(entry, key)
+
+
+def with_fields_set(
+    raw: bytes, finding_id: str, fields: Mapping[str, Any], drop: Sequence[str] = ()
+) -> bytes:
+    """The file's new content with `fields` set on one finding and the `drop` keys removed.
+
+    A key the finding holds keeps its place; a new one goes after the nearest key before it in
+    the model's order, as ``with_normalised`` places a variant's. Values are styled as
+    ``with_findings_added`` styles them. A blank line or note that followed the finding moves
+    to its new last key. An unknown finding, or a key the model does not have, is refused.
+    Nothing else changes; not validated here (the caller's write is).
+    """
+    data = load_round_trip(raw)
+    _set_fields(data, finding_id, fields, drop)
+    return dump_bytes(data)
+
+
+def with_findings_replaced(raw: bytes, findings: Sequence[Mapping[str, Any]]) -> bytes:
+    """The file's new content with each of `findings` replacing the file's finding of its id.
+
+    A replacement is whole: every key the new finding holds is set (styled as
+    ``with_findings_added`` styles it) and every key it lacks is removed, so ``verified_by`` and
+    an approval go unless the new finding carries them. Findings stay where they were, and a
+    blank line or note that followed one stays with it. An id not in the file, or one given
+    twice, is refused (:class:`RecordError`), and so is a key the model does not have. Not
+    validated here (the caller's write is).
+    """
+    data = load_round_trip(raw)
+    ids = [str(f.get("id")) for f in findings]
+    repeated = sorted({i for i in ids if ids.count(i) > 1})
+    if repeated:
+        raise RecordError(f"more than one replacement for {', '.join(repeated)}")
+    held = {str(f.get("id")): f for f in data.get("findings") or []}
+    for finding in findings:
+        fid = str(finding["id"])
+        if fid not in held:
+            raise RecordError(f"no such finding: {fid}")
+        gone = [k for k in held[fid] if k not in finding]
+        _set_fields(data, fid, {k: v for k, v in finding.items() if k != "id"}, gone)
+    return dump_bytes(data)
+
+
+def with_triage(raw: bytes, changes: Sequence[TriageChange]) -> bytes:
+    """The file's new content with each triage entry's decision changed as `changes` say.
+
+    An entry must hold the change's ``before`` decision (else refused, as is an unknown PMID).
+    ``reason`` and ``note`` are written, in that order, directly after ``decision`` (replacing
+    ones already there) when the change carries them; a change to ``included`` first removes the
+    entry's ``reason`` and ``note``; every other key keeps its place.
+    """
+    data = load_round_trip(raw)
+    entries = {str(t.get("pmid")): t for t in data.get("triage") or []}
+    for change in changes:
+        entry = entries.get(change.pmid)
+        if entry is None:
+            raise RecordError(f"{change.pmid} is not in the triage")
+        if entry.get("decision") != change.before:
+            raise RecordError(
+                f"{change.pmid}: its triage decision is {entry.get('decision')!r}, "
+                f"not {change.before!r}"
+            )
+        entry["decision"] = change.after
+        if change.after == "included":
+            for key in ("note", "reason"):
+                if key in entry:
+                    _delete_key(entry, key)
+        for key, value in (("reason", change.reason), ("note", change.note)):
+            if value is None:
+                continue
+            if key in entry:
+                entry[key] = value
+                continue
+            before = ("pmid", "search", "decision", "reason")[: 3 if key == "reason" else 4]
+            position = max((list(entry).index(k) + 1 for k in before if k in entry), default=0)
+            at_end = position == len(entry)
+            entry.insert(position, key, value)
+            if at_end and len(entry) > 1:
+                _carry_trailing_comment(entry, key)
+    return dump_bytes(data)

@@ -26,7 +26,7 @@ from chd_curator.review_data import (
     _variant_target,
     build_review_data,
 )
-from chd_curator.run import JudgeDecision, RunPaths
+from chd_curator.run import JudgeDecision, RunFormatError, RunPaths
 
 FIXTURE = Path(__file__).parent / "fixtures" / "review"
 BUILT_ON = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
@@ -1009,3 +1009,102 @@ def test_a_reading_for_an_unknown_variant_is_refused(
     with pytest.raises(ReviewDataError, match="normalise.json") as raised:
         build(run, stub_atlas)
     assert entry[0] in str(raised.value)
+
+
+BLIND = "CHDA:LIT:0801004"
+
+
+def test_a_finding_only_the_blind_reader_reported_is_listed_read_only_with_the_judges_record(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    """R-P2-66(b): the judge decision keyed by the blind reader's id is no stray id. The finding
+    has no card; its paper, the blind summary and the decision row (with its quote's check) are
+    listed beside the cards, sorted by id."""
+    data = build(run, stub_atlas)
+    assert BLIND not in [c["id"] for c in data["findings"]]
+    assert data["blind_only"] == [
+        {
+            "id": BLIND,
+            "paper": {
+                "pmid": "PMID:90000001",
+                "title": "A synthetic Holt-Oram family with a TBX5 frameshift.",
+                "year": "2019",
+                "doi_url": None,
+                "pubmed_url": "https://pubmed.ncbi.nlm.nih.gov/90000001/",
+            },
+            "summary": "A sibling listed in the supplementary table carried the same "
+            "heterozygous frameshift and an atrial septal defect.",
+            "adopted_as": None,
+            "rows": [
+                {
+                    "name": "finding",
+                    "value": "not added",
+                    "first": "not reported",
+                    "verify": "reported",
+                    "judge": "chose neither reader. The row restates the father already in "
+                    "the first reader's finding; it is not a second carrier.",
+                    "quotes": [
+                        {
+                            "quote": "Family 1: father, atrial septal defect, c.1085delC",
+                            "where": "Supplementary table S1",
+                            "checked": True,
+                            "found": True,
+                            "origin": "judge",
+                            "over_limit": False,
+                            "words": 7,
+                            "parts": 1,
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+    assert [g["key"] for g in data["groups"]] == ["judged", "one_reader", "abstract", "agreed"]
+
+
+def test_the_blind_only_list_is_sorted_by_id_and_a_missing_blind_finding_is_refused(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    other = "CHDA:LIT:0801002"
+    doc = json.loads(run.comparison.read_text())
+    doc["only_second"] = [BLIND, other]
+    run.comparison.write_text(json.dumps(doc))
+    verify = run.verify / "batch-01.findings.yaml"
+    verify.write_text(
+        verify.read_text() + f"- id: {other}\n  publication: PMID:90000002\n  summary: Another.\n"
+    )
+    (run.judge / "judge-02.decisions.yaml").write_text(
+        f"{other}:\n  - {{field: finding, first: a, second: b, decision: second, value: v,"
+        ' quote: "", where: "", rule: r}\n'
+    )
+    assert [b["id"] for b in build(run, stub_atlas)["blind_only"]] == [other, BLIND]
+    verify.write_text("findings: []\n")
+    with pytest.raises(RunFormatError, match=rf"{BLIND}.*blind pass"):
+        build(run, stub_atlas)
+
+
+def test_a_first_pass_only_finding_with_no_judge_or_quote_still_has_a_card(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    """I4: `only_first` names the finding, so it is covered although nothing else does."""
+    doc = json.loads(run.comparison.read_text())
+    del doc["pairs"][G]
+    doc["agreed"] = []
+    doc["only_first"] = [G]
+    run.comparison.write_text(json.dumps(doc))
+    ev = run.evidence / "batch-01.yaml"
+    text = ev.read_text()
+    ev.write_text(text[text.index(J) :])  # G's quotes are the file's first block
+    c = card(build(run, stub_atlas), G)
+    assert (c["agreement"], c["group"], c["n_judged"]) == ("one_reader", "one_reader", 0)
+
+
+def test_an_adopted_blind_only_finding_carries_the_final_id_assemble_recorded(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    from chd_curator.run import AssembleRecord, write_assemble
+
+    write_assemble(run, AssembleRecord((), {}, (), (), None, {}, {}, {BLIND: "CHDA:LIT:0000903"}))
+    assert [b["adopted_as"] for b in build(run, stub_atlas)["blind_only"]] == ["CHDA:LIT:0000903"]
+    write_assemble(run, AssembleRecord((), {}, (), (), None, {}, {}, {BLIND: "first"}))
+    assert [b["adopted_as"] for b in build(run, stub_atlas)["blind_only"]] == [None]

@@ -1,0 +1,1900 @@
+"""``chd-curator assemble``: the literal outcome on the shared run fixture (merged, compared,
+then a judge round), the notation and verification it adds, a fix-round re-run, the backfill
+mode, and every refusal.
+
+Expected values are written out, never rebuilt from the module's own constants. A refusal test
+compares the bytes of every file under the root before and after, because an assemble that wrote
+``assemble.json`` and then refused would leave a run the next assemble reads as part-way done.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import shutil
+from pathlib import Path
+from typing import Any
+
+import pytest
+from ruamel.yaml import YAML
+from typer.testing import CliRunner
+
+from chd_curator import assemble as assemble_module
+from chd_curator.assemble import assemble_run, commit
+from chd_curator.atlas import Digests, FindingDigests
+from chd_curator.cli import app
+from chd_curator.quotes import check_quotes
+from chd_curator.records import (
+    RecordError,
+    dump_bytes,
+    load_round_trip,
+    with_findings_replaced,
+    with_triage,
+    with_verified,
+)
+from chd_curator.review_data import ReviewDataError, Reviewer, build_review_data
+from chd_curator.run import (
+    AssembleRecord,
+    RunFormatError,
+    RunPaths,
+    TriageChange,
+    load_assemble,
+    load_comparison,
+    load_judge,
+    write_assemble,
+)
+from chd_curator.write import WriteRefused
+from run_fixture import JUDGE_FIXTURE, copy_judge_round
+from test_compare import _compare
+from test_merge import _fresh, _merge, _pubmed
+
+runner = CliRunner()
+YAML_SAFE = YAML(typ="safe")
+VERIFIER = "agent:literature-verify/claude-opus-5-5"
+ADDED = "CHDA:LIT:0701001"
+ADDED_FINAL = "CHDA:LIT:0009005"
+JUDGED = "CHDA:LIT:0009003"
+BLIND_ONLY = "CHDA:LIT:0801003"
+BLIND_ONLY_REFUSAL = (
+    f"{BLIND_ONLY}: reported only by the blind reader, but no judge decision records whether "
+    "it was added"
+)
+
+EXPECTED = Path(__file__).parent / "fixtures" / "run-judge-expected"
+ASSEMBLED_FILE = (EXPECTED / "assembled-TBX5.yaml").read_text()
+
+
+def _assemble(p: RunPaths, stub: Path, *args: str) -> tuple[int, str]:
+    result = runner.invoke(
+        app,
+        ["assemble", "TBX5", "--run", "r1", "--root", str(p.root), "--atlas-cli", str(stub), *args],
+        catch_exceptions=False,
+    )
+    return result.exit_code, result.output
+
+
+def _ready(
+    tmp_path: Path, atlas_root: Path, stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> RunPaths:
+    """The fixture merged, compared, and given its judge round: just before ``assemble``."""
+    p = _fresh(tmp_path, atlas_root)
+    _pubmed(monkeypatch)
+    assert _merge(p, stub)[0] == 0
+    assert _compare(p, stub)[0] == 0
+    copy_judge_round(p)
+    return p
+
+
+def _snapshot(p: RunPaths) -> dict[str, str]:
+    return {
+        str(f): hashlib.sha256(f.read_bytes()).hexdigest()
+        for f in sorted(p.root.rglob("*"))
+        if f.is_file()
+    }
+
+
+def _lit(p: RunPaths) -> Path:
+    return p.root / "curation" / "literature" / "TBX5.yaml"
+
+
+def _findings(p: RunPaths) -> dict[str, Any]:
+    return {f["id"]: f for f in YAML_SAFE.load(_lit(p).read_text())["findings"]}
+
+
+def _edit(path: Path, old: str, new: str) -> None:
+    text = path.read_text()
+    assert text.count(old) == 1, (path, old, text.count(old))
+    path.write_text(text.replace(old, new))
+
+
+def _judge1(p: RunPaths) -> Path:
+    return p.judging / "judge-01.findings.yaml"
+
+
+def _expect_refused(p: RunPaths, stub: Path, message: str, *args: str) -> None:
+    before = _snapshot(p)
+    code, out = _assemble(p, stub, *args)
+    assert code == 2, out
+    assert message in out, out
+    assert _snapshot(p) == before
+
+
+def test_assemble_on_the_fixture_gives_the_literal_file_record_and_summary(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert out == (
+        "replaced 1 judged findings, added 1 (CHDA:LIT:0009005), fixed 0 names by rule, "
+        "marked 2 verified, 1 blind-only decided\n"
+    )
+    assert _lit(p).read_text() == ASSEMBLED_FILE
+    assert (
+        p.root / "curation" / ".id_registry.yaml"
+    ).read_text() == "prefixes:\n  AST: 2\n  LIT: 9005\n"
+    assert (p.dir / "assemble.json").read_text() == (
+        "{\n"
+        ' "added": {\n  "CHDA:LIT:0701001": "CHDA:LIT:0009005"\n },\n'
+        ' "approvals": {\n  "CHDA:LIT:0009003": null,\n  "CHDA:LIT:0009005": null\n },\n'
+        ' "blind_only": {\n  "CHDA:LIT:0801003": "CHDA:LIT:0009005"\n },\n'
+        ' "format": 1,\n'
+        ' "judged": {\n'
+        '  "CHDA:LIT:0009003": '
+        '"405ace4a850650c0defa7397b63dadc58970c6245234f6a493e743380aaa7818",\n'
+        '  "CHDA:LIT:0009005": '
+        '"88e0bf7c61bff87c2f3ce6e4f10ca7ddada64cf7d6ac9fdbc60468540a70bcfd"\n'
+        " },\n"
+        ' "notation": [],\n'
+        ' "replaced": [\n  "CHDA:LIT:0009003"\n ],\n'
+        ' "verified": [\n  "CHDA:LIT:0009002",\n  "CHDA:LIT:0009004"\n ],\n'
+        ' "verifier": "agent:literature-verify/claude-opus-5-5"\n'
+        "}\n"
+    )
+    found = _findings(p)
+    assert {fid: f.get("verified_by") for fid, f in found.items()} == {
+        "CHDA:LIT:0009001": VERIFIER,  # approved before this run, untouched
+        "CHDA:LIT:0009002": VERIFIER,  # agreed
+        JUDGED: None,  # judged
+        "CHDA:LIT:0009004": VERIFIER,  # span only
+        ADDED_FINAL: None,  # added by the judge
+    }
+    assert found[JUDGED]["screened"] == 2
+    assert "approved_by" not in found[ADDED_FINAL] and "approved_by" not in found[JUDGED]
+
+
+def test_a_second_assemble_changes_no_byte_and_numbers_nothing_again(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    first = _assemble(p, stub_atlas)
+    after_first = _snapshot(p)
+    second = _assemble(p, stub_atlas)
+    assert second == first
+    assert _snapshot(p) == after_first
+    assert [i for i in _findings(p) if i >= "CHDA:LIT:0009005"] == [ADDED_FINAL]
+
+
+def _approve_in_the_file(p: RunPaths, fid: str) -> None:
+    """What apply-review leaves: three approval keys after ``extracted_by`` (raw setup)."""
+    text = _lit(p).read_text()
+    start = text.index(f"id: {fid}\n")
+    after = text.index("\n", text.index("extracted_by:", start)) + 1
+    _lit(p).write_text(
+        text[:after]
+        + "    approved_by: E.A.M\n    approved_on: 2026-11-26\n"
+        + "    approved_digest: sha256:"
+        + "0" * 64
+        + "\n"
+        + text[after:]
+    )
+
+
+def _block(p: RunPaths, fid: str) -> str:
+    """The literature file's text for one finding, from its ``- id:`` line to the next one."""
+    text = _lit(p).read_text()
+    start = text.index(f"  - id: {fid}\n")
+    end = text.find("\n  - id: ", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def test_a_fix_round_after_the_owner_approved_a_judged_finding_leaves_it_untouched(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(a), measured as m7: approve the judged 0009003, then the judge edits only the
+    added finding. The approved block must stay byte for byte and the added one be replaced."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    approved = _block(p, JUDGED)
+    assert "approved_by: E.A.M" in approved
+    _edit(_judge1(p), "A third carrier listed", "A third carrier, fixed, listed")
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert _block(p, JUDGED) == approved
+    assert _findings(p)[ADDED_FINAL]["summary"].startswith("A third carrier, fixed, listed")
+    record = load_assemble(p)
+    assert record is not None
+    assert record.replaced == (JUDGED,) and record.added == {ADDED: ADDED_FINAL}
+    assert sorted(record.judged) == [JUDGED, ADDED_FINAL]
+    # 0009003 was skipped by the re-run, so its record stays what the assemble that applied it saw
+    assert record.approvals == {JUDGED: None, ADDED_FINAL: None}
+
+
+def test_a_backfill_fix_round_may_change_a_finding_whose_approval_the_first_assemble_voided(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    """R-P2-66(a) amended: the finding sent back as "Needs a fix" still carries its old, void
+    approval, which nobody re-granted, so the judge may change it again. Its approval fields
+    stay exactly as they were."""
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [somewhere]\n",
+    )
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(JUDGED_BACKFILL)
+    args = ("--verifier", "agent:literature-verify/test-model")
+    assert _assemble(p, stub_atlas, *args)[0] == 0
+    approval = {
+        k: v for k, v in _findings(p)["CHDA:LIT:0009001"].items() if k.startswith("approved")
+    }
+    assert approval["approved_by"] == "E.A.M"
+    _edit(_judge1(p), "cohorts: [elsewhere]", "cohorts: [another]")
+    code, out = _assemble(p, stub_atlas, *args)
+    assert code == 0, out
+    after = _findings(p)["CHDA:LIT:0009001"]
+    assert after["cohorts"] == ["another"]
+    assert {k: v for k, v in after.items() if k.startswith("approved")} == approval
+
+
+def test_a_skipped_finding_keeps_the_approval_record_of_the_assemble_that_applied_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 1 applies 0009003 (approvals null); the owner approves it; round 2 fixes another
+    finding and skips 0009003; round 3 changes 0009003's judge finding. The record must still
+    say null after round 2, so round 3 sees an approval granted since and refuses."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    _edit(_judge1(p), "A third carrier listed", "A third carrier, fixed, listed")
+    assert _assemble(p, stub_atlas)[0] == 0
+    record = load_assemble(p)
+    assert record is not None
+    assert record.approvals[JUDGED] is None
+    _edit(_judge1(p), "three relatives had", "four relatives had")
+    _expect_refused(
+        p, stub_atlas, f"{JUDGED}: approved; a judge may not change an approved finding"
+    )
+
+
+def test_a_judge_that_changes_an_approved_finding_is_refused_naming_it_and_nothing_is_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    _edit(_judge1(p), "three relatives had", "four relatives had")
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{JUDGED}: approved; a judge may not change an approved finding",
+    )
+
+
+def test_the_digest_of_a_judge_finding_is_the_sha256_of_its_canonical_json(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The digest covers the finding as the judge wrote it, under the judge's own id, for a
+    replacement and for an added finding."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    # keys in reverse order, so a digest that did not sort them would differ
+    reordered = [
+        dict(reversed(f.items())) for f in YAML_SAFE.load(_judge1(p).read_text())["findings"]
+    ]
+    _judge1(p).write_text(json.dumps({"findings": reordered}))
+    assert _assemble(p, stub_atlas)[0] == 0
+    rows = {f["id"]: f for f in YAML_SAFE.load(_judge1(p).read_text())["findings"]}
+    expected = {
+        fid: hashlib.sha256(
+            json.dumps(rows[jid], sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        for fid, jid in ((JUDGED, JUDGED), (ADDED_FINAL, ADDED))
+    }
+    record = load_assemble(p)
+    assert record is not None and record.judged == expected
+
+
+def _edit_in_block(p: RunPaths, fid: str, old: str, new: str) -> None:
+    """Replace `old` by `new` once, inside the literature file's block for `fid`."""
+    text = _lit(p).read_text()
+    start = text.index(f"  - id: {fid}\n")
+    end = text.find("\n  - id: ", start + 1)
+    end = len(text) if end == -1 else end
+    block = text[start:end]
+    assert block.count(old) == 1, (fid, old)
+    _lit(p).write_text(text[:start] + block.replace(old, new) + text[end:])
+
+
+def test_a_finding_edited_after_compare_is_not_marked_verified_and_nothing_is_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(c), measured as m8: 0009002 agreed with the blind reader's 0801001 (screened 1);
+    a hand edit to screened 7 would have gone out as "two blind readers agreed"."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit_in_block(p, "CHDA:LIT:0009002", "screened: 1", "screened: 7")
+    _expect_refused(
+        p,
+        stub_atlas,
+        "CHDA:LIT:0009002: no longer agrees with the blind pass's CHDA:LIT:0801001 "
+        "(it was edited after compare). Undo the edit, or remove the judges' files "
+        "(judge/*.decisions.yaml and judging/*.findings.yaml), run compare again and run the "
+        "judges again",
+    )
+
+
+def test_a_finding_assemble_already_marked_may_change_afterwards_and_a_rerun_goes_through(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """normalise rewrites a marked finding's variants after the first assemble, so a re-run does
+    not re-derive the verdict of an id it marked before."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _edit_in_block(p, "CHDA:LIT:0009002", "p: p.(Arg34Ter)}", "p: p.(Arg34*)}")
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    found = _findings(p)["CHDA:LIT:0009002"]
+    assert found["verified_by"] == VERIFIER
+    assert found["variants"][0]["reported"]["p"] == "p.(Arg34*)"
+
+
+def test_an_id_the_record_lists_as_verified_but_the_file_does_not_mark_is_re_derived(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(c): the skip is for a finding that carries `verified_by` in the file. After a
+    crash the first write of assemble.json already lists 0009002 as verified while the file never
+    got the mark; an edit since must not be marked as agreed."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert "CHDA:LIT:0009002" in json.loads(p.assemble.read_text())["verified"]
+    _edit_in_block(p, "CHDA:LIT:0009002", f"\n    verified_by: {VERIFIER}", "")
+    _edit_in_block(p, "CHDA:LIT:0009002", "screened: 1", "screened: 7")
+    _expect_refused(
+        p,
+        stub_atlas,
+        "CHDA:LIT:0009002: no longer agrees with the blind pass's CHDA:LIT:0801001",
+    )
+
+
+def test_a_fix_round_replaces_the_added_finding_under_its_final_id(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The judge edits the added finding, still under its 07 id: it keeps 0009005, is not
+    numbered again, and the counter does not move. A second added finding is numbered after it."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _edit(_judge1(p), "A third carrier listed", "A third carrier, edited, listed")
+    both = YAML_SAFE.load(_judge1(p).read_text())
+    both["findings"].append(
+        {
+            **both["findings"][1],
+            "id": "CHDA:LIT:0701002",
+            "summary": "A fourth carrier listed.",
+            "shares_probands_with": [ADDED, "CHDA:LIT:0009002"],
+        }
+    )
+    both["findings"][0]["shares_probands_with"] = [ADDED]
+    _judge1(p).write_text(json.dumps(both))
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    found = _findings(p)
+    assert found[ADDED_FINAL]["summary"].startswith("A third carrier, edited, listed")
+    assert found["CHDA:LIT:0009006"]["summary"].startswith("A fourth carrier listed")
+    assert list(found) == [
+        "CHDA:LIT:0009001",
+        "CHDA:LIT:0009002",
+        JUDGED,
+        "CHDA:LIT:0009004",
+        ADDED_FINAL,
+        "CHDA:LIT:0009006",
+    ]
+    assert (p.root / "curation" / ".id_registry.yaml").read_text().endswith("LIT: 9006\n")
+    record = load_assemble(p)
+    assert record is not None
+    assert record.added == {ADDED: ADDED_FINAL, "CHDA:LIT:0701002": "CHDA:LIT:0009006"}
+    assert record.replaced == (JUDGED,)
+    assert found[JUDGED]["shares_probands_with"] == [ADDED_FINAL]
+    assert found["CHDA:LIT:0009006"]["shares_probands_with"] == [ADDED_FINAL, "CHDA:LIT:0009002"]
+
+
+def test_a_judge_may_rewrite_an_added_finding_under_the_final_id_an_earlier_assemble_gave_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _edit(_judge1(p), ADDED, ADDED_FINAL)
+    _edit(_judge1(p), "A third carrier listed", "A third carrier, rewritten, listed")
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert _findings(p)[ADDED_FINAL]["summary"].startswith("A third carrier, rewritten")
+    assert list(_findings(p))[-1] == ADDED_FINAL
+    assert (p.root / "curation" / ".id_registry.yaml").read_text().endswith("LIT: 9005\n")
+
+
+def test_decisions_keyed_by_the_judges_local_id_are_read_under_the_final_id_once_assembled(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    before = (p.judge / "judge-01.decisions.yaml").read_bytes()
+    assert sorted(load_judge(p)) == [JUDGED, ADDED, BLIND_ONLY]
+    with pytest.raises(ReviewDataError, match="CHDA:LIT:0701001"):
+        _review(p)
+    assert _assemble(p, stub_atlas)[0] == 0
+    decisions = load_judge(p)
+    assert sorted(decisions) == [JUDGED, ADDED_FINAL, BLIND_ONLY]
+    assert [(d.field, d.value) for d in decisions[ADDED_FINAL]] == [("design", "case_report")]
+    assert (p.judge / "judge-01.decisions.yaml").read_bytes() == before  # the judge's file stays
+    data = _review(p)
+    # the page lists the judged findings first, then the agreed ones (measured order)
+    assert [c["id"] for c in data["findings"]] == [
+        JUDGED,
+        ADDED_FINAL,
+        "CHDA:LIT:0009004",
+        "CHDA:LIT:0009002",
+    ]
+    checks = [(c.finding, c.origin, c.paper) for c in check_quotes(p)]
+    assert (ADDED_FINAL, "judge", "PMID:91000002") in checks
+    assert (ADDED, "judge", "PMID:91000002") not in checks
+
+
+def _review(p: RunPaths) -> dict[str, Any]:
+    ids = ["CHDA:LIT:0009002", JUDGED, "CHDA:LIT:0009004", ADDED_FINAL]
+    digests = Digests(
+        "HGNC:11604",
+        "TBX5",
+        "sha256:" + "a" * 64,
+        tuple(
+            FindingDigests(i, "sha256:" + "1" * 64, "sha256:" + "2" * 64, False, False, False)
+            for i in ids
+        ),
+    )
+    from datetime import UTC, datetime
+
+    return build_review_data(
+        p.root,
+        p,
+        digests,
+        Reviewer("E.A.M", "owner"),
+        datetime(2026, 11, 26, tzinfo=UTC),
+        None,
+        "0 error(s), 3 warning(s)",
+    )
+
+
+def test_a_mapped_decision_key_that_is_already_a_key_is_refused(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    path = p.judge / "judge-01.decisions.yaml"
+    both = YAML_SAFE.load(path.read_text())
+    both[ADDED_FINAL] = both[JUDGED]  # the judge also decided it under its final id
+    path.write_text(json.dumps(both))
+    with pytest.raises(RunFormatError, match="already decide"):
+        load_judge(p)
+
+
+def test_notation_fixes_every_finding_of_the_run_and_records_each_with_its_rule(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    # a merged finding the judges did not touch, a judged one and an added one, each misspelt
+    _edit(
+        _lit(p),
+        "reported: {c: c.100C>T, p: p.(Arg34Ter)}",
+        "reported: {c: c.100 C > T, p: p.(Arg34Ter)}",
+    )
+    _edit(_lit(p), "reported: {c: c.700+1G>A}", "reported: {c: c.700+1G > A}")
+    _edit(_judge1(p), "      c: c.835C>T\n", "      c: c.835 C>T\n")
+    _edit(_judge1(p), "      p: p.(Gly333Glu)\n", "      p: p.(Gly333ter)\n")
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert out.endswith("fixed 4 names by rule, marked 2 verified, 1 blind-only decided\n")
+    record = load_assemble(p)
+    assert record is not None
+    assert [
+        (n.finding, n.variant, n.field, n.before, n.after, n.rules) for n in record.notation
+    ] == [
+        ("CHDA:LIT:0009002", 1, "reported.c", "c.100 C > T", "c.100C>T", ("R-F8 spaces",)),
+        (JUDGED, 1, "reported.c", "c.835 C>T", "c.835C>T", ("R-F8 spaces",)),
+        ("CHDA:LIT:0009004", 1, "reported.c", "c.700+1G > A", "c.700+1G>A", ("R-F8 spaces",)),
+        (ADDED_FINAL, 1, "reported.p", "p.(Gly333ter)", "p.(Gly333Ter)", ("R-F4 Ter",)),
+    ]
+    found = _findings(p)
+    assert found["CHDA:LIT:0009002"]["variants"][0]["reported"] == {
+        "c": "c.100C>T",
+        "p": "p.(Arg34Ter)",
+    }
+    assert found[JUDGED]["variants"][0]["reported"]["c"] == "c.835C>T"
+    assert found[ADDED_FINAL]["variants"][0]["reported"]["p"] == "p.(Gly333Ter)"
+    assert found[JUDGED]["variants"][0]["as_reported"] == "c.835C>T, p.(Arg279Ter)"  # never touched
+    # a re-run keeps the record of fixes the first run made, and changes no byte
+    after = _snapshot(p)
+    assert _assemble(p, stub_atlas) == (0, out)
+    assert _snapshot(p) == after
+
+
+# -- what a judge may change -------------------------------------------------------------------
+
+
+def test_a_judge_that_changes_a_field_no_decision_names_is_refused_and_a_listed_one_is_not(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``differs`` lists only ``screened`` for 0009003; changing ``design`` too has no decision."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit(_judge1(p), "design: family_segregation", "design: cohort_screen")
+    _expect_refused(p, stub_atlas, f"{JUDGED}: the judge changed ['design']")
+
+
+def test_a_spacing_difference_between_the_file_and_the_judge_is_no_difference(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Notation is settled by rule on both copies before they are compared, as ``compare`` does."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit(_lit(p), "reported: {c: c.835C>T,", "reported: {c: c.835 C > T,")
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert _findings(p)[JUDGED]["variants"][0]["reported"]["c"] == "c.835C>T"
+
+
+def test_a_judge_may_correct_a_variants_span_without_a_decision(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The span is settled by rule, so a changed ``as_reported`` is no undecided difference."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit(_judge1(p), "c.835C>T, p.(Arg279Ter)", "c.835C>T / p.(Arg279Ter)")
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert _findings(p)[JUDGED]["variants"][0]["as_reported"] == "c.835C>T / p.(Arg279Ter)"
+
+
+def test_a_free_field_the_comparison_never_reads_may_be_corrected_by_a_judge(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit(_judge1(p), "One family carried", "Two related families carried")
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert _findings(p)[JUDGED]["summary"].startswith("Two related families carried")
+
+
+def test_extracted_by_is_free_for_a_judge_as_the_comparison_never_reads_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit(
+        _judge1(p),
+        "  extracted_by: agent:literature-extract/claude-sonnet-5-5\n  id: CHDA:LIT:0009003",
+        "  extracted_by: agent:literature-judge/claude-opus-5-5\n  id: CHDA:LIT:0009003",
+    )
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert _findings(p)[JUDGED]["extracted_by"] == "agent:literature-judge/claude-opus-5-5"
+
+
+def _only_first_run(
+    tmp_path: Path, atlas_root: Path, stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> RunPaths:
+    """Merged, then the blind reader's findings on 0009002's paper removed, so compare lists
+    0009002 as reported by the first pass only."""
+    p = _fresh(tmp_path, atlas_root)
+    _pubmed(monkeypatch)
+    assert _merge(p, stub)[0] == 0
+    path = p.verify / "batch-01.findings.yaml"
+    data = YAML_SAFE.load(path.read_text())
+    data["findings"] = [
+        f for f in data["findings"] if f["id"] not in ("CHDA:LIT:0801001", "CHDA:LIT:0801003")
+    ]
+    path.write_text(json.dumps(data))
+    assert _compare(p, stub)[0] == 0
+    return p
+
+
+def test_a_finding_only_one_pass_reported_may_change_in_any_field_and_stays_as_merged_otherwise(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _only_first_run(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    merged = _findings(p)["CHDA:LIT:0009002"]
+    judge = {**merged, "design": "cohort_screen", "summary": "A judge's summary."}
+    _judge1(p).parent.mkdir(exist_ok=True)
+    _judge1(p).write_text(json.dumps({"findings": [judge]}))
+    # the judge round keeps 0009003 (differs) undecided, which is refused ...
+    _expect_refused(p, stub_atlas, f"{JUDGED}: differs, but no judge finding decides it")
+    # ... so decide it as the fixture's judge did, next to the free change
+    copy_judge_round(p)
+    both = json.loads(json.dumps(YAML_SAFE.load(_judge1(p).read_text())))
+    both["findings"].append(judge)
+    _judge1(p).write_text(json.dumps(both))
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    found = _findings(p)
+    assert found["CHDA:LIT:0009002"]["design"] == "cohort_screen"
+    assert found["CHDA:LIT:0009002"]["summary"] == "A judge's summary."
+    assert "verified_by" not in found["CHDA:LIT:0009002"]  # judged, so not marked
+    assert load_assemble(p).replaced == ("CHDA:LIT:0009002", JUDGED)  # type: ignore[union-attr]
+
+
+def test_a_finding_only_one_pass_reported_may_move_to_a_paper_only_with_its_publication(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """0009004 (paper 91000003) is read by one pass only; the judge moves it to 91000004, which
+    merge excluded and publications.yaml lacks: refused until registered, then triage is back."""
+    p = _fresh(tmp_path, atlas_root)
+    _pubmed(monkeypatch)
+    assert _merge(p, stub_atlas)[0] == 0
+    path = p.verify / "batch-02.findings.yaml"
+    path.write_text(json.dumps({"findings": []}))
+    assert _compare(p, stub_atlas)[0] == 0
+    copy_judge_round(p)
+    moved = {**_findings(p)["CHDA:LIT:0009004"], "publication": "PMID:91000004"}
+    (p.judging / "judge-02.findings.yaml").write_text(json.dumps({"findings": [moved]}))
+    _expect_refused(p, stub_atlas, "chd-curator add-publication PMID:91000004")
+    _judge_on_the_excluded_paper(p, register=True)
+    (p.judging / "judge-02.findings.yaml").write_text(json.dumps({"findings": [moved]}))
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert "decision: included\nfindings:" in _lit(p).read_text()
+    assert _findings(p)["CHDA:LIT:0009004"]["publication"] == "PMID:91000004"
+
+
+def test_a_finding_only_one_pass_reported_that_the_judge_did_not_write_stays_as_merged(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _only_first_run(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    copy_judge_round(p)
+    merged = _findings(p)["CHDA:LIT:0009002"]
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert _findings(p)["CHDA:LIT:0009002"] == merged
+    record = load_assemble(p)
+    assert record is not None and "CHDA:LIT:0009002" not in record.verified
+
+
+# -- the judge's findings: which are accepted --------------------------------------------------
+
+
+def _drop_the_judged_finding(p: RunPaths) -> None:
+    data = YAML_SAFE.load(_judge1(p).read_text())
+    data["findings"] = [f for f in data["findings"] if f["id"] != JUDGED]
+    _judge1(p).write_text(json.dumps(data))
+
+
+def _id_not_a_judge_id(p: RunPaths) -> None:
+    _edit(_judge1(p), "id: CHDA:LIT:0701001", "id: CHDA:LIT:0009004")  # span only: not judged
+
+
+def _approval_in_judge(p: RunPaths) -> None:
+    _edit(_judge1(p), "  id: CHDA:LIT:0701001\n", "  id: CHDA:LIT:0701001\n  approved_by: E.A.M\n")
+
+
+def _verified_in_judge(p: RunPaths) -> None:
+    _edit(
+        _judge1(p),
+        "  id: CHDA:LIT:0701001\n",
+        "  id: CHDA:LIT:0701001\n  verified_by: agent:literature-verify/claude-opus-5-5\n",
+    )
+
+
+def _paper_outside_the_batch(p: RunPaths) -> None:
+    _edit(
+        _judge1(p),
+        "publication: PMID:91000002\n  screened: 1",
+        "publication: PMID:91000003\n  screened: 1",
+    )
+
+
+def _misnamed_judge_file(p: RunPaths) -> None:
+    (_judge1(p)).rename(p.judging / "judge-01.findings.yml")
+
+
+def _judge_file_of_no_batch(p: RunPaths) -> None:
+    shutil.copy(_judge1(p), p.judging / "judge-07.findings.yaml")
+
+
+def _agreed_and_judged(p: RunPaths) -> None:
+    path = p.dir / "comparison.json"
+    data = json.loads(path.read_text())
+    data["agreed"].append(JUDGED)
+    path.write_text(json.dumps(data))
+
+
+def _unknown_shared_id(p: RunPaths) -> None:
+    _edit(
+        _judge1(p),
+        "shares_probands_with: unknown\n  summary: A third",
+        "shares_probands_with: [CHDA:LIT:0555555]\n  summary: A third",
+    )
+
+
+def _unknown_shared_id_on_a_replacement(p: RunPaths) -> None:
+    _edit(
+        _judge1(p),
+        "shares_probands_with: unknown\n  summary: One family",
+        "shares_probands_with: [CHDA:LIT:0555555]\n  summary: One family",
+    )
+
+
+def _no_merge(p: RunPaths) -> None:
+    p.merge.unlink()
+
+
+def _no_comparison(p: RunPaths) -> None:
+    p.comparison.unlink()
+
+
+def _modes_disagree(p: RunPaths) -> None:
+    _edit(p.batches_json, '"mode": "new"', '"mode": "reread"')
+
+
+def _judge_key_added_twice(p: RunPaths) -> None:
+    both = YAML_SAFE.load(_judge1(p).read_text())
+    both["findings"].append(both["findings"][1])
+    _judge1(p).write_text(json.dumps(both))
+
+
+def _stale_assemble(p: RunPaths) -> None:
+    write_assemble(
+        p, AssembleRecord((), {ADDED: "CHDA:LIT:0009005"}, (), (), None, {}, {}, {})
+    )  # the file has no 0009005
+
+
+def _merge_did_not_exclude(p: RunPaths) -> None:
+    """A judge finding on 91000004, excluded in the triage, with its Publication registered."""
+    _judge_on_the_excluded_paper(p, register=True)
+    merge = json.loads(p.merge.read_text())
+    merge["triage"] = []
+    p.merge.write_text(json.dumps(merge))
+
+
+def _judge_on_the_excluded_paper(p: RunPaths, *, register: bool) -> None:
+    findings = YAML_SAFE.load(_judge1(p).read_text())["findings"]
+    added = dict(findings[1], id="CHDA:LIT:0702001", publication="PMID:91000004")
+    (p.judging / "judge-02.findings.yaml").write_text(json.dumps({"findings": [added]}))
+    if register:
+        with (p.root / "curation" / "publications.yaml").open("a") as handle:
+            handle.write(
+                "  - id: PMID:91000004\n    title: A synthetic mouse paper.\n"
+                "    journal: Journal of synthetic genetics\n    year: 2023\n"
+                "    authors:\n      - Gamma G\n    study_type: case_report\n"
+            )
+
+
+def _same_id_in_two_judge_files(p: RunPaths) -> None:
+    _judge_on_the_excluded_paper(p, register=True)
+    _edit(p.judging / "judge-02.findings.yaml", "CHDA:LIT:0702001", ADDED)
+
+
+def _id_missing_from_the_file(p: RunPaths) -> None:
+    path = p.dir / "comparison.json"
+    data = json.loads(path.read_text())
+    data["only_first"].append("CHDA:LIT:0009999")
+    path.write_text(json.dumps(data))
+    _edit(_judge1(p), "id: CHDA:LIT:0701001", "id: CHDA:LIT:0009999")
+    # 0801003 was adopted as that 0701001; it is no longer, or the link breaks first
+    _set_entry(p, decision="neither", value="not added")
+
+
+def _excluded_by_someone_else(p: RunPaths) -> None:
+    """Merge excluded 91000004; 91000002 was excluded by hand, and a judge finding cites it."""
+    _edit(
+        _lit(p),
+        "  - pmid: PMID:91000002\n    search: 1\n    decision: included\n",
+        "  - pmid: PMID:91000002\n    search: 1\n    decision: excluded\n    reason: other\n"
+        "    note: by hand\n",
+    )
+
+
+def _verify_files_gone(p: RunPaths) -> None:
+    shutil.rmtree(p.verify)
+    doc = json.loads(p.comparison.read_text())
+    del doc["only_second"]  # else the blind-only finding's own lookup is the first refusal
+    p.comparison.write_text(json.dumps(doc))
+
+
+def _blind_only_finding_gone_from_the_verify_pass(p: RunPaths) -> None:
+    path = p.verify / "batch-01.findings.yaml"
+    data = YAML_SAFE.load(path.read_text())
+    data["findings"] = [f for f in data["findings"] if f["id"] != BLIND_ONLY]
+    path.write_text(json.dumps(data))
+
+
+def _verify_finding_without_a_name(p: RunPaths) -> None:
+    _edit(
+        p.verify / "batch-02.findings.yaml",
+        "extracted_by: agent:literature-verify/claude-opus-5-5\n",
+        "extracted_by: ''\n",
+    )
+
+
+def _review_marks_not_in_differs(p: RunPaths) -> None:
+    _edit(
+        _judge1(p),
+        "  publication: PMID:91000002\n  screened: 2",
+        "  publication: PMID:91000002\n  review_note: look again\n"
+        "  review_status: pending_review\n  screened: 2",
+    )
+
+
+REFUSALS = {
+    "no-merge-json": (_no_merge, "the run has no merge.json"),
+    "no-comparison-json": (_no_comparison, "the run has no comparison.json"),
+    "modes-disagree": (_modes_disagree, "merge.json is a new merge but batches.json plans reread"),
+    "differs-without-a-judge-finding": (
+        _drop_the_judged_finding,
+        f"{JUDGED}: differs, but no judge finding decides it",
+    ),
+    "an-id-the-judge-may-not-write": (_id_not_a_judge_id, "CHDA:LIT:0009004 is neither"),
+    "approval-in-a-judge-finding": (_approval_in_judge, "carries approved_by"),
+    "verified-by-in-a-judge-finding": (_verified_in_judge, "carries verified_by"),
+    "paper-outside-the-batch": (_paper_outside_the_batch, "which batch 01 does not read"),
+    "misnamed-judge-file": (_misnamed_judge_file, "is not a judge file"),
+    "judge-file-of-no-batch": (_judge_file_of_no_batch, "is not a judge file"),
+    "agreed-and-judged": (_agreed_and_judged, "lists it as agreed and as judged"),
+    "shares-probands-with-an-unknown-id": (_unknown_shared_id, "CHDA:LIT:0555555"),
+    "shares-probands-with-an-unknown-id-on-a-replacement": (
+        _unknown_shared_id_on_a_replacement,
+        "CHDA:LIT:0555555, which is neither a finding the judges added nor one in the file",
+    ),
+    "a-judge-id-twice": (_judge_key_added_twice, "duplicate finding id"),
+    "same-id-in-two-judge-files": (_same_id_in_two_judge_files, "is also in"),
+    "judge-finding-for-an-id-the-file-lacks": (
+        _id_missing_from_the_file,
+        "CHDA:LIT:0009999: a judge finding replaces it, but",
+    ),
+    "verify-files-gone": (_verify_files_gone, "holds no finding to read the verifier's name from"),
+    "blind-only-finding-gone-from-the-verify-pass": (
+        _blind_only_finding_gone_from_the_verify_pass,
+        f"holds no finding {BLIND_ONLY}, which",
+    ),
+    "verify-finding-without-a-name": (_verify_finding_without_a_name, "has no extracted_by"),
+    "review-marks-not-in-differs": (_review_marks_not_in_differs, "the judge changed"),
+    "stale-assemble-json": (_stale_assemble, "stopped part-way"),
+    "added-paper-has-no-publication": (
+        lambda p: _judge_on_the_excluded_paper(p, register=False),
+        "chd-curator add-publication PMID:91000004",
+    ),
+    "added-paper-excluded-by-someone-else": (
+        _merge_did_not_exclude,
+        "which merge did not set: someone else decided it",
+    ),
+    "added-paper-excluded-by-hand-while-merge-excluded-another": (
+        _excluded_by_someone_else,
+        "PMID:91000002: a judge's finding cites it but its triage decision is 'excluded'",
+    ),
+}
+
+
+@pytest.mark.parametrize("setup, message", REFUSALS.values(), ids=REFUSALS)
+def test_every_refusal_exits_2_and_leaves_every_file_as_it_was(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    setup: Any,
+    message: str,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    setup(p)
+    _expect_refused(p, stub_atlas, message)
+
+
+def test_a_judge_added_finding_on_a_paper_merge_excluded_sets_its_triage_back_to_included(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _judge_on_the_excluded_paper(p, register=True)
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert out.startswith(
+        "replaced 1 judged findings, added 2 (CHDA:LIT:0009005..CHDA:LIT:0009006)"
+    )
+    text = _lit(p).read_text()
+    assert "  - pmid: PMID:91000004\n    search: 1\n    decision: included\nfindings:\n" in text
+    # numbered after 91000002's (2021) because 91000004 is 2023
+    found = _findings(p)
+    assert found["CHDA:LIT:0009005"]["publication"] == "PMID:91000002"
+    assert found["CHDA:LIT:0009006"]["publication"] == "PMID:91000004"
+    after = _snapshot(p)
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert _snapshot(p) == after
+
+
+def test_two_added_findings_may_name_each_other_by_their_local_ids(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    both = YAML_SAFE.load(_judge1(p).read_text())
+    both["findings"].append(
+        {**both["findings"][1], "id": "CHDA:LIT:0701002", "shares_probands_with": [ADDED]}
+    )
+    _judge1(p).write_text(json.dumps(both))
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert _findings(p)["CHDA:LIT:0009006"]["shares_probands_with"] == [ADDED_FINAL]
+
+
+def test_a_judge_finding_naming_a_local_id_in_shares_probands_with_gets_the_final_id(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit(
+        _judge1(p),
+        "shares_probands_with: unknown\n  summary: One family",
+        "shares_probands_with: [CHDA:LIT:0701001, CHDA:LIT:0009002]\n  summary: One family",
+    )
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert _findings(p)[JUDGED]["shares_probands_with"] == [ADDED_FINAL, "CHDA:LIT:0009002"]
+
+
+# -- verification ------------------------------------------------------------------------------
+
+
+def test_two_names_in_the_blind_pass_are_refused_and_so_is_a_verifier_argument(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _expect_refused(p, stub_atlas, "--verifier belongs to a backfill", "--verifier", "agent:x/y")
+    _edit(
+        p.verify / "batch-02.findings.yaml",
+        "extracted_by: agent:literature-verify/claude-opus-5-5",
+        "extracted_by: agent:literature-verify/another-model",
+    )
+    _expect_refused(
+        p,
+        stub_atlas,
+        "agent:literature-verify/another-model, agent:literature-verify/claude-opus-5-5",
+    )
+
+
+def test_assemble_refuses_a_file_that_changed_after_it_was_read(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    built = assemble_run(p.root, p, "TBX5", None)
+    _lit(p).write_text(_lit(p).read_text() + "# edited meanwhile\n")
+    before = _snapshot(p)
+    with pytest.raises(WriteRefused, match="changed since it was read"):
+        commit(p, built)
+    assert _snapshot(p) == before  # no assemble.json, no counter move
+
+
+# -- the write order and the last check ---------------------------------------------------------
+
+
+def test_a_crash_after_assemble_json_leaves_it_in_place_and_a_rerun_refuses_until_it_is_removed(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    lit = _lit(p).read_bytes()
+
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(assemble_module, "write_literature", crash)
+    code, out = _assemble(p, stub_atlas)
+    assert (code, "disk full" in out) == (1, True)
+    assert _lit(p).read_bytes() == lit
+    assert load_assemble(p) is not None  # written first: a re-run cannot number the finding again
+    monkeypatch.undo()
+    _pubmed(monkeypatch)
+    _expect_refused(
+        p,
+        stub_atlas,
+        "A previous assemble stopped part-way: replace assemble.json with assemble.prev.json "
+        "(remove assemble.json when there is no assemble.prev.json) and run it again",
+    )
+    assert not (p.dir / "assemble.prev.json").exists()  # the crashed run had no earlier record
+    (p.dir / "assemble.json").unlink()
+    assert _assemble(p, stub_atlas)[0] == 0
+    # the crashed run had already raised the counter to 9005, so the re-run's added finding takes
+    # 9006 and 0009005 is skipped for good (m11: the README says so)
+    assert ADDED_FINAL not in _findings(p) and "CHDA:LIT:0009006" in _findings(p)
+    assert (p.root / "curation" / ".id_registry.yaml").read_text().endswith("LIT: 9006\n")
+
+
+def test_a_write_refused_after_assemble_json_says_what_was_already_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m6: the registry write is refused (the file changed since it was read) after
+    ``assemble.json`` is on disk, so "nothing was written" would be false."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    lit = _lit(p).read_bytes()
+    registry = (p.root / "curation" / ".id_registry.yaml").read_bytes()
+
+    def refuse(path: Path, *args: Any, **kwargs: Any) -> None:
+        raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
+
+    monkeypatch.setattr(assemble_module, "write_registry", refuse)
+    code, out = _assemble(p, stub_atlas)
+    reg = p.root / "curation" / ".id_registry.yaml"
+    assert code == 2
+    assert out == (
+        f"error: {reg}: the file changed since it was read; this command had already written "
+        f"{p.dir / 'assemble.json'}, which stays as written; assemble.json names the findings "
+        "this run numbered but not what it applied, so before running assemble again replace it "
+        "with assemble.prev.json (or remove it when there is no assemble.prev.json)\n"
+    )
+    assert load_assemble(p) is not None
+    assert _lit(p).read_bytes() == lit and reg.read_bytes() == registry
+
+
+def test_a_crash_writing_the_counter_leaves_the_literature_file_unwritten(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    lit = _lit(p).read_bytes()
+
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(assemble_module, "write_registry", crash)
+    assert _assemble(p, stub_atlas)[0] == 1
+    assert _lit(p).read_bytes() == lit  # the counter is written before the file that uses it
+
+
+def test_a_registry_changed_after_it_was_read_is_refused_before_anything_is_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    built = assemble_run(p.root, p, "TBX5", None)
+    registry = p.root / "curation" / ".id_registry.yaml"
+    registry.write_text(registry.read_text() + "# edited meanwhile\n")
+    before = _snapshot(p)
+    with pytest.raises(WriteRefused, match="changed since it was read"):
+        commit(p, built)
+    assert _snapshot(p) == before
+
+
+def _careless_verified(raw: bytes, ids: Any, verifier: str) -> bytes:
+    data = load_round_trip(with_verified(raw, ids, verifier))
+    for f in data["findings"]:
+        if f["id"] == "CHDA:LIT:0009002":
+            f["summary"] = "Quietly reworded."
+    return dump_bytes(data)
+
+
+def _careless_verifier_name(raw: bytes, ids: Any, verifier: str) -> bytes:
+    return with_verified(raw, ids, "agent:literature-verify/someone-else")
+
+
+def _careless_replace(raw: bytes, findings: Any) -> bytes:
+    data = load_round_trip(with_findings_replaced(raw, findings))
+    for f in data["findings"]:
+        if f["id"] == "CHDA:LIT:0009001":
+            f["screened"] = 9
+    return dump_bytes(data)
+
+
+def _careless_drop(raw: bytes, findings: Any) -> bytes:
+    data = load_round_trip(with_findings_replaced(raw, findings))
+    del data["findings"][0]
+    return dump_bytes(data)
+
+
+def _careless_reorder(raw: bytes, findings: Any) -> bytes:
+    data = load_round_trip(with_findings_replaced(raw, findings))
+    data["findings"].reverse()
+    return dump_bytes(data)
+
+
+def _careless_duplicate(raw: bytes, findings: Any) -> bytes:
+    data = load_round_trip(with_findings_replaced(raw, findings))
+    data["findings"].append(copy.deepcopy(data["findings"][-1]))
+    return dump_bytes(data)
+
+
+def _careless_triage(raw: bytes, changes: Any) -> bytes:
+    data = load_round_trip(with_triage(raw, changes))
+    data["triage"][0]["decision"] = "excluded"
+    return dump_bytes(data)
+
+
+def _careless_triage_order(raw: bytes, changes: Any) -> bytes:
+    data = load_round_trip(with_triage(raw, changes))
+    data["triage"].reverse()
+    return dump_bytes(data)
+
+
+def _careless_top_level(raw: bytes, changes: Any) -> bytes:
+    data = load_round_trip(with_triage(raw, changes))
+    data["gene"] = "HGNC:1"
+    return dump_bytes(data)
+
+
+CARELESS = {
+    "verified-finding-reworded": ("with_verified", _careless_verified, "CHDA:LIT:0009002: fields"),
+    "verified-by-another-name": ("with_verified", _careless_verifier_name, "verified_by is"),
+    "unrelated-finding-changed": ("with_findings_replaced", _careless_replace, "CHDA:LIT:0009001"),
+    "a-finding-dropped": ("with_findings_replaced", _careless_drop, "dropped, reordered"),
+    "an-added-finding-twice": ("with_findings_replaced", _careless_duplicate, "appears twice"),
+    "findings-reordered": ("with_findings_replaced", _careless_reorder, "dropped, reordered"),
+    "unrelated-triage-entry-changed": ("with_triage", _careless_triage, "its triage entry changed"),
+    "triage-entries-reordered": ("with_triage", _careless_triage_order, "triage entries or their"),
+    "top-level-key-changed": ("with_triage", _careless_top_level, "a top-level key"),
+}
+
+
+@pytest.mark.parametrize("name, careless, message", CARELESS.values(), ids=CARELESS)
+def test_a_step_that_moves_more_than_it_is_entitled_to_is_caught_by_the_last_check(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    careless: Any,
+    message: str,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _judge_on_the_excluded_paper(p, register=True)  # so the triage step has a change to make
+    monkeypatch.setattr(assemble_module, name, careless)
+    _expect_refused(p, stub_atlas, message)
+
+
+# -- backfill ----------------------------------------------------------------------------------
+
+
+def _backfill(
+    p: RunPaths, verify: str, *, cohorts: str = "", fields: tuple[str, ...] = ("cohorts",)
+) -> None:
+    """The fixture as a one-batch backfill of ``cohorts`` over the approved finding 0009001."""
+    p.batches_json.write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "mode": "backfill",
+                "fields": list(fields),
+                "budget_bytes": 1000,
+                "batches": [
+                    {
+                        "id": "01",
+                        "papers": ["PMID:91000001"],
+                        "findings": ["CHDA:LIT:0009001"],
+                        "text_bytes": 1,
+                    }
+                ],
+            }
+        )
+    )
+    merge = {
+        "format": 1,
+        "mode": "backfill",
+        "ids": {},
+        "publications_added": [],
+        "triage": [],
+        "replaces": [],
+    }
+    p.merge.write_text(json.dumps(merge))
+    if cohorts:
+        _edit(
+            _lit(p),
+            "    phenotypes: [HP:0001631]\n    lesion_groups: [septal]\n    syndromic: syndromic",
+            "    phenotypes: [HP:0001631]\n    lesion_groups: [septal]\n"
+            f"    syndromic: syndromic\n    cohorts: {cohorts}",
+        )
+    for old in p.verify.glob("batch-*"):
+        old.unlink()
+    (p.verify / "batch-01.findings.yaml").write_text(verify)
+
+
+def _backfill_ready(
+    tmp_path: Path, atlas_root: Path, stub: Path, verify: str, **kw: Any
+) -> RunPaths:
+    p = _fresh(tmp_path, atlas_root)
+    shutil.rmtree(p.extract)
+    _backfill(p, verify, **kw)
+    assert _compare(p, stub)[0] == 0
+    return p
+
+
+def test_a_backfill_marks_agreement_with_the_named_verifier_and_needs_one(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [alpha]\n",
+        cohorts="[alpha]",
+    )
+    _expect_refused(p, stub_atlas, "a backfill needs --verifier NAME")
+    code, out = _assemble(p, stub_atlas, "--verifier", "agent:literature-verify/test-model")
+    assert code == 0, out
+    assert out == (
+        "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 1 verified, "
+        "0 blind-only decided\n"
+    )
+    f = _findings(p)["CHDA:LIT:0009001"]
+    assert f["verified_by"] == "agent:literature-verify/test-model"
+    assert f["approved_by"] == "E.A.M"  # an approval is never touched
+    record = load_assemble(p)
+    assert record is not None and record.verifier == "agent:literature-verify/test-model"
+
+
+def test_a_backfilled_field_edited_after_compare_is_not_marked_verified(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [alpha]\n",
+        cohorts="[alpha]",
+    )
+    _edit_in_block(p, "CHDA:LIT:0009001", "cohorts: [alpha]", "cohorts: [beta]")
+    _expect_refused(
+        p,
+        stub_atlas,
+        "CHDA:LIT:0009001: no longer agrees with the blind pass's CHDA:LIT:0009001 "
+        "(it was edited after compare). Undo the edit, or remove the judges' files "
+        "(judge/*.decisions.yaml and judging/*.findings.yaml), run compare again and run the "
+        "judges again",
+        "--verifier",
+        "agent:literature-verify/test-model",
+    )
+
+
+def test_a_backfill_that_marks_nothing_records_no_verifier_and_a_judge_may_empty_a_field(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [beta]\n",
+        cohorts="[alpha]",
+    )
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(
+        JUDGED_BACKFILL.replace("  cohorts: [elsewhere]\n", "")
+    )
+    code, out = _assemble(p, stub_atlas, "--verifier", "agent:literature-verify/test-model")
+    assert code == 0, out
+    assert "cohorts" not in _findings(p)["CHDA:LIT:0009001"]
+    record = load_assemble(p)
+    assert record is not None and (record.verified, record.verifier) == ((), None)
+
+
+JUDGED_BACKFILL = (EXPECTED / "judged-backfill.yaml").read_text()
+
+
+def test_a_backfill_takes_only_the_declared_fields_from_a_judge_and_drops_verified_by(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [somewhere]\n",
+    )
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(JUDGED_BACKFILL)
+    code, out = _assemble(p, stub_atlas, "--verifier", "agent:literature-verify/test-model")
+    assert code == 0, out
+    f = _findings(p)["CHDA:LIT:0009001"]
+    assert f["cohorts"] == ["elsewhere"]
+    assert "verified_by" not in f  # judged
+    assert (f["approved_by"], f["approved_on"].isoformat()) == ("E.A.M", "2026-11-19")
+    assert f["approved_digest"].startswith("sha256:da89e4f2")
+    assert out.startswith(
+        "replaced 1 judged findings, added 0, fixed 0 names by rule, marked 0 verified, "
+        "0 blind-only decided"
+    )
+    # a judge that changed anything else in a backfill is refused on a re-run too
+    _edit(p.judging / "judge-01.findings.yaml", "screened: 1", "screened: 3")
+    _expect_refused(
+        p,
+        stub_atlas,
+        "the judge changed fields the run did not declare: ['screened']",
+        "--verifier",
+        "agent:literature-verify/test-model",
+    )
+
+
+def test_a_backfill_adds_no_finding(tmp_path: Path, atlas_root: Path, stub_atlas: Path) -> None:
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [somewhere]\n",
+    )
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(
+        JUDGED_BACKFILL.replace("CHDA:LIT:0009001", "CHDA:LIT:0701001")
+    )
+    _expect_refused(
+        p,
+        stub_atlas,
+        "a backfill adds no finding",
+        "--verifier",
+        "agent:literature-verify/test-model",
+    )
+
+
+VARIANT_PASS = """\
+findings:
+  CHDA:LIT:0009001:
+    variants:
+    - id: 1
+      as_reported: "c.1085delC, p.(Pro362Argfs*8)"
+      locator: {kind: in_text, element: Results - Patients}
+      kind: snv_indel
+      reported: {c: "c.1085G>A", p: "p.(Pro362Argfs*8)"}
+      placement: unplaced
+      zygosity: heterozygous
+      carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+      phenotypes: [HP:0001631]
+"""
+
+
+@pytest.mark.parametrize(
+    ("fields", "fixed"),
+    [(("variants",), 1), (("cohorts",), 0)],
+    ids=["variants-declared", "variants-not-declared"],
+)
+def test_a_backfill_applies_the_notation_rules_only_when_variants_is_a_declared_field(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, fields: tuple[str, ...], fixed: int
+) -> None:
+    """The file's variant spells its name with spaces; the blind pass agrees under the rules, so
+    the finding is paired either way. Fixing it rewrites the variants of an approved finding,
+    which a run that did not declare them must not do."""
+    p = _fresh(tmp_path, atlas_root)
+    shutil.rmtree(p.extract)
+    cohorts = fields == ("cohorts",)
+    verify = "findings:\n  CHDA:LIT:0009001:\n    cohorts: [alpha]\n" if cohorts else VARIANT_PASS
+    _backfill(p, verify, fields=fields, cohorts="[alpha]" if cohorts else "")
+    _edit(_lit(p), "reported: {c: c.1085delC,", 'reported: {c: "c.1085 G > A",')
+    assert _compare(p, stub_atlas)[0] == 0
+    code, out = _assemble(p, stub_atlas, "--verifier", "agent:literature-verify/test-model")
+    assert code == 0, out
+    reported = _findings(p)["CHDA:LIT:0009001"]["variants"][0]["reported"]["c"]
+    assert reported == ("c.1085G>A" if fixed else "c.1085 G > A")
+    assert f"fixed {fixed} names by rule" in out
+
+
+def _first_variant_run(tmp_path: Path, atlas_root: Path, stub: Path) -> RunPaths:
+    """A backfill of ``variants`` over 0009001 turned into a common-variant finding with no
+    variants and no ``variant_classes``; merge gave it none, the blind pass gives one."""
+    p = _fresh(tmp_path, atlas_root)
+    shutil.rmtree(p.extract)
+    verify = VARIANT_PASS.replace('reported: {c: "c.1085 del C"', 'reported: {c: "c.1085delC"')
+    verify = verify.replace("zygosity: heterozygous", "zygosity: not_stated")
+    _backfill(p, verify, fields=("variants",))
+    text = _lit(p).read_text()
+    a = text.index("    variant_classes: [snv_indel]\n")
+    b = text.index("    phenotypes: [HP:0001631]\n    lesion_groups")
+    text = text[:a] + text[b:]
+    text = text.replace("design: family_segregation", "design: common_variant_association", 1)
+    _lit(p).write_text(text)
+    assert _compare(p, stub)[0] == 0
+    return p
+
+
+FIRST_VARIANT = {
+    "id": 1,
+    "as_reported": "c.1085delC, p.(Pro362Argfs*8)",
+    "locator": {"kind": "in_text", "element": "Results - Patients"},
+    "kind": "snv_indel",
+    "reported": {"c": "c.1085delC", "p": "p.(Pro362Argfs*8)"},
+    "placement": "unplaced",
+    "zygosity": "not_stated",
+    "carriers": {"de_novo": 0, "inherited": 1, "origin_unknown": 0},
+    "phenotypes": ["HP:0001631"],
+}
+
+
+@pytest.mark.parametrize("judge_writes_it", [False, True], ids=["left-out", "written"])
+def test_a_judge_that_gives_a_common_variant_finding_its_first_variant_gets_snv_indel(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, judge_writes_it: bool
+) -> None:
+    """merge's R-P2-20 allowance, applied through the one shared rule, whether or not the judge
+    also writes ``variant_classes: [snv_indel]``."""
+    p = _first_variant_run(tmp_path, atlas_root, stub_atlas)
+    judge = JUDGED_BACKFILL.replace(
+        "design: family_segregation", "design: common_variant_association"
+    )
+    judge = judge.replace("  cohorts: [elsewhere]\n", "").replace(
+        "zygosity: heterozygous", "zygosity: not_stated"
+    )
+    if not judge_writes_it:
+        judge = judge.replace("  variant_classes: [snv_indel]\n", "")
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(judge)
+    code, out = _assemble(p, stub_atlas, "--verifier", "agent:literature-verify/test-model")
+    assert code == 0, out
+    f = _findings(p)["CHDA:LIT:0009001"]
+    assert f["variants"] == [FIRST_VARIANT]
+    assert f["variant_classes"] == ["snv_indel"]
+    assert "verified_by" not in f
+
+
+def test_a_judge_that_writes_a_wrong_variant_classes_for_a_first_variant_is_refused(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    """Without the stray-field guard the allowance's ``[snv_indel]`` would silently replace the
+    judge's own value."""
+    p = _first_variant_run(tmp_path, atlas_root, stub_atlas)
+    judge = JUDGED_BACKFILL.replace(
+        "design: family_segregation", "design: common_variant_association"
+    )
+    judge = judge.replace("  cohorts: [elsewhere]\n", "").replace(
+        "zygosity: heterozygous", "zygosity: not_stated"
+    )
+    assert judge.count("  - snv_indel\n") + judge.count("variant_classes: [snv_indel]") == 1
+    judge = judge.replace("variant_classes: [snv_indel]", "variant_classes: [cnv]")
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(judge)
+    _expect_refused(
+        p,
+        stub_atlas,
+        "CHDA:LIT:0009001: the judge changed fields the run did not declare: ['variant_classes']",
+        "--verifier",
+        "agent:literature-verify/test-model",
+    )
+
+
+# -- records -----------------------------------------------------------------------------------
+
+
+def test_with_findings_replaced_replaces_whole_findings_and_refuses_strangers() -> None:
+    raw = (
+        b"findings:\n"
+        b"  - id: CHDA:LIT:0000001\n    publication: PMID:1\n    design: case_report\n"
+        b"    verified_by: agent:a/b\n    review_note: old\n\n"
+        b"  - id: CHDA:LIT:0000002\n    publication: PMID:2\n    design: case_report\n"
+    )
+    new = {
+        "id": "CHDA:LIT:0000001",
+        "publication": "PMID:1",
+        "design": "cohort_screen",
+        "methods": ["exome"],
+    }
+    out = with_findings_replaced(raw, [new])
+    assert out == (
+        b"findings:\n"
+        b"  - id: CHDA:LIT:0000001\n    publication: PMID:1\n    design: cohort_screen\n"
+        b"    methods: [exome]\n\n"
+        b"  - id: CHDA:LIT:0000002\n    publication: PMID:2\n    design: case_report\n"
+    )
+    with pytest.raises(RecordError, match="no such finding: CHDA:LIT:0000009"):
+        with_findings_replaced(raw, [{**new, "id": "CHDA:LIT:0000009"}])
+    with pytest.raises(RecordError, match="more than one replacement"):
+        with_findings_replaced(raw, [new, new])
+
+
+def test_a_triage_change_back_to_included_drops_reason_and_note_and_keeps_the_rest() -> None:
+    raw = (
+        b"triage:\n"
+        b"  - pmid: PMID:1\n    search: 1\n    decision: excluded\n    reason: other\n"
+        b"    note: a note\n"
+        b"  - pmid: PMID:2\n    search: 1\n    decision: excluded\n    reason: other\n"
+    )
+    out = with_triage(raw, [TriageChange("PMID:1", "excluded", "included", None, None)])
+    assert out == (
+        b"triage:\n"
+        b"  - pmid: PMID:1\n    search: 1\n    decision: included\n"
+        b"  - pmid: PMID:2\n    search: 1\n    decision: excluded\n    reason: other\n"
+    )
+
+
+def test_the_judge_fixture_is_the_one_the_literal_expects() -> None:
+    """The literal above depends on the fixture's two findings; fail here if they move."""
+    ids = [
+        f["id"]
+        for f in YAML_SAFE.load((JUDGE_FIXTURE / "judging" / "judge-01.findings.yaml").read_text())[
+            "findings"
+        ]
+    ]
+    assert ids == [JUDGED, ADDED]
+    assert assemble_module.summary(AssembleRecord((), {}, (), (), None, {}, {}, {})) == (
+        "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 0 verified, "
+        "0 blind-only decided"
+    )
+
+
+def _decisions1(p: RunPaths) -> Path:
+    return p.judge / "judge-01.decisions.yaml"
+
+
+def _without_blind_only_entry(p: RunPaths) -> None:
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    del data[BLIND_ONLY]
+    _decisions1(p).write_text(json.dumps(data))
+
+
+def test_a_judge_decision_for_the_blind_only_finding_is_recorded_in_assemble_json(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(b): the fixture's blind-only 0801003 has a decision row `finding: second`
+    (adopted as the judge's 0701001); assemble.json records it and the summary counts it."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert out.endswith("marked 2 verified, 1 blind-only decided\n")
+    assert json.loads((p.dir / "assemble.json").read_text())["blind_only"] == {
+        BLIND_ONLY: ADDED_FINAL
+    }
+    record = load_assemble(p)
+    assert record is not None and record.blind_only == {BLIND_ONLY: ADDED_FINAL}
+
+
+def test_a_blind_only_finding_no_judge_decision_accounts_for_is_refused_with_nothing_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m2: the judge file held only 0009003, and assemble exited 0 with the blind reader's
+    finding vanished. It now names the id and writes nothing."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _without_blind_only_entry(p)
+    _expect_refused(p, stub_atlas, BLIND_ONLY_REFUSAL)
+
+
+def test_a_blind_only_entry_without_a_finding_row_does_not_account_for_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    data[BLIND_ONLY][0]["field"] = "design"
+    _decisions1(p).write_text(json.dumps(data))
+    _expect_refused(p, stub_atlas, BLIND_ONLY_REFUSAL)
+
+
+@pytest.mark.parametrize("decision", ["first", "neither"])
+def test_a_blind_only_finding_the_judge_did_not_add_is_recorded_with_its_decision(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: str,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    data[BLIND_ONLY][0].update(decision=decision, value="not added")
+    _decisions1(p).write_text(json.dumps(data))
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert load_assemble(p).blind_only == {BLIND_ONLY: decision}  # type: ignore[union-attr]
+
+
+def test_a_backfill_has_no_blind_only_finding_so_the_rule_asks_nothing_of_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    """Measured for the report: compare pairs a backfill's blind fields by finding id, so its
+    `only_second` is empty and an assemble needs no `finding` entry."""
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [alpha]\n",
+        cohorts="[alpha]",
+    )
+    assert load_comparison(p).only_second == ()
+    code, out = _assemble(p, stub_atlas, "--verifier", "agent:literature-verify/test-model")
+    assert code == 0, out
+    assert out.endswith("marked 1 verified, 0 blind-only decided\n")
+    assert load_assemble(p).blind_only == {}  # type: ignore[union-attr]
+
+
+def test_a_blind_only_finding_reaches_the_review_data_and_its_quote_is_checked_against_its_paper(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before assemble the decision keyed by the blind reader's own id is no stray id; the quote
+    is checked against the blind finding's paper (PMID:91000002), found."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    data = _review(p)
+    assert [(b["id"], b["paper"]["pmid"]) for b in data["blind_only"]] == [
+        (BLIND_ONLY, "PMID:91000002")
+    ]
+    assert BLIND_ONLY not in [c["id"] for c in data["findings"]]
+    assert [(c.finding, c.origin, c.paper, c.checked, c.found) for c in check_quotes(p)][-1] == (
+        BLIND_ONLY,
+        "judge",
+        "PMID:91000002",
+        True,
+        True,
+    )
+
+
+def test_a_first_pass_only_finding_the_judge_left_alone_and_with_no_quotes_gets_a_card(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m3 (I4): 0009002 is read by the first pass only, and nothing else in the run names it
+    (no judge finding, decision or quote). After assemble it is on the page, as one reader's."""
+    p = _only_first_run(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    copy_judge_round(p)
+    decisions = p.judge / "judge-01.decisions.yaml"
+    data = YAML_SAFE.load(decisions.read_text())
+    # the blind reader's 0801003 is gone from this run, so no decision may key it
+    data.pop("CHDA:LIT:0801003", None)
+    decisions.write_text(json.dumps(data))
+    for evidence in p.evidence.iterdir():
+        text = YAML_SAFE.load(evidence.read_text())
+        text.pop("CHDA:LIT:0009002", None)
+        evidence.write_text(json.dumps(text))
+    assert load_comparison(p).only_first == ("CHDA:LIT:0009002",)
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    cards = {c["id"]: c for c in _review(p)["findings"]}
+    first = cards["CHDA:LIT:0009002"]
+    assert (first["agreement"], first["group"], first["approval"], first["verified"]) == (
+        "one_reader",
+        "one_reader",
+        "unapproved",
+        False,
+    )
+
+
+def _set_entry(p: RunPaths, **row: str) -> None:
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    data[BLIND_ONLY][0].update(row)
+    _decisions1(p).write_text(json.dumps(data))
+
+
+@pytest.mark.parametrize("value", ["reported", "CHDA:LIT:0701099", "CHDA:LIT:0009003"])
+def test_an_adopted_blind_only_finding_must_name_the_judge_finding_that_adopts_it(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    """R-P2-66(b) addendum: `second` names no judge finding (prose), a 07 id the batch's judging
+    file lacks, or a finding that is not the judge's addition: refused, nothing written."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _set_entry(p, value=value)
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: adopted (second), but its value {value!r} does not name exactly one "
+        "judge finding of batch 01",
+    )
+
+
+def test_a_blind_only_finding_decided_not_added_must_not_name_a_judge_finding(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _set_entry(p, decision="first")
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: decided first, so not added, but its value names the judge finding {ADDED}",
+    )
+
+
+def test_a_blind_only_decision_must_sit_in_its_own_batchs_decisions_file(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    moved = {BLIND_ONLY: data.pop(BLIND_ONLY)}
+    _decisions1(p).write_text(json.dumps(data))
+    (p.judge / "judge-02.decisions.yaml").write_text(json.dumps(moved))
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: its decision is in the file for batch 02, but a finding only the blind "
+        "reader reported in batch 01 is decided in judge-01.decisions.yaml",
+    )
+
+
+# -- R-P2-66(f)-(h): the two writes of assemble.json, records across rounds ----------------------
+
+APPROVED_REFUSAL = (
+    "{}: approved; a judge may not change an approved finding. No command removes an approval: "
+    "undo the judge's change to it, or ask the owner"
+)
+
+
+def _round_one_then_a_correction(p: RunPaths, stub: Path) -> tuple[bytes, AssembleRecord]:
+    """Round 1 assembles; the judge then corrects the unapproved 0009003 (round 2). Returns
+    round 1's assemble.json bytes and record."""
+    assert _assemble(p, stub)[0] == 0
+    first = p.assemble.read_bytes()
+    record = load_assemble(p)
+    assert record is not None
+    _edit(_judge1(p), "three relatives had", "four relatives had")
+    return first, record
+
+
+@pytest.mark.parametrize(
+    "failure, exit_code",
+    [
+        pytest.param(OSError("disk full"), 1, id="OSError (m9)"),
+        pytest.param(WriteRefused("x: the file changed since it was read"), 2, id="refused (m9b)"),
+    ],
+)
+def test_a_judge_correction_is_applied_by_the_rerun_after_a_literature_write_that_failed(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    exit_code: int,
+) -> None:
+    """R-P2-66(f), m9 and m9b: the first write of assemble.json keeps the last completed
+    assemble's `judged` and `approvals`, so a literature write that fails after it does not make
+    the re-run skip the correction as already applied. Measured before: exit 0 and the file still
+    said "three relatives"."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    first_bytes, first = _round_one_then_a_correction(p, stub_atlas)
+
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise failure
+
+    monkeypatch.setattr(assemble_module, "write_literature", crash)
+    code, out = _assemble(p, stub_atlas)
+    assert code == exit_code, out
+    stopped = load_assemble(p)
+    assert stopped is not None
+    assert (stopped.judged, stopped.approvals) == (first.judged, first.approvals)
+    assert p.dir.joinpath("assemble.prev.json").read_bytes() == first_bytes
+    assert "three relatives had" in _findings(p)[JUDGED]["summary"]
+    monkeypatch.undo()
+    _pubmed(monkeypatch)
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert "four relatives had" in _findings(p)[JUDGED]["summary"]
+    done = load_assemble(p)
+    assert done is not None and done.judged[JUDGED] != first.judged[JUDGED]
+
+
+def test_a_crash_after_an_addition_in_round_two_is_undone_by_assemble_prev_json(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(f): the stopped-part-way refusal names assemble.prev.json, and restoring it and
+    running again numbers nothing twice. Removing assemble.json instead would number 0701001 a
+    second time (it is in the file as 0009005 already)."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    first_bytes = p.assemble.read_bytes()
+    rows = YAML_SAFE.load(_judge1(p).read_text())["findings"]
+    added = next(r for r in rows if r["id"] == ADDED)
+    rows.append({**added, "id": "CHDA:LIT:0701002", "summary": "A second carrier, added later."})
+    _judge1(p).write_text(json.dumps({"findings": rows}))
+
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(assemble_module, "write_literature", crash)
+    assert _assemble(p, stub_atlas)[0] == 1
+    monkeypatch.undo()
+    _pubmed(monkeypatch)
+    assert json.loads(p.assemble.read_text())["added"] == {
+        ADDED: ADDED_FINAL,
+        "CHDA:LIT:0701002": "CHDA:LIT:0009006",
+    }
+    _expect_refused(
+        p,
+        stub_atlas,
+        "A previous assemble stopped part-way: replace assemble.json with assemble.prev.json "
+        "(remove assemble.json when there is no assemble.prev.json) and run it again",
+    )
+    shutil.copyfile(p.dir / "assemble.prev.json", p.assemble)
+    assert p.assemble.read_bytes() == first_bytes
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    ids = list(_findings(p))
+    assert len(ids) == len(set(ids))
+    assert ADDED_FINAL in ids and "CHDA:LIT:0009006" not in ids and "CHDA:LIT:0009007" in ids
+    assert _findings(p)["CHDA:LIT:0009007"]["summary"].startswith("A second carrier")
+    assert _findings(p)[ADDED_FINAL]["summary"].startswith("A third carrier listed")
+
+
+def test_assemble_prev_json_is_the_record_of_the_assemble_before_and_absent_when_there_was_none(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    prev = p.dir / "assemble.prev.json"
+    prev.write_text("stale\n")  # left by an earlier removal of assemble.json
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert not prev.exists()
+    first_bytes, _ = _round_one_then_a_correction(p, stub_atlas)
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert prev.read_bytes() == first_bytes
+
+
+def test_a_judge_finding_dropped_in_one_round_and_changed_in_a_later_one_is_still_refused(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(g), re-review observation 5: round 2's judge file lacks 0701001; the record of
+    0009005 must be carried, or round 3's changed finding meets no record and voids the approval
+    the owner gave in between (LIT015) instead of being refused."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    kept = YAML_SAFE.load(_judge1(p).read_text())["findings"]
+    dropped = next(r for r in kept if r["id"] == ADDED)
+    _judge1(p).write_text(json.dumps({"findings": [r for r in kept if r["id"] != ADDED]}))
+    assert _assemble(p, stub_atlas)[0] == 0
+    carried = load_assemble(p)
+    assert carried is not None
+    assert sorted(carried.judged) == [JUDGED, ADDED_FINAL]
+    assert carried.approvals == {JUDGED: None, ADDED_FINAL: None}
+    _approve_in_the_file(p, ADDED_FINAL)
+    changed = {**dropped, "summary": "A third carrier, changed after approval, listed"}
+    _judge1(p).write_text(
+        json.dumps({"findings": [*(r for r in kept if r["id"] != ADDED), changed]})
+    )
+    _expect_refused(p, stub_atlas, APPROVED_REFUSAL.format(ADDED_FINAL))
+
+
+def test_a_new_run_refuses_a_first_application_to_a_finding_carrying_an_approval(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(g): merge writes no approvals, so a finding approved before any judge finding
+    was applied to it was approved by the owner."""
+    p = _only_first_run(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    copy_judge_round(p)
+    merged = _findings(p)["CHDA:LIT:0009002"]
+    _approve_in_the_file(p, "CHDA:LIT:0009002")
+    both = json.loads(json.dumps(YAML_SAFE.load(_judge1(p).read_text())))
+    both["findings"].append({**merged, "design": "cohort_screen", "summary": "A judge's."})
+    _judge1(p).write_text(json.dumps(both))
+    _expect_refused(p, stub_atlas, APPROVED_REFUSAL.format("CHDA:LIT:0009002"))
+
+
+def test_the_approved_finding_refusal_names_its_remedy(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-review observation 1: the atlas's apply-review writes nothing for a "Needs a fix", so
+    the refusal cannot name a command that removes the approval."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    _edit(_judge1(p), "three relatives had", "four relatives had")
+    _expect_refused(p, stub_atlas, APPROVED_REFUSAL.format(JUDGED))
+
+
+def test_an_adopting_finding_must_cite_the_blind_findings_paper_in_its_batchs_file(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(h) N3, m10: 0701002 in judge-02.findings.yaml about PMID:91000003 was accepted
+    as adopting 0801003 (PMID:91000002, batch 01) and the page would have said "adopted as" a
+    finding on another paper."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    rows = YAML_SAFE.load(_judge1(p).read_text())["findings"]
+    other = {
+        **next(r for r in rows if r["id"] == ADDED),
+        "id": "CHDA:LIT:0701002",
+        "publication": "PMID:91000003",
+        "summary": "A carrier in another paper of batch 02.",
+    }
+    (p.judging / "judge-02.findings.yaml").write_text(json.dumps({"findings": [other]}))
+    _set_entry(p, value="CHDA:LIT:0701002")
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: adopted (second) as CHDA:LIT:0701002, which cites PMID:91000003, but "
+        "the blind finding is on PMID:91000002; the finding that adopts it must cite that "
+        "paper, in judging/judge-01.findings.yaml",
+    )
+
+
+def test_a_blind_only_key_with_several_finding_rows_is_refused(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-review observation 4: only the first row was read, so a contradicting later row was
+    ignored though the page shows it."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    data[BLIND_ONLY].append({**data[BLIND_ONLY][0], "decision": "neither", "value": "not added"})
+    _decisions1(p).write_text(json.dumps(data))
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: has 2 'finding' rows in the judge's decisions; keep one",
+    )
