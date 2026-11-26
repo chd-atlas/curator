@@ -49,6 +49,7 @@ from chd_curator.merge import (
     _safe,
     _years,
     append_numbered,
+    backfill_edit,
 )
 from chd_curator.notation import NotationChange, apply_rules
 from chd_curator.records import (
@@ -214,28 +215,31 @@ def _verifier(run: RunPaths, plan: BatchPlan, given: str | None, to_mark: bool) 
 
 def _declared_edit(
     file_finding: Mapping[str, Any], judge: Mapping[str, Any], declared: frozenset[str]
-) -> tuple[dict[str, Any], list[str]]:
-    """What a backfill takes from a judge's whole finding: the declared fields it changes, and
-    the keys to drop. Any other field of the judge's finding must equal the file's."""
+) -> tuple[dict[str, Any], list[str], frozenset[str]]:
+    """What a backfill takes from a judge's whole finding: the fields to set, the keys to drop
+    and the keys that may move. The rule for which values change a finding is merge's
+    ``backfill_edit``; a declared field the judge left out is also dropped. Any other field of
+    the judge's finding must equal the file's, except ``variant_classes`` where the rule's own
+    allowance sets it (the judge may write that value or leave it out)."""
+    given = {k: judge[k] for k in sorted(declared) if k in judge}
+    edit = backfill_edit(file_finding, given)
+    extra = {k: v for k, v in edit.fields.items() if k not in given}
     skip = {*declared, *APPROVAL_FIELDS, "verified_by"}
     stray = sorted(
-        k for k in (set(file_finding) | set(judge)) - skip if file_finding.get(k) != judge.get(k)
+        k
+        for k in (set(file_finding) | set(judge)) - skip
+        if file_finding.get(k) != judge.get(k)
+        and not (k in extra and judge.get(k) in (None, extra[k]))
     )
     if stray:
         raise AssembleError(
             f"{judge['id']}: the judge changed fields the run did not declare: {stray}"
         )
-    fields = {
-        k: judge[k]
-        for k in sorted(declared)
-        if k in judge
-        and file_finding.get(k) != judge[k]
-        and not (is_empty(file_finding.get(k)) and is_empty(judge[k]))
-    }
-    drop = [k for k in sorted(declared) if k not in judge and not is_empty(file_finding.get(k))]
-    if "verified_by" in file_finding:
+    omitted = [k for k in sorted(declared) if k not in judge and not is_empty(file_finding.get(k))]
+    drop = [*edit.drop, *omitted]
+    if "verified_by" in file_finding and "verified_by" not in drop:
         drop.append("verified_by")
-    return fields, drop
+    return edit.fields, drop, edit.allowed | set(omitted) | {"verified_by"}
 
 
 def _check_nothing_else_moved(
@@ -405,9 +409,11 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
     held = frozenset(c.findings) | frozenset(new_map.values())
     new_ids = frozenset(new_map.values())
 
+    backfill_allowed: dict[str, frozenset[str]] = {}
     if backfill:
         for fid in sorted(replacements):
-            fields, drop = _declared_edit(c.findings[fid], replacements[fid], declared)
+            fields, drop, permitted = _declared_edit(c.findings[fid], replacements[fid], declared)
+            backfill_allowed[fid] = permitted
             literature = with_fields_set(literature, fid, fields, drop)
     else:
         whole = [_rewrite_refs(replacements[fid], mapping, held) for fid in sorted(replacements)]
@@ -449,7 +455,7 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
 
     allowed: dict[str, frozenset[str]] = {}
     for fid in replacements:
-        allowed[fid] = _ANY if not backfill else frozenset({*declared, "verified_by"})
+        allowed[fid] = _ANY if not backfill else backfill_allowed[fid]
     for fixed in ruled:
         allowed[str(fixed["id"])] = _allow(allowed, str(fixed["id"]), "variants")
     for fid in to_mark:

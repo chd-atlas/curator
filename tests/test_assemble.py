@@ -1066,6 +1066,62 @@ def test_a_backfill_applies_the_notation_rules_only_when_variants_is_a_declared_
     assert f"fixed {fixed} names by rule" in out
 
 
+def _first_variant_run(tmp_path: Path, atlas_root: Path, stub: Path) -> RunPaths:
+    """A backfill of ``variants`` over 0009001 turned into a common-variant finding with no
+    variants and no ``variant_classes``; merge gave it none, the blind pass gives one."""
+    p = _fresh(tmp_path, atlas_root)
+    shutil.rmtree(p.extract)
+    verify = VARIANT_PASS.replace('reported: {c: "c.1085 del C"', 'reported: {c: "c.1085delC"')
+    verify = verify.replace("zygosity: heterozygous", "zygosity: not_stated")
+    _backfill(p, verify, fields=("variants",))
+    text = _lit(p).read_text()
+    a = text.index("    variant_classes: [snv_indel]\n")
+    b = text.index("    phenotypes: [HP:0001631]\n    lesion_groups")
+    text = text[:a] + text[b:]
+    text = text.replace("design: family_segregation", "design: common_variant_association", 1)
+    _lit(p).write_text(text)
+    assert _compare(p, stub)[0] == 0
+    return p
+
+
+FIRST_VARIANT = {
+    "id": 1,
+    "as_reported": "c.1085delC, p.(Pro362Argfs*8)",
+    "locator": {"kind": "in_text", "element": "Results - Patients"},
+    "kind": "snv_indel",
+    "reported": {"c": "c.1085delC", "p": "p.(Pro362Argfs*8)"},
+    "placement": "unplaced",
+    "zygosity": "not_stated",
+    "carriers": {"de_novo": 0, "inherited": 1, "origin_unknown": 0},
+    "phenotypes": ["HP:0001631"],
+}
+
+
+@pytest.mark.parametrize("judge_writes_it", [False, True], ids=["left-out", "written"])
+def test_a_judge_that_gives_a_common_variant_finding_its_first_variant_gets_snv_indel(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, judge_writes_it: bool
+) -> None:
+    """merge's R-P2-20 allowance, applied through the one shared rule, whether or not the judge
+    also writes ``variant_classes: [snv_indel]``."""
+    p = _first_variant_run(tmp_path, atlas_root, stub_atlas)
+    judge = JUDGED_BACKFILL.replace(
+        "design: family_segregation", "design: common_variant_association"
+    )
+    judge = judge.replace("  cohorts: [elsewhere]\n", "").replace(
+        "zygosity: heterozygous", "zygosity: not_stated"
+    )
+    if not judge_writes_it:
+        judge = judge.replace("  variant_classes: [snv_indel]\n", "")
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(judge)
+    code, out = _assemble(p, stub_atlas, "--verifier", "agent:literature-verify/test-model")
+    assert code == 0, out
+    f = _findings(p)["CHDA:LIT:0009001"]
+    assert f["variants"] == [FIRST_VARIANT]
+    assert f["variant_classes"] == ["snv_indel"]
+    assert "verified_by" not in f
+
+
 # -- records -----------------------------------------------------------------------------------
 
 

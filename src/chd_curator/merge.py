@@ -470,6 +470,50 @@ def _resolve_types(
     return types
 
 
+@dataclass(frozen=True)
+class BackfillEdit:
+    """What a backfill does to one finding: `fields` to set (the changed values plus any
+    allowance), `drop` keys to remove, and `allowed`, every key that may move."""
+
+    fields: dict[str, Any]
+    drop: tuple[str, ...]
+    allowed: frozenset[str]
+
+
+def backfill_edit(current: Mapping[str, Any], values: Mapping[str, Any]) -> BackfillEdit:
+    """The one rule a backfill applies to a finding, shared by ``merge`` and ``assemble``.
+
+    `values` are the declared fields a pass gives. A value equal to the finding's is no change,
+    and neither is an empty value for a key the finding lacks (re-reading a paper and finding
+    nothing must not void a finding's verification). When anything changed, ``verified_by`` is
+    dropped (the blind agreement no longer covers it), and a common-variant finding that gains its
+    first variant, has no ``variant_classes`` and whose pass does not give them gets
+    ``variant_classes: [snv_indel]`` (R-P2-20). With no change, `fields` and `drop` are empty."""
+    changed = {
+        k: v
+        for k, v in values.items()
+        if current.get(k) != v and not (k not in current and v in (None, [], {}))
+    }
+    allowed = set(values)
+    if not changed:
+        return BackfillEdit({}, (), frozenset(allowed))
+    extra: dict[str, Any] = {}
+    if (
+        "variants" in changed
+        and changed["variants"]
+        and not current.get("variants")
+        and current.get("design") == COMMON_VARIANT_DESIGN
+        and not current.get("variant_classes")
+        and "variant_classes" not in values
+    ):
+        extra["variant_classes"] = [COMMON_VARIANT_CLASS]
+        allowed.add("variant_classes")
+    drop = ("verified_by",) if "verified_by" in current else ()
+    if drop:
+        allowed.add("verified_by")
+    return BackfillEdit({**changed, **extra}, drop, frozenset(allowed))
+
+
 def _plan_backfill(
     run: RunPaths, plan: BatchPlan, c: _Curated, schema: Mapping[str, Any]
 ) -> _Writes:
@@ -518,33 +562,12 @@ def _plan_backfill(
     literature = c.lit
     allowed: dict[str, set[str]] = {}
     for fid, fields in sets.items():
-        current = c.findings[fid]
-        # An empty value for a key the finding does not hold is no change: re-reading a paper and
-        # finding nothing must not void a finding's verification.
-        changed = {
-            k: v
-            for k, v in fields.items()
-            if current.get(k) != v and not (k not in current and v in (None, [], {}))
-        }
-        allowed[fid] = set(fields)
-        if not changed:
+        edit = backfill_edit(c.findings[fid], fields)
+        allowed[fid] = set(edit.allowed)
+        if not edit.fields:
             continue
-        extra: dict[str, Any] = {}
-        if (
-            "variants" in changed
-            and changed["variants"]
-            and not current.get("variants")
-            and current.get("design") == COMMON_VARIANT_DESIGN
-            and not current.get("variant_classes")
-            and "variant_classes" not in fields
-        ):
-            extra["variant_classes"] = [COMMON_VARIANT_CLASS]
-            allowed[fid].add("variant_classes")
-        drop = ("verified_by",) if "verified_by" in current else ()
-        if drop:
-            allowed[fid].add("verified_by")
         try:
-            literature = with_fields_set(literature, fid, {**changed, **extra}, drop)
+            literature = with_fields_set(literature, fid, edit.fields, edit.drop)
         except RecordError as exc:
             raise MergeError(str(exc)) from None
     _only_declared_changes(c, literature, allowed)
