@@ -33,6 +33,8 @@ as it is. ``assemble.json`` also records the ``approved_digest`` each of them ca
 the write (``approvals``). A changed finding replaces the file's finding and keeps its approval
 fields (a void approval stays void), except that it is refused, naming its id, when the file's
 ``approved_digest`` now differs from the recorded one: the owner approved it after that assemble.
+The record of a finding a re-run skips is left as it was: it describes the assemble that applied
+it.
 
 In a new or reread run (a reread plan is handled like a new one; no command writes one yet, so
 that path is untested), whatever a judge changed in a finding that ``differs`` lists must be a
@@ -656,7 +658,12 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
         **{applied.new_map[local]: d for local, d in accepted.addition_digests.items()},
     }
     after = {str(f["id"]): f for f in safe_load(literature, c.lit_path).get("findings") or []}
-    approvals = {fid: after[fid].get("approved_digest") for fid in judged_digests}
+    approvals = {
+        fid: previous.approvals[fid]
+        if fid in accepted.unchanged
+        else after[fid].get("approved_digest")
+        for fid in judged_digests
+    }
     record = AssembleRecord(
         replaced, mapping, tuple(notation), tuple(to_mark), name, judged_digests, approvals
     )

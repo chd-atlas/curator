@@ -505,6 +505,7 @@ def _assemble_base() -> dict[str, Any]:
         ("assemble", lambda d: d.update(judged=[]), "'judged' is not an object"),
         ("assemble", lambda d: d.pop("approvals"), r"missing \['approvals'\]"),
         ("assemble", lambda d: d.update(approvals=[]), "'approvals' is not an object"),
+        ("assemble", lambda d: d.update(approvals={}), "do not name the same findings"),
         ("assemble", lambda d: d.update(approvals={"x": None}), "'x'"),
         ("assemble", lambda d: d.update(approvals={"CHDA:LIT:0009003": 7}), "7"),
         ("assemble", lambda d: d.update(judged={"x": "0" * 64}), "'x'"),

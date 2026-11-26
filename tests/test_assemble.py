@@ -211,8 +211,8 @@ def test_a_fix_round_after_the_owner_approved_a_judged_finding_leaves_it_untouch
     assert record is not None
     assert record.replaced == (JUDGED,) and record.added == {ADDED: ADDED_FINAL}
     assert sorted(record.judged) == [JUDGED, ADDED_FINAL]
-    # recorded after the re-run: the owner's approval of 0009003 is what the file then carried
-    assert record.approvals == {JUDGED: "sha256:" + "0" * 64, ADDED_FINAL: None}
+    # 0009003 was skipped by the re-run, so its record stays what the assemble that applied it saw
+    assert record.approvals == {JUDGED: None, ADDED_FINAL: None}
 
 
 def test_a_backfill_fix_round_may_change_a_finding_whose_approval_the_first_assemble_voided(
@@ -241,6 +241,26 @@ def test_a_backfill_fix_round_may_change_a_finding_whose_approval_the_first_asse
     after = _findings(p)["CHDA:LIT:0009001"]
     assert after["cohorts"] == ["another"]
     assert {k: v for k, v in after.items() if k.startswith("approved")} == approval
+
+
+def test_a_skipped_finding_keeps_the_approval_record_of_the_assemble_that_applied_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 1 applies 0009003 (approvals null); the owner approves it; round 2 fixes another
+    finding and skips 0009003; round 3 changes 0009003's judge finding. The record must still
+    say null after round 2, so round 3 sees an approval granted since and refuses."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    _edit(_judge1(p), "A third carrier listed", "A third carrier, fixed, listed")
+    assert _assemble(p, stub_atlas)[0] == 0
+    record = load_assemble(p)
+    assert record is not None
+    assert record.approvals[JUDGED] is None
+    _edit(_judge1(p), "three relatives had", "four relatives had")
+    _expect_refused(
+        p, stub_atlas, f"{JUDGED}: approved; a judge may not change an approved finding"
+    )
 
 
 def test_a_judge_that_changes_an_approved_finding_is_refused_naming_it_and_nothing_is_written(

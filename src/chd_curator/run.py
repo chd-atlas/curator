@@ -849,6 +849,8 @@ def load_assemble(p: RunPaths) -> AssembleRecord | None:
     for key, digest in data["approvals"].items():
         fid = _finding_id(key, path, "an 'approvals' key")
         approvals[fid] = None if digest is None else _str(digest, path, f"approvals {fid}")
+    if set(approvals) != set(judged):
+        raise RunFormatError(f"{path}: 'approvals' and 'judged' do not name the same findings")
     changes: list[NotationChange] = []
     for entry in _list(data["notation"], path, "notation"):
         row = _keys(entry, _NOTATION_KEYS, path, "a notation change")
