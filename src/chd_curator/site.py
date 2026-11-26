@@ -8,11 +8,14 @@ A site (a laptop, a cluster) keeps one YAML outside every repository::
         model: <model id>        settings: {...}       (optional)
         context_tokens: <int>    concurrency: <int>    key_env: <ENV VAR NAME>  (optional)
 
-The file never holds a secret. Keys arrive in the environment (a Nextflow secret becomes an
-environment variable), and ``key_env`` names the variable. Three guards make a literal key
-impossible to load: an unknown key is refused, so ``api_key:`` has nowhere to go; a string under a
-key whose name says it is a secret is refused; and a string that starts ``sk-`` is refused wherever
-it sits. ``key_env`` must look like a variable name, so a pasted key does not pass as one.
+The file should never hold a secret. Keys arrive in the environment (a Nextflow secret becomes
+an environment variable), and ``key_env`` names the variable. The guards below refuse the common
+shapes of a pasted secret: an unknown key (so ``api_key:`` has nowhere to go); any non-empty value,
+of any type, under a key whose name says it is a secret (key, token, secret, password, auth,
+bearer, pass, credential, cookie), at any depth of ``settings``; a string that starts ``sk-`` or
+``Bearer ``; and a URL carrying ``user:pw@`` userinfo, even under a transport key. ``key_env``
+must look like a variable name, so a pasted key does not pass as one. These guards cannot prove a
+file holds no secret, which is why the site file stays outside every repository.
 
 ``model_key`` is what the register is keyed on: kind and model, plus a hash of every setting that
 changes what the model answers. Transport settings (where the server is, how long to wait) do not.
@@ -40,7 +43,15 @@ FAMILIES: Final = ("fable", "opus", "sonnet", "haiku")
 _BACKEND_KEYS: Final = frozenset(
     {"id", "kind", "model", "settings", "context_tokens", "concurrency", "key_env"}
 )
-_SECRET_NAME: Final = re.compile(r"key|token|secret|password", re.I)
+_SECRET_NAME: Final = re.compile(
+    r"key|token|secret|password|auth|bearer|pass|credential|cookie", re.I
+)
+# Names that match the pattern above and are not secrets: the variable's name, and token counts.
+# Each must be a plain integer (or, for key_env, a string), which _backend and _scan check.
+_COUNT_NAMES: Final = frozenset(
+    {"context_tokens", "max_tokens", "max_output_tokens", "max_completion_tokens"}
+)
+_USERINFO: Final = re.compile(r"^[a-z][a-z0-9+.-]*://[^/?#]*@", re.I)
 _ENV_NAME: Final = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 Kind = Literal["openai_compat", "anthropic", "claude_code", "replay", "fake"]
@@ -85,17 +96,20 @@ def model_key(b: BackendSpec) -> str:
 
 def _scan_for_secrets(node: object, where: str) -> None:
     if isinstance(node, str):
-        if node.startswith("sk-"):
+        if node.startswith("sk-") or node.lower().startswith("bearer "):
             raise SiteError(f"{where}: a value that looks like a key; keep keys in the environment")
+        if _USERINFO.match(node):
+            raise SiteError(f"{where}: a URL with credentials in it; keep keys in the environment")
     elif isinstance(node, Mapping):
         for name, value in node.items():
             here = f"{where}.{name}"
-            if (
-                name != "key_env"
-                and _SECRET_NAME.search(str(name))
-                and isinstance(value, str)
-                and value
-            ):
+            if name == "key_env":
+                continue
+            if name in _COUNT_NAMES:
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise SiteError(f"{here} must be an integer")
+                continue
+            if _SECRET_NAME.search(str(name)) and value not in (None, "", [], {}):
                 raise SiteError(f"{here}: a secret has no place in the site config; use key_env")
             _scan_for_secrets(value, here)
     elif isinstance(node, list):

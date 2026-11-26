@@ -665,8 +665,11 @@ owner sends and receives; a session never contacts a clinician.
 
 Each model role (`triage-screen`, `triage-check`, `extract`, `blind-read`, `judge`) is filled at a
 site by a backend that a site YAML names. Keep it outside every repository, never commit it, and
-put no key in it: a key arrives in the environment and the config names the variable in its key_env field. An unknown
-key, a string under a key named like a secret, and a value starting `sk-` are all refused.
+put no key in it: a key arrives in the environment and the config names the variable in its
+key_env field. The loader refuses the common shapes of a pasted secret (an unknown key, any value
+under a key named like a secret at any depth, a value starting `sk-` or `Bearer `, a URL with
+`user:pw@` in it). It cannot prove a file holds no secret, which is why the file stays outside every
+repository.
 
 ```yaml site-config
 roles:
@@ -674,6 +677,7 @@ roles:
     id: screen-local
     kind: openai_compat
     model: MODEL-FILE-NAME
+    key_env: SCREEN_SERVER_KEY
     settings: {temperature: 0, seed: 0, max_tokens: 256, base_url: "http://example.invalid:8080"}
     context_tokens: 8192
     concurrency: 4
@@ -685,9 +689,8 @@ roles:
     concurrency: 2
   extract:
     id: reader-a
-    kind: anthropic
+    kind: claude_code
     model: claude-sonnet-5-5
-    key_env: ANTHROPIC_API_KEY
     context_tokens: 200000
     concurrency: 2
   blind-read:
@@ -708,7 +711,7 @@ A model may fill a role only if `src/chd_curator/workflow/qualification.yaml` re
 or `reference` for that role; `fail` and absent are refused. The key is the kind, the model and a
 hash of every setting that is not transport (base_url, timeout_seconds, dir), so a changed
 temperature is a different, unqualified model. `extract` and `blind-read` must be different models.
-`replay` and `fake` backends answer from recorded files and need no entry.
+`replay` and `fake` backends answer from recorded files and need no entry. The example's screen model is a placeholder that is not in the register, so its triage-screen role runs shadowed (`--shadow-role triage-screen`) until a model qualifies. An `anthropic` backend needs its own register entry before `ask` accepts it; today's reference entries are all claude_code.
 
 ```bash
 chd-curator check-site --site /path/to/site.yaml [--shadow-role triage-screen]

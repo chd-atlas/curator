@@ -62,6 +62,14 @@ def _spec(**over: object) -> BackendSpec:
         {"key_env": "sk-live-123"},
         {"key_env": "lowercase_value"},
         {"surprise": 1},
+        {"settings": {"Authorization": "Bearer abc123"}},
+        {"settings": {"headers": ["Bearer abc123"]}},
+        {"settings": {"base_url": "http://user:pw@host"}},
+        {"settings": {"base_url": "http://user@host"}},
+        {"settings": {"pass": "abc"}},
+        {"settings": {"api_key": 123456}},
+        {"settings": {"extra": {"deeper": [{"cookie": "c"}]}}},
+        {"settings": {"note": "bearer abc"}},
     ],
 )
 def test_a_site_config_with_a_literal_key_is_refused(
@@ -152,6 +160,14 @@ def test_the_readme_site_example_loads(tmp_path: Path) -> None:
     site = load_site(path)
     assert set(site.roles) == {"triage-screen", "triage-check", "extract", "blind-read", "judge"}
     assert not re.search(r"https?://(?!example\.invalid)", example)
+    # The example is a real site: its capable roles are registered, its screen runs shadowed.
+    plain = runner.invoke(app, ["check-site", "--site", str(path)])
+    assert plain.exit_code == 2 and "triage-screen" in plain.output
+    assert "extract" not in plain.output and "judge" not in plain.output
+    shadowed = runner.invoke(
+        app, ["check-site", "--site", str(path), "--shadow-role", "triage-screen"]
+    )
+    assert shadowed.exit_code == 0, shadowed.output
 
 
 def _check(tmp_path: Path, roles: dict[str, dict[str, object]], *extra: str):  # type: ignore[no-untyped-def]
