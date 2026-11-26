@@ -35,8 +35,9 @@ from ruamel.yaml.error import YAMLError
 
 from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
-from chd_curator import archive_read, pubmed, review_page, variantvalidator
+from chd_curator import archive_read, pubmed, review_page, sources, variantvalidator
 from chd_curator import redact as redact_mod
+from chd_curator import texts as texts_module
 from chd_curator.atlas import (
     AtlasError,
     Frame,
@@ -81,6 +82,7 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="CHD atlas cu
 # The network hooks: tests replace them, nothing else reaches PubMed or VariantValidator.
 _fetch: Fetch = urllib_fetch
 _vv_fetch: variantvalidator.Fetch = variantvalidator.urllib_fetch
+_get: sources.Get = sources.urllib_get
 
 _DECISIONS = ("pending", "included", "excluded")
 
@@ -897,6 +899,75 @@ def synthesis(
         raise _fail(str(exc), 2) from None
     count = len(loaded["sentences"])
     typer.echo(f"{approved}: wrote a {count}-sentence synthesis, unapproved, to {path}")
+
+
+@app.command("texts")
+def texts(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    run: str = typer.Option(..., "--run", help="The run id; its directory is created."),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help="Fetch every paper anew instead of reusing its fetch.json, which is read only to "
+        "decide what is kept: a paper keeps its earlier texts when a full-text source failed "
+        "and the new fetch has no full text where it had one (not when that text came from a "
+        "supplied PDF since changed or gone), or when a supplement source failed, a "
+        "supplement file of the earlier fetch is missing and the new fetch gained neither a "
+        "full text where there was none nor a new or changed supplied PDF.",
+    ),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Gather the free full texts and supplements of a gene's triaged papers; write texts.json.
+
+    Papers are the triage's included entries and those excluded as full_text_not_accessible.
+    Texts go under local/literature/texts/<PMID digits>/, and <run>/texts.json lists them for
+    the other run commands. A paper is fetched again with --refresh, or when its supplied PDF
+    appeared, changed or went since its fetch.json; it keeps its earlier texts, and a line says
+    so, when the step that has less failed: a full-text source, with no full text where there
+    was one (not when that text came from a supplied PDF since changed or gone), or a
+    supplement source, with an earlier supplement file missing and nothing gained (a full text
+    where there was none, or a new or changed supplied PDF); a fetch that gained replaces the
+    earlier one, and a line names the earlier files not carried over. Exit 1 when PubMed fails
+    or has no record for a PMID, a paper's fetch.json is unusable, a supplied PDF cannot be read
+    or a file cannot be written; exit 2 for an unknown gene, a missing or malformed literature
+    file, a bad run name or a run that already holds a texts.json (nothing is requested then).
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    paths = RunPaths(root, approved, run)
+    if Path(run).name != run or run in ("", ".", ".."):
+        raise _fail(f"{run!r} is not a run id; nothing was written", 2)
+    if paths.texts.exists():
+        raise _fail(
+            f"{paths.texts} exists: this run already has its texts; use a new run id; "
+            "nothing was written",
+            2,
+        )
+    path = literature_path(root, approved)
+    if not path.is_file():
+        raise _fail(f"{path} does not exist; run `chd-curator search {approved}` first", 2)
+    key = _api_key()
+    try:
+        try:
+            literature = plain(YAML(typ="safe").load(path.read_bytes()))
+        except (YAMLError, OSError) as exc:
+            raise texts_module.TextsError(f"{path}: cannot be read as YAML: {exc}", 2) from None
+        if not isinstance(literature, dict):
+            raise texts_module.TextsError(f"{path}: the top level is not a mapping", 2)
+        digits = texts_module.triage_pmids(literature, path)
+        papers, notices = texts_module.gather_papers(root, digits, _fetch, _get, key, refresh)
+        texts_module.write_texts(paths, papers)
+    except texts_module.TextsError as exc:
+        raise _fail(str(exc), exc.code) from None
+    except OSError as exc:
+        raise _fail(f"{paths.texts}: cannot be written: {exc}", 1) from None
+    for notice in notices:
+        typer.echo(notice)
+    typer.echo(texts_module.summary(papers))
 
 
 @app.command("quotes")

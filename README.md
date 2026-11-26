@@ -31,7 +31,7 @@ measured here). On an older version, add the marketplace first:
 
 ## Run
 
-Run from the root of an atlas checkout. `search`, `abstracts`, `diff`, `normalise`, `synthesis`
+Run from the root of an atlas checkout. `search`, `abstracts`, `texts`, `diff`, `normalise`, `synthesis`
 and `review-page` ask the atlas about the gene by running its CLI, `<root>/.venv/bin/chd-atlas`
 unless `--atlas-cli` or `CHD_ATLAS_CLI` names another; `add-publication`, `quotes` and
 `review-decisions` do not. `search`, `add-publication`, `diff`, `normalise`, `synthesis`,
@@ -59,6 +59,79 @@ For one published gene:
    settle it: `full_text`, `authors`, `expert` or `atlas_model`. `chd-atlas literature questions`
    lists the open ones. Add `--against <the verifier's file>` to see where the blind pass read a
    finding differently.
+
+### Gather a run's texts
+
+`chd-curator texts <SYMBOL> --run <run id> [--refresh]` fetches the free texts of the gene's triaged
+papers: the `included` entries and the `excluded` ones whose reason is `full_text_not_accessible`.
+Per paper it writes, under `local/literature/texts/<PMID digits>/`, `abstract.txt` (title, year,
+publication types, abstract) and, for the first source that gives a full text, `fulltext.txt` with
+the raw bytes in `raw/`. The sources are tried in this order: a PDF you put at
+`local/literature/supplied/<PMID digits>.pdf`, Europe PMC's open-access XML, PMC's efetch XML, then
+OpenAlex's free copies; each is tried while no full text has been found. A supplied PDF is taken
+whenever it converts as a PDF with at least one word, at any length (a file that is not a PDF, or a
+PDF with no text to read, is rejected and the other sources are tried). A copy the tool finds counts
+as a full text only when `convert.full_text_verdict` accepts it, so a landing page or a short PDF is
+recorded and passed over.
+
+Supplements come whole, never filtered by gene or sheet, whichever source gave the full text, a
+supplied PDF included: Europe PMC's archive for a paper with a PMC id and, when that gave nothing
+(no PMC id, no archive, a failed request or an archive that does not open) and the paper has a DOI,
+the supplement links on the DOI's landing page. Each file that converts goes to
+`supplements/<name>.txt`, its raw bytes to `raw/supplements/<name>`. A supplement that is a zip is
+opened one level, its files named `<zip>__<file>`; a zip inside it is not opened. A name is made a
+file name: a control character or a path separator becomes `_`, and a name over 100 UTF-8 bytes is
+cut, its extension kept. A supplement not read is recorded as an attempt and kept nowhere: a file
+that is not text, one that converts to an HTML page though its name does not end `.htm` or `.html`
+(a login or bot-check page served for a workbook's URL), an Office or OpenDocument package that is
+not an xlsx or docx (a pptx, an odt...: one file, not an archive), a zip inside a zip, an archive
+file over 50 MiB or past 200 MiB in all, an archive file that cannot be read, an archive that does
+not open, a request that failed, a link whose URL cannot be read, a publisher page that could not be
+read, and an earlier file a replacing fetch did not carry over (below).
+
+`fetch.json` records what was fetched, every attempt included, and the supplied PDF's sha256; a
+paper that has one makes no request, PubMed included, unless `--refresh` is given or its supplied
+PDF has appeared, changed or gone since. When a paper is fetched again and its earlier record is
+usable, the earlier directory is kept when the step that has less failed: a full-text source failed
+and the new fetch has no full text where there was one (not when that text came from a supplied PDF
+that has since changed or gone), or a supplement source failed (Europe PMC's archive request, the
+publisher page, a publisher download), a supplement file of the earlier fetch, by name, is missing
+from the new one, and the new fetch gained nothing: no full text where there was none, and no
+supplied PDF that appeared or changed. A fetch that gained replaces the earlier one even then; the
+command prints a line naming the paper, what it gained and the earlier supplement files not carried
+over, and `why` names each of them: as not carried over when the new fetch made no attempt on it,
+else by that attempt's outcome; they count in `R` (below). A source failed
+when an attempt's outcome starts `failed:` or `bot check`: a host not reached, an error answer (a
+404 included, except the 404 by which Europe PMC's full text and archive, PMC efetch and OpenAlex's
+work say there is none), an answer that is not what was asked, an id efetch refuses before sending a
+request (not a PMC id), an OpenAlex copy whose URL cannot be read, any non-200 answer to a request
+for an OpenAlex copy or a publisher supplement file, or a publisher page answering 403, 429 or 503
+or serving a challenge page. "No record", "not available (404)", "free copies: 0" and a rejected
+copy are answers, not failures. When the earlier directory is kept, the command prints a line naming
+the paper, what the new fetch lacked and the failed attempts, and `texts.json` shows the earlier
+texts. In every other case the new fetch replaces the old one. To drop a paper's texts, delete
+`local/literature/texts/<PMID digits>/`; the next run fetches it anew. A paper is fetched into a
+`<PMID digits>.tmp` directory that replaces its directory only once its `fetch.json` is written, so
+a fetch that stops with an error leaves the old directory as it was.
+
+`<run>/texts.json` lists the papers for the other run commands, the ones still needing a text first
+(papers that are not case reports, then newest year, then PMID), the rest by PMID. Each entry
+carries `attempts` (`via`, `url`, `outcome`) and the `licence` stated by the source of its full text
+(Europe PMC's record for a Europe PMC or PMC copy, the copy's own for OpenAlex, none for a supplied
+PDF), or Europe PMC's when it has no full text. An entry's `why` says, for a paper with no full
+text, what the full-text sources answered and its PubMed types, and, for any paper, each supplement
+not read, named (an archive file by its name, a link by its file name, else Europe PMC's archive or
+the publisher page) with its outcome. The NCBI key is never written: a recorded URL has its key
+parameter dropped, and an attempt of a source that sent no request (efetch refusing an id that is
+not a PMC id) has the URL `""`. The command prints one summary line, after one line for each paper
+whose earlier directory was kept; its `R rejected` counts the supplements not read, as listed above.
+It exits 1 when PubMed fails or answers no record for a PMID, a paper's `fetch.json` is unusable
+(the message names the file and `--refresh`, and the key, with its value when the value is wrong; a
+file that is not JSON or not a JSON object names no key), a supplied PDF cannot be read, or a file
+cannot be written; a source failing for one paper is recorded, not fatal. It exits 2 for an unknown
+gene, a missing literature file, a literature file that is not YAML or has no triage list or a
+triage entry without a `PMID:<digits>`, a bad run id, or a run that already holds a `texts.json`,
+before any request. The atlas gitignores `local/`, so no fetched text is committed.
 
 ### Review a run
 
@@ -232,7 +305,7 @@ you run that line with your own name in `--by`.
 
 `chd-curator normalise <SYMBOL>` places each finding variant the paper named by its `c.` (placement
 `mane`, no normalisation yet) on the gene's pinned MANE Select transcript, using the public
-VariantValidator REST service (at most one request a second, the only network use besides PubMed). It
+VariantValidator REST service (at most one request a second). It
 fills `hgvs_c`, `hgvs_p` and `grch38` and records the run under `normalisations`. A variant
 VariantValidator refuses, or whose predicted `p.` disagrees with the paper's, becomes `unplaced` and
 `pending_review` with a note naming why; it never touches an approval or `verified_by`. A network
@@ -252,7 +325,7 @@ re-approve it afterwards.
 Run `.venv/bin/chd-atlas validate` after each step.
 
 `NCBI_API_KEY` is optional, read from the environment only and never written to a file.
-`search`, `abstracts`, `add-publication` and `normalise` need the network.
+`search`, `abstracts`, `texts`, `add-publication` and `normalise` need the network.
 
 ### Keep reviews: the review archive
 

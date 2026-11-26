@@ -267,6 +267,7 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "diff",
         "normalise",
         "synthesis",
+        "texts",
         "quotes",
         "review-page",
         "review-decisions",
