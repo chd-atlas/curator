@@ -446,7 +446,10 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
     assert "`as_reported` is verbatim" in flat
     assert "never choose between the paper's own names" in flat
     assert "`unclear` with its reason" in flat
-    assert "`not_stated` only when the paper is silent" in flat
+    # R-SWA-4: this rule is stated once, in the rules file, and the skill only points at it.
+    assert "`not_stated` only when the paper is silent" in " ".join(_rules().read_text().split())
+    assert "`not_stated` only when the paper is silent" not in flat
+    assert "`not_stated` is for a paper silent about the value" in flat
     assert "chd-curator normalise <SYMBOL>" in extract
     assert "chd-atlas literature frame <SYMBOL>" in extract
     assert "--settled-by <full_text|authors|expert|atlas_model>" in extract
@@ -529,8 +532,9 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
         assert not re.search(r"api_key\s*[=:]\s*\S", text), path.name
 
 
-# Each pilot class ruling's key phrases (literal). Both the atlas's rules file and the triage
-# skill must carry every one, whitespace-normalised, so neither can be reworded alone.
+# Each pilot class ruling's key phrases (literal). The atlas's rules file must carry every one,
+# whitespace-normalised, and the triage skill none of them (R-SWA-4: a rule is stated once, in
+# the rules file, and the roles that triage cite it); reworded in one place, the other fails.
 CLASS_RULINGS = {
     "negative screen included": [
         "a CHD cohort screened for the gene with no carrier",
@@ -556,7 +560,7 @@ CLASS_RULINGS = {
 
 
 @pytest.mark.parametrize("ruling", list(CLASS_RULINGS))
-def test_the_triage_skill_carries_each_pilot_class_ruling_the_rules_file_states(
+def test_the_rules_file_carries_each_pilot_class_ruling_and_the_triage_skill_does_not_restate_it(
     ruling: str,
 ) -> None:
     rules = " ".join(_rules().read_text().split()).lower()
@@ -564,10 +568,10 @@ def test_the_triage_skill_carries_each_pilot_class_ruling_the_rules_file_states(
     for phrase in CLASS_RULINGS[ruling]:
         needle = phrase.lower()
         assert needle in rules, f"{ruling}: the rules file no longer says {phrase!r}"
-        assert needle in skill, f"{ruling}: the triage skill does not say {phrase!r}"
+        assert needle not in skill, f"{ruling}: the triage skill restates {phrase!r}"
 
 
 def test_the_triage_skill_pins_what_the_publication_types_line_shows() -> None:
     skill = " ".join(SKILL_FILES[1].read_text().split())
     assert "`Published Erratum`" in skill
-    assert "the reason table decides, not the type alone" in skill
+    assert "the rules' reason table decides, not the type alone" in skill

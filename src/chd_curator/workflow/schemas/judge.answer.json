@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A judge's answer",
+  "description": "The two files a judge leaves for one batch (judge-NN.findings.yaml and judge-NN.decisions.yaml), in the shapes chd-curator check-batch reads. Structural only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings", "decisions"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {"id": {"type": "string", "pattern": "^CHDA:LIT:[0-9]{7}$"}}
+      }
+    },
+    "decisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^CHDA:LIT:[0-9]{7}$": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "first", "second", "decision", "value", "quote", "where", "rule"],
+            "properties": {
+              "field": {"type": "string"},
+              "first": {"type": "string"},
+              "second": {"type": "string"},
+              "decision": {"enum": ["first", "second", "neither"]},
+              "value": {"type": "string"},
+              "quote": {"type": "string"},
+              "where": {"type": "string"},
+              "rule": {"type": "string"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

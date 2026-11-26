@@ -8,6 +8,9 @@ description: Use when a gene's extracted findings need an independent blind seco
 Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a model different from the one that
 extracted, in a fresh context. The point is independence: you extract without seeing the
 first pass.
+When a pipeline runs the blind pass as one call, its task is
+`src/chd_curator/workflow/roles/blind-read.md`; the judge of the differences is
+`src/chd_curator/workflow/roles/judge.md`. The steps below are the same work done by hand.
 
 ## Inputs
 
