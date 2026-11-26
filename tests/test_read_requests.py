@@ -163,7 +163,35 @@ def test_the_rows_pass_asks_preflight_and_assemble_for_each_mode_and_role(
         assert _requests(p, role, out)[0] == 0
         reqs = ask_module._load_requests(out, True)
         ask_module._preflight_check_batch(reqs, role, p.root, "r1", stub_atlas)
-        if (role, plan_mode) == ("judge", "backfill"):
-            continue  # the judge role has no backfill schema (roles.py), so it never assembles
         for row in _rows(out):
             assemble(role, atlas_root, row["inputs"], row["mode"])
+
+
+def _command(p: RunPaths, out: Path) -> tuple[int, str]:
+    return _requests(p, "extract", out)
+
+
+def test_a_manifest_naming_no_file_is_refused(tmp_path: Path, atlas_root: Path) -> None:
+    p = _batched(tmp_path, atlas_root)
+    (p.batches_dir / "batch-01.md").write_text("# Batch 01 of run r1 (gene TBX5, mode new)\n")
+    out = tmp_path / "req.jsonl"
+    code, text = _command(p, out)
+    assert code == 1 and not out.exists() and "batch-01.md" in text and "names no file" in text
+
+
+def test_a_line_that_looks_like_a_file_but_is_not_a_known_form_is_refused(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    p = _batched(tmp_path, atlas_root)
+    path = p.batches_dir / "batch-01.md"
+    path.write_text(path.read_text() + "- figure path: x.txt\n")
+    out = tmp_path / "req.jsonl"
+    code, text = _command(p, out)
+    assert code == 1 and not out.exists()
+    assert "batch-01.md" in text and "- figure path: x.txt" in text
+    # a title that merely mentions a supplement or a path is not a file line
+    path.write_text(
+        path.read_text().replace("- figure path: x.txt\n", "")
+        + "- title: Supplement and path: a note\n"
+    )
+    assert _command(p, out)[0] == 0

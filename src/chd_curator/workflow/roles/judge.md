@@ -3,6 +3,7 @@ cites:
   - Principles
   - Findings
 schema: judge
+backfill_schema: judge
 ---
 
 ## Task

@@ -463,7 +463,7 @@ def test_a_backfill_call_uses_the_backfill_schema_and_only_a_reader_has_one() ->
     assert new.schema == _schema("reader") and back.schema == _schema("reader-backfill")
     assert new.digest != back.digest and new.rules_digest == back.rules_digest
     assert assemble("blind-read", FIXTURE_ROOT, READER, mode="backfill").schema == back.schema
-    for role in ("judge", "triage-check", "triage-screen"):
+    for role in ("triage-check", "triage-screen"):
         with pytest.raises(RoleError, match="backfill_schema"):
             assemble(role, FIXTURE_ROOT, INPUTS[role], mode="backfill")
     with pytest.raises(RoleError, match="mode"):
@@ -503,3 +503,9 @@ def test_the_blind_reader_is_never_pointed_at_another_readers_answer() -> None:
     assert "you are never given another reader's answer" in flat
     assert "findings as curated" in flat and "as the record" in flat
     assert "extract pass" not in flat and "first pass" not in flat
+
+
+def test_a_backfill_judge_call_uses_the_normal_judge_schema() -> None:
+    new = assemble("judge", FIXTURE_ROOT, INPUTS["judge"])
+    back = assemble("judge", FIXTURE_ROOT, INPUTS["judge"], mode="backfill")
+    assert back.schema == _schema("judge") == new.schema

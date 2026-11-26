@@ -31,6 +31,7 @@ from chd_curator.run import BatchPlan, RunPaths, load_batches
 _NAMED: Final = re.compile(r"- (?:text path|abstract path|supplement): (.+)")
 _SIZE: Final = re.compile(r"(.*) \(\d+ bytes\)")
 _JUDGE: Final = re.compile(r"judge-([0-9]{2,})\.md")
+_PATHISH: Final = re.compile(r"- ([^:]*(?:path|supplement)[^:]*):")
 Role = Literal["extract", "blind-read", "judge"]
 
 
@@ -57,6 +58,19 @@ def named_files(manifest: str) -> list[str]:
     return found
 
 
+def unrecognised(manifest: str) -> list[str]:
+    """Lines outside fenced blocks whose key (``- <key>:``) mentions a path or a supplement but
+    that ``named_files`` does not read: a form of naming a file this command does not know."""
+    fenced = False
+    odd: list[str] = []
+    for line in manifest.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and _PATHISH.match(line) and not _NAMED.fullmatch(line):
+            odd.append(line)
+    return odd
+
+
 def _read(path: Path, what: str) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -67,7 +81,13 @@ def _read(path: Path, what: str) -> str:
 def _texts(root: Path, manifest: str, where: Path) -> str:
     base = root.resolve()
     blocks: list[str] = []
-    for name in named_files(manifest):
+    odd = unrecognised(manifest)
+    if odd:
+        raise RequestsError(f"{where}: names a file in a form this command does not read: {odd[0]}")
+    names = named_files(manifest)
+    if not names:
+        raise RequestsError(f"{where}: names no file, so a reader would be sent no text")
+    for name in names:
         path = (base / name).resolve()
         if not path.is_relative_to(base):
             raise RequestsError(f"{where}: names {name}, which is outside the root {root}")
