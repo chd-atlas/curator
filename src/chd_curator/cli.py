@@ -49,9 +49,9 @@ from chd_curator.atlas import (
     digests,
     frame,
     plain,
+    run_validate,
     schema_validator,
     target,
-    validate_summary,
 )
 from chd_curator.decisions import ExportError, decisions_from_export
 from chd_curator.diff import DiffError, diff_findings, parse_findings_file, stripped
@@ -1306,7 +1306,10 @@ def review_page_command(
     and shows no approval state and no other reviewer's verdict. Opened as a claude.ai
     artifact the page saves to its store; opened as a file it saves in the browser and
     offers "Download my review" (a decisions file for `chd-atlas literature apply-review`).
-    Refuses (exit 1) to build when `chd-atlas validate` reports an error; exit 2 for a bad
+    Refuses (exit 1) to build when `chd-atlas validate` reports an error, except an approval
+    changed since it was given (LIT015) on a finding the page shows as a card, which reads
+    "approval void: re-approve"; a LIT015 on a finding the page does not show is refused,
+    naming it. Exit 2 for a bad
     argument, an unreadable run, or a `--with` file that is not a finished second opinion on this
     gene (two files from one reviewer are refused too). Validate is asked first, so a gene the atlas
     cannot digest still reports its validate errors.
@@ -1323,10 +1326,24 @@ def review_page_command(
     cli = _atlas_cli(root, atlas_cli)
     paths = RunPaths(root, symbol, run)
     try:
-        code, line = validate_summary(root, cli)
+        code, stdout, stderr = run_validate(root, cli)
     except AtlasError as exc:
         raise _fail(str(exc), 2) from None
-    if code != 0 or not re.match(r"0 error\(s\)", line):
+    answer = check_module.read_validate(code, stdout, stderr)
+    if answer.summary is None:
+        raise _fail(f"chd-atlas validate printed nothing (exit {code})", 2)
+    line = answer.summary
+    if answer.problem is not None:
+        raise _fail(
+            f"chd-atlas validate's answer cannot be trusted ({answer.problem}); fix it before "
+            "building a page",
+            1,
+        )
+    # An approval changed since the owner gave it (LIT015) is an error the page exists to show:
+    # a card reads "approval void: re-approve". It is the only error a page is built over, and
+    # only for a finding the page shows (checked once the cards are known).
+    voided = {fid for fid in map(check_module.void_approval, answer.errors) if fid is not None}
+    if any(check_module.void_approval(e) is None for e in answer.errors):
         raise _fail(
             f"chd-atlas validate reports errors ({line}); fix them before building a page", 1
         )
@@ -1349,6 +1366,14 @@ def review_page_command(
         )
     except (ReviewDataError, RunFormatError, ValueError) as exc:
         raise _fail(str(exc), 2) from None
+    unshown = sorted(voided - {str(c["id"]) for c in data["findings"]})
+    if unshown:
+        raise _fail(
+            f"chd-atlas validate reports errors ({line}), among them an approval changed since "
+            f"it was given on {', '.join(unshown)}, which this page does not show; fix them "
+            "before building a page",
+            1,
+        )
     out = paths.dir / ("review.html" if role == "owner" else f"review-{name_slug}.html")
     try:
         out.write_text(review_page.render(data), encoding="utf-8")

@@ -145,15 +145,6 @@ def run_validate(root: Path, atlas_cli: Path) -> tuple[int, str, str]:
     return run.returncode, run.stdout, run.stderr
 
 
-def validate_summary(root: Path, atlas_cli: Path) -> tuple[int, str]:
-    """Run ``chd-atlas validate --root <root>``: its exit code and last non-empty line."""
-    code, stdout, _ = run_validate(root, atlas_cli)
-    lines = [line for line in stdout.splitlines() if line.strip()]
-    if not lines:
-        raise AtlasError(f"chd-atlas validate printed nothing (exit {code})")
-    return code, lines[-1].strip()
-
-
 def _check_shape(answer: dict[str, Any], expected: frozenset[str], version: int) -> None:
     keys = set(answer)
     if keys != expected:

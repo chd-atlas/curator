@@ -118,13 +118,28 @@ def _expected(error_code: str, message: str, own_papers: Collection[str]) -> boo
     )
 
 
-def report(exit_code: int, stdout: str, stderr: str, own_papers: Collection[str]) -> Checked:
-    """The report on one run of ``chd-atlas validate``; see the module docstring. `own_papers`
-    are the batch's papers: ``LIT003`` is expected for any other."""
+@dataclass(frozen=True)
+class ValidateAnswer:
+    """What one run of ``chd-atlas validate`` said, when it can be believed.
+
+    `problem` is why it cannot be (None when it can); `summary` is the last non-empty line of
+    stdout (None when stdout is empty); `errors` are the ``ERROR [`` lines, in the order printed;
+    `raw` is stdout and stderr together, for a report that cannot trust the answer."""
+
+    problem: str | None
+    summary: str | None
+    errors: tuple[str, ...]
+    raw: tuple[str, ...]
+
+
+def read_validate(exit_code: int, stdout: str, stderr: str) -> ValidateAnswer:
+    """The answer of one run of ``chd-atlas validate``, believed only when its exit code is 0 or
+    1, its last line is the summary, the summary's error count equals the ``ERROR`` lines and
+    agrees with the exit code, and nothing holds a traceback; see the module docstring."""
     lines = [line.rstrip() for line in stdout.splitlines() if line.strip()]
-    raw = [line.rstrip() for line in (stdout + "\n" + stderr).splitlines() if line.strip()]
+    raw = tuple(line.rstrip() for line in (stdout + "\n" + stderr).splitlines() if line.strip())
     summary = _SUMMARY.fullmatch(lines[-1]) if lines else None
-    errors = [line for line in lines if line.startswith("ERROR [")]
+    errors = tuple(line for line in lines if line.startswith("ERROR ["))
     problem: str | None = None
     if "Traceback (most recent call last)" in stdout + stderr:
         problem = "its output holds a traceback"
@@ -136,18 +151,45 @@ def report(exit_code: int, stdout: str, stderr: str, own_papers: Collection[str]
         problem = f"the summary counts {summary.group(1)} errors and {len(errors)} are listed"
     elif (exit_code == 0) != (int(summary.group(1)) == 0):
         problem = f"it exited {exit_code} over a summary of {summary.group(1)} errors"
-    if problem is not None or summary is None:
+    return ValidateAnswer(problem, lines[-1] if lines else None, errors, raw)
+
+
+_VOID_APPROVAL: Final = re.compile(
+    r".*:finding (CHDA:LIT:[0-9]{7}): approved content changed since approval(?:;.*)?"
+)
+
+
+def void_approval(error_line: str) -> str | None:
+    """The finding id of a ``LIT015`` ERROR line (an approval whose finding changed since), or
+    None for any other line, including a ``LIT015`` line that names no finding."""
+    found = _ERROR.fullmatch(error_line)
+    if found is None or found.group(1) != "LIT015":
+        return None
+    named = _VOID_APPROVAL.fullmatch(found.group(2))
+    return named.group(1) if named else None
+
+
+def report(exit_code: int, stdout: str, stderr: str, own_papers: Collection[str]) -> Checked:
+    """The report on one run of ``chd-atlas validate``; see the module docstring. `own_papers`
+    are the batch's papers: ``LIT003`` is expected for any other."""
+    answer = read_validate(exit_code, stdout, stderr)
+    if answer.problem is not None or answer.summary is None:
         return Checked(
-            1, ("UNEXPECTED ERRORS:", f"the validator's output cannot be trusted: {problem}", *raw)
+            1,
+            (
+                "UNEXPECTED ERRORS:",
+                f"the validator's output cannot be trusted: {answer.problem}",
+                *answer.raw,
+            ),
         )
     unexpected = []
-    for line in errors:
+    for line in answer.errors:
         found = _ERROR.fullmatch(line)
         if found is None or not _expected(found.group(1), found.group(2), own_papers):
             unexpected.append(line)
     if unexpected:
-        return Checked(1, (lines[-1], "UNEXPECTED ERRORS:", *unexpected))
-    return Checked(0, (lines[-1], OK_LINE))
+        return Checked(1, (answer.summary, "UNEXPECTED ERRORS:", *unexpected))
+    return Checked(0, (answer.summary, OK_LINE))
 
 
 def _pass_file(run: RunPaths, batch: Batch, which: str) -> Path:

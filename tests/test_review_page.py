@@ -1247,3 +1247,28 @@ def test_a_placement_reading_is_rendered_in_its_variant_card_as_text(
     assert any(plain(p) == reading for p in placed), placed
     assert "<b>bold</b>" not in mine and "&lt;b&gt;bold&lt;/b&gt;" in mine
     assert "CP-D8" not in card_html(dom, J)
+
+
+def test_review_page_builds_over_an_approval_void_on_a_card_and_says_so(
+    root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(e): a backfill's edit voids an approval, which validate reports as LIT015. A card
+    reads `void` (the stub's digests list A as approved-but-void), and the page's validate line is
+    the count as validate printed it."""
+    monkeypatch.setenv("STUB_VALIDATE_VOID", A)
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    data = data_of(Path(out.strip().splitlines()[-1]))
+    assert data["page"]["validate"] == "1 error(s), 3 warning(s)"
+    assert {c["id"]: c["approval"] for c in data["findings"]}[A] == "void"
+
+
+def test_review_page_refuses_an_approval_void_on_a_finding_it_does_not_show(
+    root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STUB_VALIDATE_VOID", f"{A},CHDA:LIT:0000555")
+    code, out = build(root, stub_atlas)
+    assert code == 1
+    assert "2 error(s), 3 warning(s)" in out and "CHDA:LIT:0000555" in out
+    assert f", {A}" not in out and "does not show" in out
+    assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))

@@ -406,7 +406,10 @@ found.
 `<run>/review.html` for the owner, `<run>/review-<name>.html` for a second opinion (which shows no
 approval state and no other reviewer's verdict; `--with` is for the owner page only, and each file
 must be a format 1 decisions file by a second opinion on the same gene). It refuses to build, exit 1,
-when `chd-atlas validate` reports an error. The page saves two ways: opened as a claude.ai artifact it
+when `chd-atlas validate` reports an error other than `LIT015`, an approval whose finding changed
+since (a backfill voids approvals, and the page shows such a card as "approval void: re-approve");
+a `LIT015` on a finding the page has no card for is refused too, naming the finding. The page's
+validate line is the summary validate printed. The page saves two ways: opened as a claude.ai artifact it
 saves to the page's store; opened as a plain file it saves in the browser. A page published as a claude.ai artifact needs the `downloads` capability beside `db`: claude.ai never lets a page download a file itself, so without `downloads` "Download my review" cannot save there (the page says the review was not saved). "Download my review"
 (available at any time) gives a decisions file, which the atlas's `literature apply-review`
 applies, and `review-decisions` below gives one from the store; both leave out a card decided on
