@@ -132,6 +132,12 @@ def test_assemble_on_the_fixture_gives_the_literal_file_record_and_summary(
         "{\n"
         ' "added": {\n  "CHDA:LIT:0701001": "CHDA:LIT:0009005"\n },\n'
         ' "format": 1,\n'
+        ' "judged": {\n'
+        '  "CHDA:LIT:0009003": '
+        '"405ace4a850650c0defa7397b63dadc58970c6245234f6a493e743380aaa7818",\n'
+        '  "CHDA:LIT:0009005": '
+        '"88e0bf7c61bff87c2f3ce6e4f10ca7ddada64cf7d6ac9fdbc60468540a70bcfd"\n'
+        " },\n"
         ' "notation": [],\n'
         ' "replaced": [\n  "CHDA:LIT:0009003"\n ],\n'
         ' "verified": [\n  "CHDA:LIT:0009002",\n  "CHDA:LIT:0009004"\n ],\n'
@@ -160,6 +166,84 @@ def test_a_second_assemble_changes_no_byte_and_numbers_nothing_again(
     assert second == first
     assert _snapshot(p) == after_first
     assert [i for i in _findings(p) if i >= "CHDA:LIT:0009005"] == [ADDED_FINAL]
+
+
+def _approve_in_the_file(p: RunPaths, fid: str) -> None:
+    """What apply-review leaves: three approval keys after ``extracted_by`` (raw setup)."""
+    text = _lit(p).read_text()
+    start = text.index(f"id: {fid}\n")
+    after = text.index("\n", text.index("extracted_by:", start)) + 1
+    _lit(p).write_text(
+        text[:after]
+        + "    approved_by: E.A.M\n    approved_on: 2026-11-26\n"
+        + "    approved_digest: sha256:"
+        + "0" * 64
+        + "\n"
+        + text[after:]
+    )
+
+
+def _block(p: RunPaths, fid: str) -> str:
+    """The literature file's text for one finding, from its ``- id:`` line to the next one."""
+    text = _lit(p).read_text()
+    start = text.index(f"  - id: {fid}\n")
+    end = text.find("\n  - id: ", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def test_a_fix_round_after_the_owner_approved_a_judged_finding_leaves_it_untouched(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(a), measured as m7: approve the judged 0009003, then the judge edits only the
+    added finding. The approved block must stay byte for byte and the added one be replaced."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    approved = _block(p, JUDGED)
+    assert "approved_by: E.A.M" in approved
+    _edit(_judge1(p), "A third carrier listed", "A third carrier, fixed, listed")
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert _block(p, JUDGED) == approved
+    assert _findings(p)[ADDED_FINAL]["summary"].startswith("A third carrier, fixed, listed")
+    record = load_assemble(p)
+    assert record is not None
+    assert record.replaced == (JUDGED,) and record.added == {ADDED: ADDED_FINAL}
+    assert sorted(record.judged) == [JUDGED, ADDED_FINAL]
+
+
+def test_a_judge_that_changes_an_approved_finding_is_refused_naming_it_and_nothing_is_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    _edit(_judge1(p), "three relatives had", "four relatives had")
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{JUDGED}: approved; a judge may not change an approved finding",
+    )
+
+
+def test_the_digest_of_a_judge_finding_is_the_sha256_of_its_canonical_json(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The digest covers the finding as the judge wrote it, under the judge's own id, for a
+    replacement and for an added finding."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    rows = {f["id"]: f for f in YAML_SAFE.load(_judge1(p).read_text())["findings"]}
+    expected = {
+        fid: hashlib.sha256(
+            json.dumps(rows[jid], sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        for fid, jid in ((JUDGED, JUDGED), (ADDED_FINAL, ADDED))
+    }
+    record = load_assemble(p)
+    assert record is not None and record.judged == expected
 
 
 def test_a_fix_round_replaces_the_added_finding_under_its_final_id(
@@ -524,7 +608,7 @@ def _judge_key_added_twice(p: RunPaths) -> None:
 
 def _stale_assemble(p: RunPaths) -> None:
     write_assemble(
-        p, AssembleRecord((), {ADDED: "CHDA:LIT:0009005"}, (), (), None)
+        p, AssembleRecord((), {ADDED: "CHDA:LIT:0009005"}, (), (), None, {})
     )  # the file has no 0009005
 
 
@@ -994,7 +1078,9 @@ def test_a_backfill_takes_only_the_declared_fields_from_a_judge_and_drops_verifi
     assert out.startswith(
         "replaced 1 judged findings, added 0, fixed 0 names by rule, marked 0 verified"
     )
-    # a judge that changed anything else in a backfill is refused
+    # a judge that changed anything else in a backfill is refused (with no record of the first
+    # round, the approved-finding refusal of a re-run does not apply)
+    p.assemble.unlink()
     _edit(p.judging / "judge-01.findings.yaml", "screened: 1", "screened: 3")
     _expect_refused(
         p,
@@ -1175,7 +1261,7 @@ def test_the_judge_fixture_is_the_one_the_literal_expects() -> None:
         ]
     ]
     assert ids == [JUDGED, ADDED]
-    assert assemble_module.summary(AssembleRecord((), {}, (), (), None)) == (
+    assert assemble_module.summary(AssembleRecord((), {}, (), (), None, {})) == (
         "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 0 verified"
     )
     assert AssembleError.__name__ == "AssembleError"

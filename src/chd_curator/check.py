@@ -37,7 +37,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from chd_curator.assemble import accept_judged, apply_judged, judge_findings, read_state
+from chd_curator.assemble import (
+    accept_judged,
+    apply_judged,
+    judge_digest,
+    judge_findings,
+    read_state,
+)
 from chd_curator.atlas import AtlasError, run_validate
 from chd_curator.diff import DiffError, parse_findings_file
 from chd_curator.merge import (
@@ -180,9 +186,9 @@ def _applied(
     if which == "judge":
         state = read_state(root, run, approved)
         c = state.curated
-        judged, notes = _defer_other_batches(
-            judge_findings(run, plan, state.schema, only=batch.id), plan, batch
-        )
+        read = judge_findings(run, plan, state.schema, only=batch.id)
+        digests = {str(f["id"]): judge_digest(f) for f in read}
+        judged, notes = _defer_other_batches(read, plan, batch)
         if plan.mode == "backfill":
 
             def in_scope(fid: str) -> bool:
@@ -193,7 +199,7 @@ def _applied(
             def in_scope(fid: str) -> bool:
                 return str(c.findings.get(fid, {}).get("publication")) in batch.papers
 
-        accepted = accept_judged(state, judged, in_scope)
+        accepted = accept_judged(state, judged, digests, in_scope)
         applied = apply_judged(state, run, accepted)
         counter = read_counter(c.reg, PREFIX)
         literature, new_counter = applied.literature, applied.new_counter

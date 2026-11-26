@@ -327,6 +327,7 @@ ASSEMBLE = AssembleRecord(
     ),
     ("CHDA:LIT:0009003",),
     "agent:literature-verify/claude-opus-5-5",
+    {"CHDA:LIT:0009001": "a" * 64, "CHDA:LIT:0009003": "0123456789abcdef" * 4},
 )
 COMPARISON = Comparison(
     {"CHDA:LIT:0901001": "CHDA:LIT:0801001"},
@@ -474,6 +475,7 @@ def _assemble_base() -> dict[str, Any]:
         ],
         "verified": [],
         "verifier": None,
+        "judged": {"CHDA:LIT:0009003": "0" * 64},
     }
 
 
@@ -494,6 +496,12 @@ def _assemble_base() -> dict[str, Any]:
         ("assemble", lambda d: d.update(extra=1), "extra"),
         ("assemble", lambda d: d.pop("verifier"), r"missing \['verifier'\]"),
         ("assemble", lambda d: d.update(verifier=3), "'verifier'"),
+        ("assemble", lambda d: d.pop("judged"), r"missing \['judged'\]"),
+        ("assemble", lambda d: d.update(judged=[]), "'judged' is not an object"),
+        ("assemble", lambda d: d.update(judged={"x": "0" * 64}), "'x'"),
+        ("assemble", lambda d: d.update(judged={"CHDA:LIT:0009003": "abc"}), "'abc'"),
+        ("assemble", lambda d: d.update(judged={"CHDA:LIT:0009003": "A" * 64}), "'AAAA"),
+        ("assemble", lambda d: d.update(judged={"CHDA:LIT:0009003": 7}), "7"),
         ("assemble", lambda d: d.update(added={"x": "CHDA:LIT:0009003"}), "'x'"),
         ("assemble", lambda d: d.update(replaced=["x"]), "'x'"),
         ("assemble", lambda d: d["notation"][0].update(variant=True), "'variant'"),

@@ -1148,10 +1148,11 @@ def assemble(
     A judge's finding replaces the finding of its id, or is added under the next LIT id; the
     notation rules then fix every finding of the run; and each finding the readers agreed on
     gains `verified_by`. Writes assemble.json, the id registry (when findings were added) and the
-    literature file, in that order. A re-run replaces the findings it already numbered and
-    changes no byte when nothing was edited. Exit 2, nothing written, for every refusal: no
-    merge.json or comparison.json, a judge finding no decision covers, a field changed that no
-    decision names, a judged paper with no Publication, an assemble.json naming ids the file
+    literature file, in that order. A re-run replaces the findings it already numbered, skips
+    each judge finding whose digest assemble.json records unchanged, and changes no byte when
+    nothing was edited. Exit 2, nothing written, for every refusal: no merge.json or
+    comparison.json, a judge finding no decision covers, a changed judge finding for an approved
+    finding, a field changed that no decision names, a judged paper with no Publication, an assemble.json naming ids the file
     lacks, or a file changed since it was read. Exit 1 on an OS error.
     """
     _require_root(root)

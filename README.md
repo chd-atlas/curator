@@ -288,6 +288,16 @@ round (the judge edited a finding, an added one still under its local id) a re-r
 findings it numbered before under their final ids, numbers only local ids it has not seen, and
 keeps every earlier mapping and notation record in `assemble.json`.
 
+`assemble.json` also records, in `judged`, the sha256 of each judge finding it applied, keyed by
+the final id it decides (the finding as parsed from the judge's file: sorted-key compact JSON,
+UTF-8). A re-run does not apply a finding whose digest is unchanged, so what the file holds for it
+since (an approval `apply-review` wrote, a placement `normalise` wrote) stays as it is: the judges'
+file keeps its findings across fix rounds, the owner approves some findings between rounds, and
+the re-run still works. A judge finding whose digest changed replaces an unapproved finding as
+before; for a finding carrying `approved_by` the command exits 2 naming its id (`approved; a judge
+may not change an approved finding`). That refusal needs a digest recorded by an earlier assemble,
+so a backfill's first application to an approved finding's declared fields is not refused.
+
 Example output: `replaced 1 judged findings, added 1 (CHDA:LIT:0009005), fixed 0 names by rule,
 marked 2 verified`. The line states the totals `assemble.json` records: `replaced` counts the
 judged findings that replaced a merged one (a fix round's second replacement of an added finding
@@ -297,7 +307,8 @@ unchanged, for every refusal: no `merge.json` or `comparison.json`; modes in `ba
 finding with an approval field or `verified_by`, citing a paper outside its batch, repeating an
 id, or with an id that is neither a `differs` id, a first-pass-only id, an id of an earlier assemble
 nor `CHDA:LIT:07...`; a `differs` id with no judge finding, or one `comparison.json` also lists as
-agreed; a field changed that no decision names; a paper with no Publication; a triage entry
+agreed; a changed judge finding for a finding that carries `approved_by`; a field changed that
+no decision names; a paper with no Publication; a triage entry
 someone else excluded; an `assemble.json` naming ids the file lacks; a blind pass with more than
 one `extracted_by`; a file any write would refuse (the atlas's schema, an anchor, an approval
 changed) or changed since it was read. It exits 1 on an OS error.

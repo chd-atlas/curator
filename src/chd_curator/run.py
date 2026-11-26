@@ -799,16 +799,22 @@ def write_merge(p: RunPaths, record: MergeRecord) -> None:
 
 @dataclass(frozen=True)
 class AssembleRecord:
+    """What an assemble did. ``judged`` maps each final id a judge's finding decides (a
+    replaced or an added finding) to the sha256 hex of that finding as the judge wrote it:
+    its parsed mapping as sorted-key compact JSON, UTF-8."""
+
     replaced: tuple[str, ...]
     added: dict[str, str]
     notation: tuple[NotationChange, ...]
     verified: tuple[str, ...]
     verifier: str | None
+    judged: dict[str, str]
 
 
 _ASSEMBLE_KEYS: Final = frozenset(
-    {"format", "replaced", "added", "notation", "verified", "verifier"}
+    {"format", "replaced", "added", "notation", "verified", "verifier", "judged"}
 )
+_SHA256_HEX: Final = re.compile(r"[0-9a-f]{64}")
 _NOTATION_KEYS: Final = frozenset({"finding", "variant", "field", "before", "after", "rules"})
 
 
@@ -824,6 +830,16 @@ def load_assemble(p: RunPaths) -> AssembleRecord | None:
         _finding_id(k, path, "an 'added' key"): _finding_id(v, path, "an 'added' value")
         for k, v in data["added"].items()
     }
+    if not isinstance(data["judged"], dict):
+        raise RunFormatError(f"{path}: 'judged' is not an object")
+    judged: dict[str, str] = {}
+    for key, digest in data["judged"].items():
+        fid = _finding_id(key, path, "a 'judged' key")
+        if not isinstance(digest, str) or not _SHA256_HEX.fullmatch(digest):
+            raise RunFormatError(
+                f"{path}: 'judged' {fid} is {digest!r}; expected 64 lowercase hex digits"
+            )
+        judged[fid] = digest
     changes: list[NotationChange] = []
     for entry in _list(data["notation"], path, "notation"):
         row = _keys(entry, _NOTATION_KEYS, path, "a notation change")
@@ -844,6 +860,7 @@ def load_assemble(p: RunPaths) -> AssembleRecord | None:
         tuple(changes),
         _ids(data["verified"], path, "verified"),
         _str_or_null(data["verifier"], path, "verifier"),
+        judged,
     )
 
 
@@ -867,5 +884,6 @@ def write_assemble(p: RunPaths, record: AssembleRecord) -> None:
             ],
             "verified": list(record.verified),
             "verifier": record.verifier,
+            "judged": record.judged,
         },
     )

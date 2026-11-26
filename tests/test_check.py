@@ -29,7 +29,9 @@ from chd_curator.atlas import AtlasError
 from chd_curator.cli import app
 from run_fixture import RUN_FIXTURE
 from test_assemble import (
+    JUDGED,
     JUDGED_BACKFILL,
+    _approve_in_the_file,
     _assemble,
     _backfill_ready,
     _drop_the_judged_finding,
@@ -511,6 +513,34 @@ def test_a_judge_id_an_earlier_assemble_numbered_replaces_that_finding_instead_o
     assert list(found)[-2:] == ["CHDA:LIT:0009004", "CHDA:LIT:0009005"]
     assert found["CHDA:LIT:0009005"]["summary"].startswith("A third carrier, edited, listed")
     assert (seen / ".id_registry.yaml").read_text().endswith("LIT: 9005\n")
+
+
+def test_a_judge_pass_after_the_owner_approved_a_judged_finding_answers_as_assemble_does(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(a): the pass goes through assemble's own acceptance, so the approved finding is
+    left as it is when the judge edits another one, and a change to it exits 2."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    _edit(_judge1(p), "A third carrier listed", "A third carrier, fixed, listed")
+    code, out = _check(p.root, cli, pass_="judge")
+    assert (code, out) == (0, "0 error(s), 3 warning(s)\n" + OK_LINE)
+    seen = {
+        f["id"]: f
+        for f in YAML_SAFE.load((_seen(tmp_path) / "curation/literature/TBX5.yaml").read_text())[
+            "findings"
+        ]
+    }
+    assert seen[JUDGED]["approved_by"] == "E.A.M" and seen[JUDGED]["screened"] == 2
+    assert seen["CHDA:LIT:0009005"]["summary"].startswith("A third carrier, fixed, listed")
+    _edit(_judge1(p), "three relatives had", "four relatives had")
+    before = _snapshot(p.root)
+    code, out = _check(p.root, cli, pass_="judge")
+    assert code == 2
+    assert f"{JUDGED}: approved; a judge may not change an approved finding" in out
+    assert _snapshot(p.root) == before
 
 
 def test_another_batchs_judge_file_is_not_read(
