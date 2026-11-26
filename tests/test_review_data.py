@@ -16,7 +16,10 @@ from typing import Any
 import pytest
 from ruamel.yaml import YAML
 
+from archive_helpers import commit_all, finding, flip, git, make_archive, put, tri
 from chd_curator import review_page
+from chd_curator.archive import ArchiveError
+from chd_curator.archive_read import read_archive
 from chd_curator.atlas import digests
 from chd_curator.review_data import (
     APPROVAL_KEYS,
@@ -286,51 +289,6 @@ def test_a_term_missing_from_the_obo_is_shown_as_its_bare_id(
         )
     )
     assert row(card(build(run, stub_atlas), G), "phenotypes")["value"] == "HP:0009999"
-
-
-SHOWN = {G: "sha256:" + "2" * 64, J: "sha256:" + "4" * 64, A: "sha256:" + "6" * 64}
-
-
-def _second(
-    name: str,
-    fid: str,
-    decision: str,
-    note: str,
-    role: str = "second_opinion",
-    shown: str | None = None,
-) -> dict[str, Any]:
-    item = {
-        "id": fid,
-        "decision": decision,
-        "note": note,
-        "shown_digest": SHOWN.get(fid) if shown is None else shown,
-    }
-    return {
-        "format": 1,
-        "gene": "HGNC:11604",
-        "reviewer": {"name": name, "role": role},
-        "findings": [item],
-    }
-
-
-def test_second_opinions_reach_the_owner_sorted_and_refuse_a_second_opinion_reviewer(
-    run: RunPaths, stub_atlas: Path
-) -> None:
-    opinions = [_second("Zed", J, "fix", "why"), _second("Ann", J, "approve", "")]
-    data = build(run, stub_atlas, second_opinions=opinions)
-    assert data["second_opinions"] == {
-        J: [
-            {"name": "Ann", "decision": "approve", "note": "", "current": True},
-            {"name": "Zed", "decision": "fix", "note": "why", "current": True},
-        ]
-    }
-    assert "second_opinions" not in build(run, stub_atlas, Reviewer("Dr X", "second_opinion"))
-    with pytest.raises(ValueError, match="second-opinion"):
-        build(run, stub_atlas, Reviewer("Dr X", "second_opinion"), second_opinions=opinions)
-    with pytest.raises(ValueError, match="second_opinion reviewer"):
-        build(run, stub_atlas, second_opinions=[_second("Ann", J, "approve", "", "owner")])
-    with pytest.raises(ValueError, match="which the page lacks"):
-        build(run, stub_atlas, second_opinions=[_second("Ann", "CHDA:LIT:0009999", "approve", "")])
 
 
 def test_two_builds_are_identical(run: RunPaths, stub_atlas: Path) -> None:
@@ -676,37 +634,6 @@ def test_a_decision_attaches_to_a_variant_only_by_its_exact_name_and_a_subfield(
     assert [r["name"] for r in c["fields"] if r["name"] == field] == ([] if on_variant else [field])
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        {
-            "format": 1,
-            "gene": "HGNC:11604",
-            "reviewer": {"name": "A", "role": "second_opinion"},
-            "findings": [{"decision": "approve", "note": ""}],
-        },
-        {
-            "format": 1,
-            "gene": "HGNC:11604",
-            "reviewer": {"name": "A", "role": "second_opinion"},
-            "findings": [{"id": J}],
-        },
-        {
-            "format": 1,
-            "gene": "HGNC:11604",
-            "reviewer": {"name": "A", "role": "second_opinion"},
-            "findings": ["not a mapping"],
-        },
-        {"format": 1, "gene": "HGNC:11604", "reviewer": {"role": "second_opinion"}, "findings": []},
-    ],
-)
-def test_a_malformed_second_opinion_is_a_value_error(
-    run: RunPaths, stub_atlas: Path, bad: dict[str, Any]
-) -> None:
-    with pytest.raises(ValueError):
-        build(run, stub_atlas, second_opinions=[bad])
-
-
 def test_unchecked_counts_every_quote_shown_on_a_card_judge_quotes_included(
     run: RunPaths, stub_atlas: Path
 ) -> None:
@@ -896,22 +823,6 @@ def test_titles_year_and_doi_come_from_publications_then_the_runs_texts(
     assert (need["title"], need["year"]) == ("From the run", "2020")
 
 
-def test_a_clinicians_verdict_on_an_earlier_version_of_a_card_is_not_current(
-    run: RunPaths, stub_atlas: Path
-) -> None:
-    opinions = [
-        _second("Ann", J, "fix", "x", shown="sha256:" + "9" * 64),
-        _second("Bea", J, "fix", "y"),
-        _second("Cy", J, "fix", "z", shown=""),
-    ]
-    got = build(run, stub_atlas, second_opinions=opinions)["second_opinions"][J]
-    assert [(o["name"], o["current"]) for o in got] == [
-        ("Ann", False),
-        ("Bea", True),
-        ("Cy", False),
-    ]
-
-
 def _decision(**kw: str) -> JudgeDecision:
     base = {
         "field": "phenotypes",
@@ -1009,6 +920,180 @@ def test_a_reading_for_an_unknown_variant_is_refused(
     with pytest.raises(ReviewDataError, match="normalise.json") as raised:
         build(run, stub_atlas)
     assert entry[0] in str(raised.value)
+
+
+# ---- what the review archive adds to the owner page -----------------------------------------
+
+D = {G: "sha256:" + "2" * 64, J: "sha256:" + "4" * 64, A: "sha256:" + "6" * 64}
+P1, P2, P3 = "PMID:90000001", "PMID:90000002", "PMID:90000003"
+T0, T1, T2, T3 = (f"2026-11-19T{h}:00:00Z" for h in ("10", "11", "12", "13"))
+KEYS_FROM_THE_ARCHIVE = {"archive", "second_opinions", "earlier", "triage_earlier", "not_on_page"}
+
+
+def with_archive(
+    run: RunPaths,
+    stub: Path,
+    atlas_root: Path,
+    archive: Path,
+    reviewer: Reviewer = OWNER,
+) -> dict[str, Any]:
+    commit_all(archive)
+    return build(run, stub, reviewer, archive=read_archive(archive, "TBX5", atlas_root))
+
+
+def test_each_clinicians_latest_verdict_reaches_its_card_by_key_with_a_utc_date(
+    run: RunPaths, stub_atlas: Path, atlas_root: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [finding(J, "fix", D[J], T0)])
+    put(archive, tmp_path, "Dr X", "second_opinion", T2, [finding(J, "approve", D[J], T2)])
+    late = "2026-11-19T23:30:00-02:00"  # 2026-11-20T01:30Z: the date is the UTC one
+    put(archive, tmp_path, "Dr Y", "second_opinion", late, [finding(J, "fix", D[J], late, "why")])
+    old = "sha256:" + "9" * 64
+    put(archive, tmp_path, " dr z", "second_opinion", T1, [finding(J, "later", old, T1, "q")])
+    data = with_archive(run, stub_atlas, atlas_root, archive)
+    assert data["second_opinions"] == {
+        J: [
+            {"name": "Dr X", "decision": "approve", "note": "", "current": True,
+             "date": "2026-11-19"},
+            {"name": "Dr Y", "decision": "fix", "note": "why", "current": True,
+             "date": "2026-11-20"},
+            {"name": " dr z", "decision": "later", "note": "q", "current": False,
+             "date": "2026-11-19"},
+        ]
+    }  # fmt: skip
+    sha = git(archive, "rev-parse", "--short", "HEAD").strip()
+    assert data["archive"] == {
+        "read": True,
+        "commit": sha,
+        "files": 4,
+        "reviewers": 3,
+        "line": "4 decisions files from 3 reviewers",
+    }
+    assert data["earlier"] == {} and data["not_on_page"] == []
+    assert data["triage_earlier"] == {"owner": None, "clinicians": [], "flips": []}
+
+
+def test_the_owners_earlier_word_is_kept_only_when_it_says_something(
+    run: RunPaths, stub_atlas: Path, atlas_root: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    old = "sha256:" + "9" * 64
+    put(archive, tmp_path, "E.A.M", "owner", T1, [
+        finding(G, "approve", D[G], T1),            # a plain approve says nothing new
+        finding(J, "fix", D[J], T1, "count is wrong"),
+        finding(A, "approve", old, T1, "fine"),     # a note, on an older version of the card
+    ])  # fmt: skip
+    put(archive, tmp_path, "E.A.M", "owner", T0, [finding(G, "fix", D[G], T0, "superseded")])
+    data = with_archive(run, stub_atlas, atlas_root, archive)
+    assert data["earlier"] == {
+        J: {"decision": "fix", "note": "count is wrong", "date": "2026-11-19", "current": True},
+        A: {"decision": "approve", "note": "fine", "date": "2026-11-19", "current": False},
+    }
+    assert data["second_opinions"] == {}
+
+
+def test_a_verdict_with_no_card_reaches_not_on_page_with_where_it_is(
+    run: RunPaths, stub_atlas: Path, atlas_root: Path, tmp_path: Path
+) -> None:
+    gone = "CHDA:LIT:0000999"
+    comparison = json.loads(run.comparison.read_text(encoding="utf-8"))
+    del comparison["pairs"][A]
+    comparison["span_only"].remove(A)
+    run.comparison.write_text(json.dumps(comparison), encoding="utf-8")
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr Y", "second_opinion", T1, [finding(gone, "fix", D[G], T1, "x")])
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [
+        finding(A, "approve", D[A], T0), finding(gone, "later", D[G], T0, "y"),
+    ])  # fmt: skip
+    put(archive, tmp_path, "E.A.M", "owner", T2, [
+        finding(A, "approve", D[A], T2),                 # plain approve: absent
+        finding(gone, "fix", D[G], T2, "owner says"),    # kept
+    ])  # fmt: skip
+    data = with_archive(run, stub_atlas, atlas_root, archive)
+    assert [c["id"] for c in data["findings"]] == [J, G]
+    rows = [(r["id"], r["role"], r["name"], r["decision"], r["where"]) for r in data["not_on_page"]]
+    assert rows == [
+        (A, "second_opinion", "Dr X", "approve", "still in the gene's file"),
+        (gone, "owner", "E.A.M", "fix", "no longer in the gene's file"),
+        (gone, "second_opinion", "Dr X", "later", "no longer in the gene's file"),
+        (gone, "second_opinion", "Dr Y", "fix", "no longer in the gene's file"),
+    ]
+    assert data["not_on_page"][1] == {
+        "id": gone, "name": "E.A.M", "role": "owner", "decision": "fix", "note": "owner says",
+        "date": "2026-11-19", "where": "no longer in the gene's file",
+    }  # fmt: skip
+    assert data["second_opinions"] == {} and data["earlier"] == {}
+
+
+def test_the_triage_card_carries_each_latest_verdict_and_only_the_open_flips(
+    run: RunPaths, stub_atlas: Path, atlas_root: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P1)))
+    put(archive, tmp_path, "Dr Y", "second_opinion", T1, [], tri("fix", flip(P3)))  # closed below
+    put(archive, tmp_path, "Dr Z", "second_opinion", T1, [], tri("fix", flip(P3, "included")))
+    shown = {
+        "archive": {"read": True},
+        "triage_earlier": {
+            "flips": [
+                {"name": "Dr Y", "role": "second_opinion", "pmid": P3, "finished_at": T1},
+            ]
+        },
+    }
+    put(archive, tmp_path, "E.A.M", "owner", T3, [], tri("fix", flip(P2)), page_extra=shown)
+    data = with_archive(run, stub_atlas, atlas_root, archive)
+    earlier = data["triage_earlier"]
+    assert earlier["owner"] == {"decision": "fix", "note": "n", "date": "2026-11-19"}
+    assert earlier["clinicians"] == [
+        {"name": n, "decision": "fix", "note": "n", "date": "2026-11-19"}
+        for n in ("Dr X", "Dr Y", "Dr Z")
+    ]
+    assert earlier["flips"] == [
+        {"name": "E.A.M", "role": "owner", "pmid": P2, "to": "excluded", "note": "because",
+         "date": "2026-11-19", "finished_at": "2026-11-19T13:00:00+00:00"},
+        {"name": "Dr X", "role": "second_opinion", "pmid": P1, "to": "excluded",
+         "note": "because", "date": "2026-11-19", "finished_at": "2026-11-19T10:00:00+00:00"},
+    ]  # fmt: skip
+    # Dr Y's flip was closed by the owner's decision on a page that showed it, and Dr Z's
+    # flip says what the paper already is: neither is open.
+    assert [f["name"] for f in earlier["flips"]] == ["E.A.M", "Dr X"]
+
+
+def test_a_plain_owner_approve_of_the_triage_is_not_shown_back(
+    run: RunPaths, stub_atlas: Path, atlas_root: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "E.A.M", "owner", T1, [], tri("approve"))
+    assert with_archive(run, stub_atlas, atlas_root, archive)["triage_earlier"]["owner"] is None
+
+
+def test_a_page_with_no_archive_says_so_and_carries_none_of_its_keys(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    data = build(run, stub_atlas)
+    assert data["archive"] == {"read": False}
+    assert not (KEYS_FROM_THE_ARCHIVE - {"archive"}) & set(data)
+
+
+def test_a_second_opinion_page_refuses_an_archive_and_carries_none_of_its_keys(
+    run: RunPaths, stub_atlas: Path, atlas_root: Path, tmp_path: Path
+) -> None:
+    clinician = Reviewer("Dr X", "second_opinion")
+    assert not KEYS_FROM_THE_ARCHIVE & set(build(run, stub_atlas, clinician))
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [finding(J, "fix", D[J], T0, "x")])
+    with pytest.raises(ValueError, match="second-opinion"):
+        with_archive(run, stub_atlas, atlas_root, archive, clinician)
+
+
+def test_an_archive_that_holds_the_symbol_as_another_gene_is_refused(
+    run: RunPaths, stub_atlas: Path, atlas_root: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], gene="HGNC:4173")
+    with pytest.raises(ArchiveError, match="HGNC:4173"):
+        with_archive(run, stub_atlas, atlas_root, archive)
 
 
 BLIND = "CHDA:LIT:0801004"

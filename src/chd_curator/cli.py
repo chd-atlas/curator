@@ -41,6 +41,7 @@ from chd_curator import batch as batch_module
 from chd_curator import check as check_module
 from chd_curator import compare as compare_module
 from chd_curator import merge as merge_module
+from chd_curator import redact as redact_mod
 from chd_curator import texts as texts_module
 from chd_curator.atlas import (
     AtlasError,
@@ -1251,53 +1252,16 @@ def _atlas_commit(root: Path) -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
-def _second_opinions(
-    paths: Sequence[Path], root: Path, symbol: str, gene: str
-) -> list[dict[str, Any]]:
-    validator = schema_validator(root, "review_decisions")
-    loaded: list[dict[str, Any]] = []
-    names: dict[str, str] = {}  # reviewer name, case-folded, to the file that gave it
-    for path in paths:
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise _fail(f"--with {path}: cannot be read as JSON: {exc}", 2) from None
-        errors = sorted(
-            f"{'/'.join(map(str, e.path)) or '(file)'}: {e.message}"
-            for e in validator.iter_errors(doc)
-        )
-        if errors:
-            raise _fail(f"--with {path} is not a format 1 decisions file: {errors[0]}", 2)
-        if doc["reviewer"]["role"] != "second_opinion":
-            raise _fail(f"--with {path}: its reviewer's role is not second_opinion", 2)
-        if doc["gene"] != gene or doc["symbol"] != symbol:
-            raise _fail(
-                f"--with {path} is for {doc['symbol']} ({doc['gene']}), not {symbol} ({gene})", 2
-            )
-        if not doc["session"].get("finished_at"):
-            raise _fail(
-                f"--with {path}: the review is not finished (no I'm done), so it is no verdict", 2
-            )
-        who = doc["reviewer"]["name"].strip().casefold()
-        if who in names:
-            raise _fail(
-                f"--with {path}: {names[who]} already gave that reviewer's second opinion; "
-                "one file each",
-                2,
-            )
-        names[who] = str(path)
-        loaded.append(doc)
-    return loaded
-
-
 @app.command("review-page")
 def review_page_command(
     symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
     run: str = typer.Option(..., "--run", help="The run id."),
     reviewer: str = typer.Option(..., "--reviewer", help="The reviewer's name, shown on the page."),
     role: str = typer.Option("owner", "--role", help="owner or second_opinion."),
-    with_: list[Path] = typer.Option(
-        [], "--with", help="A second opinion's decisions file to show on the owner page."
+    archive: Path | None = typer.Option(
+        None,
+        "--archive",
+        help="The review archive checkout: the owner page shows the earlier verdicts filed there.",
     ),
     root: Path = typer.Option(Path("."), help="Atlas checkout root."),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
@@ -1305,22 +1269,29 @@ def review_page_command(
     """Write the run's review page: one HTML file the owner or a second reviewer opens.
 
     The owner page is `<run>/review.html`; a second opinion's is `<run>/review-<name>.html`
-    and shows no approval state and no other reviewer's verdict. Opened as a claude.ai
-    artifact the page saves to its store; opened as a file it saves in the browser and
-    offers "Download my review" (a decisions file for `chd-atlas literature apply-review`).
+    and shows no approval state and no other reviewer's verdict. With `--archive <dir>` the
+    owner page also shows what the review archive holds for the gene: the owner's own earlier
+    notes, each clinician's latest verdict on each card, the triage card's earlier verdicts and
+    open flips (the owner's own open flips are ticked again on their rows; Approve or Needs a
+    fix on the card closes every flip listed whose paper is not flipped on that card, Ask later
+    or no verdict closes none), and a fold of verdicts on findings with no card on this page.
+    Opened as a claude.ai artifact the page saves to its store; opened as a file it saves in the
+    browser and offers "Download my review" (a decisions file for `chd-atlas literature
+    apply-review`).
     Refuses (exit 1) to build when `chd-atlas validate` reports an error, except an approval
     changed since it was given (LIT015) on a finding the page shows as a card, which reads
     "approval void: re-approve"; a LIT015 on a finding the page does not show is refused,
-    naming it. Exit 2 for a bad
-    argument, an unreadable run, or a `--with` file that is not a finished second opinion on this
-    gene (two files from one reviewer are refused too). Validate is asked first, so a gene the atlas
-    cannot digest still reports its validate errors.
+    naming it. Exit 2 for a bad argument, an unreadable run, `--archive` with `--role
+    second_opinion`, or an archive the reader refuses (not a marked checkout, uncommitted
+    changes, an invalid decisions file, or the symbol filed as another gene than the atlas's);
+    nothing is written then, and a failing git command exits 1. Validate is asked first, so a
+    gene the atlas cannot digest still reports its validate errors.
     """
     _require_root(root)
     if role not in ("owner", "second_opinion"):
         raise _fail(f"--role {role!r} is not owner or second_opinion", 2)
-    if role == "second_opinion" and with_:
-        raise _fail("a second-opinion page shows no other reviewer's verdicts: drop --with", 2)
+    if role == "second_opinion" and archive is not None:
+        raise _fail("a second-opinion page reads no archive", 2)
     name = reviewer.strip()
     name_slug = review_page.slug(name)
     if not name_slug:
@@ -1351,9 +1322,11 @@ def review_page_command(
         )
     try:
         found = digests(root, symbol, cli)
-        opinions = _second_opinions(with_, root, symbol, found.gene)
-    except AtlasError as exc:
+        view = archive_read.read_archive(archive, symbol, root) if archive is not None else None
+    except (AtlasError, archive_mod.ArchiveError) as exc:
         raise _fail(str(exc), 2) from None
+    except archive_mod.GitError as exc:
+        raise _fail(str(exc), 1) from None
     who = Reviewer(name, "owner" if role == "owner" else "second_opinion")
     try:
         data = build_review_data(
@@ -1364,9 +1337,9 @@ def review_page_command(
             datetime.now(UTC),
             _atlas_commit(root),
             line,
-            second_opinions=opinions,
+            archive=view,
         )
-    except (ReviewDataError, RunFormatError, ValueError) as exc:
+    except (ReviewDataError, RunFormatError, ValueError, archive_mod.ArchiveError) as exc:
         raise _fail(str(exc), 2) from None
     unshown = sorted(voided - {str(c["id"]) for c in data["findings"]})
     if unshown:
@@ -1404,8 +1377,10 @@ def review_decisions_command(
     gene, a flip or a seen paper the page does not hold), a document for a card not on the page,
     a decision outside approve|fix|later, or a result failing the schema. Nothing is written on
     exit 1 or 2. A card decided on an earlier version is left out of the file, as the page's own
-    download leaves it out, and named on stdout (exit 0). The last-but-one line counts what was
-    written.
+    download leaves it out, and named on stdout (exit 0). A triage document not stamped with this
+    page's build time (made on another page, or by a page that stamped nothing) is read for
+    nothing but the papers this page asks to be read; a verdict in it is left out and one line
+    says so (exit 0). The last-but-one line counts what was written.
     """
     _require_root(root)
     source = page if page is not None else RunPaths(root, symbol, run).review_html
@@ -1422,6 +1397,8 @@ def review_decisions_command(
         raise _fail(f"{out}: cannot be written: {exc}", 1) from None
     if converted.stale:
         typer.echo(f"left out, decided on an earlier version: {', '.join(converted.stale)}")
+    if converted.triage_left_out:
+        typer.echo("left out a triage verdict that was not made on this page")
     made = [f["decision"] for f in decisions["findings"]]
     triage = decisions["triage"]["decision"] if decisions["triage"] else "none"
     typer.echo(
@@ -1488,7 +1465,8 @@ def archive_decisions_command(
     a bad symbol or run id, invalid JSON or a schema error, an unfinished session, another
     symbol, a second opinion keyed as the owner, a finding decided twice, a reviewer name with
     no ASCII letter or digit, another gene than the page's or than one already filed for the
-    symbol, no page filed for the file, a different file already filed, a path git ignores);
+    symbol, a session that finished before its page was built, no page filed for the file, a
+    different file already filed, a path git ignores);
     exit 1 when git fails, a file cannot be written, or a commit leaves a path out of HEAD.
     Never pushes.
     """
@@ -1526,14 +1504,21 @@ def archive_state_command(
     Prints one line, `<SYMBOL>: <n> findings with verdicts in <k decisions files from m
     reviewers>; <p> pending fix or ask later, <f> pending flips (archive <commit>)`: `<p>`
     counts every reviewer whose latest verdict on the finding is a fix or later made on its
-    current digest (a finding with two such reviewers counts 2) and `<f>` every pending triage
-    flip in every reviewer's latest triage verdict. With `--json` it prints the whole state
-    instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
-    decisions file HEAD does not hold, a file that fails the schema, is not finished, is for
-    another symbol, names a finding twice, is a second opinion keyed as the owner, or is
-    misnamed, two genes in the archive for the symbol, a non-JSON file under a decisions
-    directory, an unreadable literature file, or a gene other than the atlas's); exit 1 when
-    git fails. Writes nothing.
+    current digest (a finding with two such reviewers counts 2) and `<f>` the triage flips
+    that are pending. A flip is a verdict on one paper: a reviewer's latest flip of it counts,
+    whatever their later triage verdicts say. It is pending while the paper's triage decision is
+    not the flip's `to` (a paper absent from the triage is not pending), unless the owner closed
+    it: an owner triage verdict that approved or fixed (never "ask later") on a filed page that
+    showed that flip, in a file that finished after the flip did, without flipping the paper
+    itself. With `--json` it prints the whole
+    state instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
+    decisions file HEAD does not hold, an owner's approve or fix of the triage whose filed page
+    cannot be found or says nothing usable about the flips it showed, a file that fails the
+    schema, is not finished, finished before its page was built, is for another symbol, names a
+    finding twice, is a second opinion keyed as the owner, or is misnamed, two genes in the
+    archive for the symbol, anything in a decisions directory other than a .json file directly
+    in it, an unreadable literature file, or a gene other than the atlas's); exit 1 when git
+    fails. Writes nothing.
     """
     _require_root(root)
     cli = _atlas_cli(root, atlas_cli)
@@ -1565,13 +1550,64 @@ def archive_state_command(
         typer.echo(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False))
         return
     pending = sum(v["pending"] for f in out["findings"] for v in f["verdicts"])
-    flips = sum(fl["pending"] for t in out["triage"]["verdicts"] for fl in t["flips"])
+    flips = sum(fl["pending"] for fl in out["triage"]["flips"])
     n = len(out["findings"])
     typer.echo(
         f"{symbol}: {n} finding{'' if n == 1 else 's'} with verdicts in "
         f"{archive_read.files_line(view)}; {pending} pending fix or ask later, "
         f"{flips} pending flip{'' if flips == 1 else 's'} (archive {view.commit})"
     )
+
+
+@app.command("archive-redact")
+def archive_redact_command(
+    name: str = typer.Option(
+        ..., "--name", help="The reviewer to remove, as the archive names them."
+    ),
+    archive: Path = typer.Option(..., "--archive", help="The review archive checkout."),
+    apply: bool = typer.Option(False, "--apply", help="Do it; without this, only print the plan."),
+) -> None:
+    """Remove a reviewer from the archive on their request (a dry run unless `--apply`).
+
+    The dry run prints five lists and changes nothing: the files to delete (the reviewer's
+    decisions files and their own pages with the pages' `.artifact` files), the owner pages to
+    rewrite (the reviewer's name and notes redacted in the page's data, every other byte kept),
+    the artifact URLs to republish and to unpublish, and the files that still name the reviewer
+    after that (an owner's note, say), which stop `--apply` until edited. Both the dry run and
+    `--apply` refuse (exit 2, nothing changed) an archive in which a path carries a
+    skip-worktree or assume-unchanged bit, and a file the scan cannot read. `--apply` also
+    refuses an archive with uncommitted changes, a name still found elsewhere (in a file's text,
+    or as the name's file-name slug in a path), a removal that touches nothing, a missing README
+    or one without exactly one `## Removals` line, or `.git/redact-*.txt` left by an earlier
+    removal; it deletes, rewrites, adds a dated line under `## Removals`, scans again and commits
+    `redact a removed reviewer` (a match in the scan, a failed write or a failed commit restores
+    every touched path and exits 1), and prints the history-rewrite procedure, the copies outside
+    the archive to delete by hand, and the pages to republish or unpublish. That procedure has
+    not been run: it is unmeasured as of 2026-11-25. Never pushes.
+    """
+    try:
+        plan = redact_mod.plan_redact(archive, name)
+        if not apply:
+            for title, items in (
+                ("delete", plan.delete),
+                ("rewrite", plan.rewrite),
+                ("republish", plan.republish),
+                ("unpublish", plan.unpublish),
+                ("elsewhere", plan.elsewhere),
+            ):
+                typer.echo(f"{title} ({len(items)}):")
+                for item in items:
+                    typer.echo(f"  {item}")
+            typer.echo("dry run: nothing changed; add --apply to carry it out")
+            return
+        sha = redact_mod.apply_redact(archive, name, plan, datetime.now(UTC).date())
+    except archive_mod.ArchiveError as exc:
+        raise _fail(str(exc), 2) from None
+    except archive_mod.GitError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"committed {sha}")
+    for line in redact_mod.procedure(archive, name, plan):
+        typer.echo(line)
 
 
 _AGREEMENT_SYMBOLS = typer.Argument(
@@ -1594,13 +1630,14 @@ def agreement_command(
     said later). A clinician verdict on a version no owner decisions file covers is unpaired.
     With no symbol it reads every top-level directory of the archive that is not a
     dot-directory (one that is not a gene symbol is refused). `--json` prints the whole
-    report instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes, a
-    non-JSON file under a decisions directory, a decisions file HEAD does not hold, a file
-    that is not valid JSON, fails the schema, is unfinished, is for another symbol, names a
-    finding twice, is a second opinion keyed as the owner, or is misnamed, or two genes under
-    one symbol); exit 1 when git fails. Unlike `archive-state`
-    it does not compare the archive's gene with the atlas's. Writes nothing, and the report
-    is printed nowhere else.
+    report instead. Exit 2 for a refusal (an unusable archive, one with uncommitted changes,
+    anything in a decisions directory other than a .json file directly in it, a decisions file
+    HEAD does not hold, an owner's approve or fix of the triage whose filed page cannot be found
+    or read, a file that is not valid JSON, fails the schema, is unfinished, finished before its
+    page was built, is for another symbol, names a finding twice, is a second opinion keyed as
+    the owner, or is misnamed, or two genes under one symbol); exit 1 when git fails. Unlike
+    `archive-state` it does not compare the archive's gene with the atlas's. Writes nothing, and
+    the report is printed nowhere else.
     """
     _require_root(root)
     try:

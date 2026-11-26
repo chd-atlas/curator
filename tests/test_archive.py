@@ -13,7 +13,7 @@ from chd_curator.archive import ArchiveError, check_id, compact_utc
 from chd_curator.cli import app
 
 runner = CliRunner()
-PAGE = "TBX5/r1/pages/20261119T120000Z--e-a-m.html"
+PAGE = "TBX5/r1/pages/20261119T090000Z--e-a-m.html"
 
 
 def file_it(
@@ -277,6 +277,7 @@ def test_a_finished_review_is_filed_and_the_owner_is_told_the_apply_command(
         ("format2", "fails the schema"),
         ("naive", "decided_at"),
         ("unfinished", "not finished"),
+        ("beforebuilt", "finished at 2026-11-19T14:00:00+02:00, before its page was built"),
         ("othersymbol", "is for GATA4"),
         ("othergene", "gene"),
         ("otherrun", "no page filed"),
@@ -302,6 +303,9 @@ def test_archive_decisions_refuses_and_writes_nothing(
             data["findings"] = [dict(_VALID_FINDING, decided_at="2026-11-19T13:00:00")]
         elif case == "unfinished":
             data["session"]["finished_at"] = None
+        elif case == "beforebuilt":
+            data["page"]["built_on"] = "2026-11-19T12:30:00+00:00"
+            data["session"]["finished_at"] = "2026-11-19T14:00:00+02:00"  # 12:00Z
         elif case == "othersymbol":
             data["symbol"] = "GATA4"
         elif case == "othergene":

@@ -10,6 +10,15 @@ row (a variant: an ``others`` entry), and each card and variant carries ``keys_s
 sorted keys it renders. ``keys_shown`` is assembled from the rows actually emitted, so a key
 no row renders is absent from it and a test comparing it with the record fails.
 
+With a review archive (owner page only; a second-opinion page refuses one) the data gains
+``archive`` (``{"read": true, "commit", "files", "reviewers", "line"}``; ``{"read": false}``
+without one), ``second_opinions`` (each clinician's latest verdict per card, by reviewer key),
+``earlier`` (the owner's latest verdict per card, kept when it is not a plain approve),
+``triage_earlier`` (``owner``, ``clinicians`` and ``flips``: the open flips, as
+:func:`chd_curator.archive_read.state` reports them) and ``not_on_page`` (verdicts on a finding
+id with no card). ``triage_earlier.flips`` is what the reader reads back as the flips the page
+*showed* when it decides whether the owner's later verdict closed one.
+
 What this module does not do: it computes no statistic, reads no clock and never recomputes a
 quote check. The one sum it makes is the card headline's carriers total, the sum of the
 integers in the finding's own ``carriers`` mapping (shown only when the record states one).
@@ -39,13 +48,15 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, Literal
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from chd_curator.archive import ArchiveError
+from chd_curator.archive_read import ArchiveView, Verdict, files_line, latest, state
 from chd_curator.atlas import Digests
 from chd_curator.quotes import LONG_QUOTE_WORDS, QuoteCheck, check_quotes
 from chd_curator.run import (
@@ -621,43 +632,121 @@ def _triage(entries: Sequence[Mapping[str, Any]], paper: _Paper) -> list[dict[st
     ]
 
 
-def _second_opinions(
-    sources: Sequence[Mapping[str, Any]], gene: str, shown: Mapping[str, str]
-) -> dict[str, list[dict[str, Any]]]:
-    """Each second opinion's verdicts by finding id.
+def _date(when: datetime) -> str:
+    """The UTC calendar date of an instant, as ``YYYY-MM-DD``."""
+    return when.astimezone(UTC).date().isoformat()
 
-    ``current`` is whether the verdict's ``shown_digest`` equals the card's own: a verdict
-    made on an older version of the card must not read as a verdict on this one (R-P1-37).
+
+def _says_something(v: Verdict) -> bool:
+    """An owner's earlier verdict is shown back when it is not a plain approve (R-REG-30)."""
+    return v.decision != "approve" or bool(v.note.strip())
+
+
+def _archive_data(
+    view: ArchiveView,
+    digests: Digests,
+    cards: Mapping[str, str],
+    triage: Mapping[str, str],
+) -> dict[str, Any]:
+    """What the review archive adds to the owner page; see the module docstring.
+
+    ``cards`` maps each card's finding id to its shown digest; ``triage`` maps each pmid of the
+    literature file's triage to its decision. The open flips come from
+    :func:`~chd_curator.archive_read.state`, the one reader of the flip rule.
     """
-    out: dict[str, list[dict[str, Any]]] = {}
-    for doc in sources:
-        reviewer = doc.get("reviewer") or {}
-        if doc.get("format") != 1 or reviewer.get("role") != "second_opinion":
-            raise ValueError(
-                "a second opinion must be a format 1 file by a second_opinion reviewer"
-            )
-        if doc.get("gene") != gene:
-            raise ValueError(f"a second opinion is for {doc.get('gene')!r}, not {gene!r}")
-        if not isinstance(reviewer.get("name"), str) or not reviewer["name"].strip():
-            raise ValueError("a second opinion's reviewer has no name")
-        for item in doc.get("findings") or []:
-            if not isinstance(item, Mapping) or not {"id", "decision"} <= set(item):
-                raise ValueError(
-                    f"a second opinion has a finding without an id and decision: {item!r}"
+    mine = latest(view.verdicts)
+    by_card: dict[str, list[Verdict]] = {}
+    off_page: list[Verdict] = []
+    for v in mine.values():
+        if v.finding == "triage":
+            continue
+        if v.finding in cards:
+            by_card.setdefault(v.finding, []).append(v)
+        else:
+            off_page.append(v)
+
+    second_opinions: dict[str, list[dict[str, Any]]] = {}
+    earlier: dict[str, dict[str, Any]] = {}
+    for fid in sorted(by_card):
+        for v in sorted(by_card[fid], key=lambda x: x.key):
+            current = v.shown_digest == cards[fid]
+            if v.role == "owner":
+                if _says_something(v):
+                    earlier[fid] = {
+                        "decision": v.decision,
+                        "note": v.note,
+                        "date": _date(v.finished_at),
+                        "current": current,
+                    }
+            else:
+                second_opinions.setdefault(fid, []).append(
+                    {
+                        "name": v.name,
+                        "decision": v.decision,
+                        "note": v.note,
+                        "current": current,
+                        "date": _date(v.finished_at),
+                    }
                 )
-            if item["id"] not in shown:
-                raise ValueError(f"a second opinion names {item['id']}, which the page lacks")
-            out.setdefault(item["id"], []).append(
-                {
-                    "name": str(reviewer["name"]),
-                    "decision": str(item["decision"]),
-                    "note": str(item.get("note") or ""),
-                    "current": item.get("shown_digest") == shown[item["id"]],
-                }
-            )
+
+    held = {d.id for d in digests.findings}
+    not_on_page = [
+        {
+            "id": v.finding,
+            "name": v.name,
+            "role": v.role,
+            "decision": v.decision,
+            "note": v.note,
+            "date": _date(v.finished_at),
+            "where": (
+                "still in the gene's file" if v.finding in held else "no longer in the gene's file"
+            ),
+        }
+        for v in sorted(off_page, key=lambda x: (x.finding, x.key != "owner", x.key))
+        if v.role != "owner" or _says_something(v)
+    ]
+
+    current_digests = {d.id: d.shown_digest for d in digests.findings}
+    held_state = state(view, current_digests, triage)["triage"]
+    owner: dict[str, Any] | None = None
+    clinicians: list[dict[str, Any]] = []
+    for row in held_state["verdicts"]:
+        when = datetime.fromisoformat(row["finished_at"])
+        entry = {
+            "decision": row["decision"],
+            "note": row["note"],
+            "date": _date(when),
+        }
+        if row["role"] == "owner":
+            if row["decision"] != "approve" or row["note"].strip():
+                owner = entry
+        else:
+            clinicians.append({"name": row["name"], **entry})
+    flips = [
+        {
+            "name": row["name"],
+            "role": row["role"],
+            "pmid": row["pmid"],
+            "to": row["to"],
+            "note": row["note"],
+            "date": _date(datetime.fromisoformat(row["finished_at"])),
+            "finished_at": row["finished_at"],
+        }
+        for row in held_state["flips"]
+        if row["pending"]
+    ]
     return {
-        k: sorted(v, key=lambda o: (o["name"], o["decision"], o["note"]))
-        for k, v in sorted(out.items())
+        "archive": {
+            "read": True,
+            "commit": view.commit,
+            "files": view.files,
+            "reviewers": view.reviewers,
+            "line": files_line(view),
+        },
+        "second_opinions": second_opinions,
+        "earlier": earlier,
+        "triage_earlier": {"owner": owner, "clinicians": clinicians, "flips": flips},
+        "not_on_page": not_on_page,
     }
 
 
@@ -730,11 +819,16 @@ def build_review_data(
     built_on: datetime,
     atlas_commit: str | None,
     validate_line: str,
-    second_opinions: Sequence[Mapping[str, Any]] = (),
+    archive: ArchiveView | None = None,
 ) -> dict[str, Any]:
     """The page's data for ``run``; see the module docstring for what a card carries."""
-    if reviewer.role == "second_opinion" and second_opinions:
-        raise ValueError("a second-opinion page shows no other reviewer's verdicts")
+    if reviewer.role == "second_opinion" and archive is not None:
+        raise ValueError("a second-opinion page reads no archive")
+    if archive is not None and archive.gene is not None and archive.gene != digests.gene:
+        raise ArchiveError(
+            f"the archive holds {run.symbol} as {archive.gene}, but the atlas has it as "
+            f"{digests.gene}"
+        )
     lit_path = root / "curation/literature" / f"{run.symbol}.yaml"
     lit = _safe_load(lit_path)
     if not isinstance(lit, dict) or not isinstance(lit.get("findings"), list):
@@ -856,9 +950,17 @@ def build_review_data(
         ),
     }
     if reviewer.role == "owner":
-        data["second_opinions"] = _second_opinions(
-            second_opinions, digests.gene, {c["id"]: c["shown_digest"] for c in cards}
-        )
+        if archive is None:
+            data["archive"] = {"read": False}
+        else:
+            data.update(
+                _archive_data(
+                    archive,
+                    digests,
+                    {c["id"]: c["shown_digest"] for c in cards},
+                    {str(e["pmid"]): str(e["decision"]) for e in triage_entries},
+                )
+            )
     return data
 
 

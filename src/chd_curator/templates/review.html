@@ -103,6 +103,8 @@ textarea { width: 100%; min-height: 64px; font: inherit; font-size: 14px; border
 .saved { font-size: 13px; color: var(--muted); }
 .note-banner { margin: 16px 0; padding: 10px 12px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); font-size: 14px; }
 .triage-table td.pmid { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+.earlier-note { font-size: 13px; color: var(--muted); margin: 0 0 2px; }
+.earlier-list { font-size: 13px; margin: 0 0 8px; padding: 0; list-style: none; display: grid; gap: 2px; }
 .opinions { font-size: 13px; margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
 .opinions .earlier { font-style: italic; opacity: .75; }
 .opinions .agrees { color: var(--ok); } .opinions .fixes { color: var(--bad); } .opinions .asks { color: var(--warn); }
@@ -149,7 +151,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const DATA = JSON.parse(document.getElementById("data").textContent);
   const OWNER = DATA.reviewer.role === "owner";
   const SELFTEST = location.hash.startsWith("#selftest");
-  const MODE = location.hash.replace(/^#selftest-?/, "");   // selftest variants: noverdict, reflip, unflip, redecide, stale, stale-open, stale-click, persist, restore (selftest hook: window.__downloadsTimeoutMs shortens the 10 s wait for downloads)
+  const MODE = location.hash.replace(/^#selftest-?/, "");   // selftest variants: earlier-approve, earlier-undo, earlier-undo-only, earlier-undecided, earlier-add, earlier-flip (the owner page's archive flips), flip-undo, noverdict, reflip, unflip, redecide, stale, stale-open, stale-click, persist, restore (selftest hook: window.__downloadsTimeoutMs shortens the 10 s wait for downloads)
   // The selftest touches no browser storage, except in `persist` and `restore`, which exist to test it.
   const LIVE_STORAGE = !SELFTEST || MODE === "persist" || MODE === "restore";
   const NOVERDICT = MODE === "noverdict";
@@ -161,6 +163,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const STORE_SAVED = ["Saved", "to", "the", "page's", "store"].join(" ");
   const LABEL = { approve: OWNER ? "Approve" : "Agree", fix: "Needs a fix", later: "Ask later" };
   const PAST = { approve: OWNER ? "approved" : "agreed", fix: "needs a fix", later: "ask later" };
+  const BUILT = DATA.page.built_on;
   const state = { decisions: {}, session: {} };
   let db = null, mode = "pending", writable = true;   // mode: pending | store | file
   let openId = null, openSince = null;
@@ -172,7 +175,28 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const fmt = (ms) => { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
   const now = () => new Date().toISOString();
   const items = [{ id: "triage" }, ...DATA.findings.map((f) => ({ id: f.id }))];
+  // A triage state belongs to the page it was made on: its decision and flips were made against that
+  // page's papers and the earlier verdicts it listed. Every triage write is stamped with this page's
+  // built_on; an entry restored without that stamp keeps only the papers this page asks to be read,
+  // and a restored session that is not stamped for this page is not finished.
+  const NEEDED = new Set(DATA.papers_needed.map((p) => p.pmid));
+  function ownEntry(id, entry) {
+    if (id !== "triage" || !entry || entry.built_on === BUILT) return entry;
+    return { papers_seen: (Array.isArray(entry.papers_seen) ? entry.papers_seen : []).filter((p) => NEEDED.has(p)) };
+  }
+  function ownSession(session) {
+    // a session of another page (or of a page that stamped nothing) is dropped whole: this page starts its own
+    if (!session || (session.page && session.page.built_on === BUILT)) return session;
+    return {};
+  }
   const triage = () => state.decisions.triage || {};
+  // The owner's own open flips from the archive, ticked again until the owner changes the flips here.
+  const keptFlips = () => OWNER && DATA.triage_earlier ? DATA.triage_earlier.flips.filter((x) => x.role === "owner").map((x) => ({ pmid: x.pmid, to: x.to, note: x.note })) : [];
+  const flipsTouched = () => Array.isArray(triage().flips);
+  const flipsNow = () => flipsTouched() ? triage().flips : keptFlips();
+  // The flips the page opened with: the owner's carried ticked flips, none on a clinician page.
+  const OPENED = new Set(keptFlips().map((x) => x.pmid + ">" + x.to));
+  const flipsChanged = () => { const now = new Set(flipsNow().map((x) => x.pmid + ">" + x.to)); return now.size !== OPENED.size || [...now].some((k) => !OPENED.has(k)); };
   const cardOf = (id) => DATA.findings.find((f) => f.id === id);
   // A decision counts only on the card version it was made on: a finding's decision must carry that
   // card's current digest. Anything else (an older page's, a restored entry with none) asks again.
@@ -187,9 +211,12 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   const STALE = "decided on an earlier version: decide again";
   let bannerNote = "";
   function triageWarning() {
-    const n = (triage().flips || []).length;
-    if (!n || triage().decision) return "";
-    return bannerNote + "You flipped " + n + " paper(s) in the triage card. Give the triage card a verdict (" + LABEL.approve + ", " + LABEL.fix + " or " + LABEL.later + "). Until then I'm done is refused and Download my review leaves the flips out.";
+    const n = flipsNow().length;
+    if (!flipsTouched() || !flipsChanged() || triage().decision) return "";
+    // flips changed here and no verdict: with none left (an undo) the card still has to be decided,
+    // or the undone flip stays open on the archive and the download carries no triage at all
+    if (!n) return bannerNote + "You changed the triage card's flips and it has no verdict. Give it a verdict (" + LABEL.approve + ", " + LABEL.fix + " or " + LABEL.later + "). Until then I'm done is refused.";
+    return bannerNote + "The triage card carries " + n + " flipped " + (n === 1 ? "paper" : "papers") + " and no verdict. Give the triage card a verdict (" + LABEL.approve + ", " + LABEL.fix + " or " + LABEL.later + "). Until then I'm done is refused and Download my review leaves the flips out.";
   }
   function updateBanner() {
     const banner = document.getElementById("banner"), w = triageWarning();
@@ -204,8 +231,9 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   document.getElementById("title").textContent = DATA.page.symbol + " · literature review";
   document.getElementById("intro").innerHTML = (OWNER
     ? '<p>Each card is one finding, drafted by two readers who never saw each other\'s work; a variant whose name lies within the checked exons is placed on GRCh38 by VariantValidator. A <span class="chip warn">judged</span> row means the readers disagreed and a third reader chose. The paper\'s words sit beside each value. A quote marked <span class="chip bad">not found in text</span> did not match the source, so check it in the paper.</p><p>Open a card, check it, then choose <b>Approve</b>, <b>Needs a fix</b> or <b>Ask later</b>. Time counts only while a card is open and this tab is visible. Your choices are not approvals yet: Claude records them in the atlas, in your name, once you say so.</p>'
-    : '<p>You are giving a second opinion as <b>' + esc(DATA.reviewer.name) + '</b>. Each card is one finding, drafted by two readers; a variant whose name lies within the checked exons is placed on GRCh38 by VariantValidator. Open a card, check it against the paper, then choose <b>Agree</b>, <b>Needs a fix</b> or <b>Ask later</b>. A note is required for the last two. This page shows no approval state and no other reviewer\'s verdict.</p><p>When you are done, press <b>I\'m done</b> first, then <b>Download my review</b>, then send the file back.</p>')
-    + '<p class="meta">Built ' + esc(DATA.page.built_on) + (DATA.page.atlas_commit ? " from atlas " + esc(DATA.page.atlas_commit) + " (the commit the checkout was at; the literature file's own sha256, " + esc(DATA.page.literature_sha256) + ", is what binds the page, and that file may hold uncommitted work)" : " · literature file sha256 " + esc(DATA.page.literature_sha256)) + " · validate: " + esc(DATA.page.validate) + " · reviewer: " + esc(DATA.reviewer.name) + " (" + (OWNER ? "owner" : "second opinion") + ")</p>";
+    : '<p>You are giving a second opinion as <b>' + esc(DATA.reviewer.name) + '</b>. Each card is one finding, drafted by two readers; a variant whose name lies within the checked exons is placed on GRCh38 by VariantValidator. Open a card, check it against the paper, then choose <b>Agree</b>, <b>Needs a fix</b> or <b>Ask later</b>. A note is required for the last two. This page shows no approval state and no other reviewer\'s verdict.</p><p class="notice" id="notice">Your name, verdicts and notes are kept in the atlas\'s private review archive, a private GitHub repository. The curator who sent you this page, and the Claude sessions that build review pages, read them to show your verdicts to the curator and to measure how often reviewers agree. Nothing with your name is published without your separate agreement. Ask the curator, and your name and notes are deleted.</p><p>When you are done, press <b>I\'m done</b> first, then <b>Download my review</b>, then send the file back.</p>')
+    + '<p class="meta">Built ' + esc(DATA.page.built_on) + (DATA.page.atlas_commit ? " from atlas " + esc(DATA.page.atlas_commit) + " (the commit the checkout was at; the literature file's own sha256, " + esc(DATA.page.literature_sha256) + ", is what binds the page, and that file may hold uncommitted work)" : " · literature file sha256 " + esc(DATA.page.literature_sha256)) + " · validate: " + esc(DATA.page.validate) + " · reviewer: " + esc(DATA.reviewer.name) + " (" + (OWNER ? "owner" : "second opinion") + ")</p>"
+    + (OWNER ? '<p class="meta">' + (DATA.archive && DATA.archive.read ? "Review archive read at " + esc(DATA.archive.commit) + ": " + esc(DATA.archive.line) : "No review archive read: earlier notes and second opinions are not shown") + "</p>" : "");
 
   // a stored value may be a string: a non-finite number counts as 0, and never concatenates
   function ms(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
@@ -283,10 +311,15 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       const [cls, what] = WHAT[o.decision] || ["asks", o.decision];
       // a verdict on an earlier version of the card is not a verdict on this one
       const where = o.current ? "" : " on an earlier version";
-      const note = o.decision === "approve" ? (o.note ? " · " + esc(o.note) : "") : ": " + esc(o.note);
+      const note = o.note ? (o.decision === "approve" ? " · " : ": ") + esc(o.note) : "";
       return `<li class="${cls}${o.current ? "" : " earlier"}">${esc(o.name)}: ${what}${where}${note}</li>`;
     };
     return `<ul class="opinions">${list.map(line).join("")}</ul>`;
+  }
+  function earlierNote(f) {
+    const e = OWNER ? (DATA.earlier || {})[f.id] : null;
+    if (!e) return "";
+    return `<div class="earlier-note">Your note, ${esc(e.date)}${e.current ? "" : ", on an earlier version"}: ${esc(LABEL[e.decision] || e.decision)}${e.note ? ": " + esc(e.note) : ""}</div>`;
   }
   function chips(f) {
     const d = state.decisions[f.id];
@@ -320,7 +353,30 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const rows = DATA.papers_needed.map((p) => `<div class="need"><div><a href="${esc(p.pubmed_url)}" target="_blank" rel="noopener" class="mono">${esc(p.pmid)}</a> ${esc(p.year)} · ${p.title ? esc(p.title) : "title not recorded in this run"}${p.doi_url ? ` · <a href="${esc(p.doi_url)}" target="_blank" rel="noopener">DOI</a>` : ""}</div><div class="both">The readers had: ${esc(NEED_SOURCE[p.source] || "an unrecognised text source")}. ${esc(p.why)}</div><label><input type="checkbox" data-seen="${esc(p.pmid)}"${seen.includes(p.pmid) ? " checked" : ""}> I have seen this paper</label></div>`).join("");
     return `<h2 class="section">Papers the run flags for you to read</h2><div class="static-card" id="needed"><div class="paperline">Each paper says what the readers had. Tick a paper once you have read it yourself; nothing here is a decision.</div>${rows}</div>`;
   }
-  function flipOf(pmid) { return (triage().flips || []).find((x) => x.pmid === pmid); }
+  // A clinician's own word: "agreed" for an approve, where the owner's is "approved".
+  const PAST_OF = { owner: PAST, second_opinion: { approve: "agreed", fix: "needs a fix", later: "ask later" } };
+  const TICKED = "Your open flips are ticked again on their rows.";
+  const RULE = "Approve or Needs a fix closes every flip listed here whose paper is not flipped on this card when you decide; Ask later, or no verdict, closes none.";
+  function triageEarlier() {
+    const te = OWNER ? DATA.triage_earlier : null;
+    if (!te) return "";
+    const tail = (note) => note ? ": " + esc(note) : "";
+    const lines = [];
+    if (te.owner) lines.push(`Your note, ${esc(te.owner.date)}: ${esc(LABEL[te.owner.decision])}${tail(te.owner.note)}`);
+    for (const c of te.clinicians) lines.push(`${esc(c.name)}, ${esc(c.date)}: ${esc(PAST_OF.second_opinion[c.decision])}${tail(c.note)}`);
+    for (const f of te.flips) lines.push(f.role === "owner"
+      ? `Your flip, ${esc(f.date)}: ${esc(f.pmid)} to ${esc(f.to)}${tail(f.note)}`
+      : `${esc(f.name)} flipped ${esc(f.pmid)} to ${esc(f.to)}, ${esc(f.date)}${tail(f.note)}`);
+    if (!lines.length) return "";
+    return `<ul class="earlier-list">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>${te.flips.length ? `<p class="meta">${te.flips.some((f) => f.role === "owner" && flipOf(f.pmid)) ? esc(TICKED) + " " : ""}${esc(RULE)}</p>` : ""}`;
+  }
+  function notOnPage() {
+    const rows = OWNER ? DATA.not_on_page || [] : [];
+    if (!rows.length) return "";
+    const line = (r) => `<div>${esc(r.id)}, ${esc(r.where)}: ${r.role === "owner" ? "You" : esc(r.name)}: ${esc(PAST_OF[r.role][r.decision])}${r.note ? ": " + esc(r.note) : ""} (${esc(r.date)})</div>`;
+    return `<details class="static-card" id="not-on-page"><summary>Earlier verdicts on findings not on this page (${rows.length})</summary>${rows.map(line).join("")}</details>`;
+  }
+  function flipOf(pmid) { return flipsNow().find((x) => x.pmid === pmid); }
   function triageCard() {
     const d = triage();
     const rows = DATA.triage.map((t) => {
@@ -334,12 +390,12 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const n = DATA.triage.filter((t) => t.decision === "included").length;
     return `<details class="card" data-id="triage"${openId === "triage" ? " open" : ""}>
       <summary><div class="sum-main"><div class="sum-title">Triage: which papers count</div><div class="sum-sub">${DATA.triage.length} PubMed hits, ${n} included. To change one, flip it with a reason.</div></div>
-      <div class="sum-chips">${d.decision ? `<span class="chip done">${esc(PAST[d.decision])}</span>` : ""}${(d.flips || []).length ? `<span class="chip warn">${d.flips.length} flipped</span>` : ""}</div></summary>
-      <div class="card-body"><div class="scroll"><table class="triage-table"><thead><tr><th>PMID</th><th>Year</th><th>Decision</th><th>Paper</th></tr></thead><tbody>${rows}</tbody></table></div>${actions("triage")}</div></details>`;
+      <div class="sum-chips">${d.decision ? `<span class="chip done">${esc(PAST[d.decision])}</span>` : ""}${flipsNow().length ? `<span class="chip warn">${flipsNow().length} flipped</span>` : ""}</div></summary>
+      <div class="card-body">${triageEarlier()}<div class="scroll"><table class="triage-table"><thead><tr><th>PMID</th><th>Year</th><th>Decision</th><th>Paper</th></tr></thead><tbody>${rows}</tbody></table></div>${actions("triage")}</div></details>`;
   }
   function findingCard(f) {
     return `<details class="card" data-id="${esc(f.id)}"${openId === f.id ? " open" : ""}>
-      <summary><div class="sum-main"><div class="sum-title">${esc(f.label)} <span class="pmid">${esc(f.pmid)}</span></div><div class="sum-sub">${esc(f.headline)}</div>${opinions(f)}</div><div class="sum-chips">${chips(f)}</div></summary>
+      <summary><div class="sum-main"><div class="sum-title">${esc(f.label)} <span class="pmid">${esc(f.pmid)}</span></div><div class="sum-sub">${esc(f.headline)}</div>${earlierNote(f)}${opinions(f)}</div><div class="sum-chips">${chips(f)}</div></summary>
       <div class="card-body">
         <div class="paperline">${f.title ? esc(f.title) : "title not recorded in this run"} · ${esc(studyLine(f))}<a href="${pubmedLink(f.pmid)}" target="_blank" rel="noopener">PubMed</a>${f.pmc ? ` · <a href="https://pmc.ncbi.nlm.nih.gov/articles/${esc(f.pmc)}/" target="_blank" rel="noopener">full text</a>` : ""} · ${SOURCE_LINE[f.source] || ""} · <span class="mono">${esc(f.id)}</span> ${approvalChip(f)}</div>
         <p class="summary">${esc(f.summary)}</p>
@@ -369,7 +425,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       const cards = DATA.findings.filter((f) => f.group === g.key);
       return cards.length ? `<h2 class="section">${esc(g.title)}</h2>${cards.map(findingCard).join("")}` : "";
     }).join("");
-    root.innerHTML = `${neededCard()}<h2 class="section">Papers</h2>${triageCard()}${groups}${blindOnlySection()}`;
+    root.innerHTML = `${neededCard()}<h2 class="section">Papers</h2>${triageCard()}${groups}${blindOnlySection()}${notOnPage()}`;
     root.querySelectorAll("textarea, input[type=text]").forEach((el) => { if (typed[el.id]) el.value = typed[el.id]; });
     updateBar();
     updateBanner();
@@ -411,6 +467,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
   function docBody(id, extra) {
     const prev = state.decisions[id] || {};
     const body = { ...prev, ...extra, active_ms: Math.round(activeMs(id)), updated_at: now() };
+    if (id === "triage") body.built_on = BUILT;
     if (!body.first_opened_at) body.first_opened_at = now();
     // a decision made now takes the card's current digest; saving time on an older decision keeps its own
     if (id !== "triage" && extra.decision) body.shown_digest = cardOf(id).shown_digest;
@@ -449,7 +506,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       openId = id; openSince = Date.now();
       // first_opened_at is when the card was first opened here; a value already saved is kept
       const held = state.decisions[id] || {};
-      if (!held.first_opened_at) state.decisions[id] = { ...held, first_opened_at: now() };
+      if (!held.first_opened_at) state.decisions[id] = { ...held, first_opened_at: now(), ...(id === "triage" ? { built_on: BUILT } : {}) };
     } else if (openId === id) {
       closeOpen(true);
     }
@@ -459,7 +516,11 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     if (act !== "approve" && !note.trim()) return false;
     if (id === "triage") bannerNote = "";
     if (openId === id) { if (openSince && document.visibilityState === "visible") localActive[id] = (localActive[id] || 0) + (Date.now() - openSince); openSince = Date.now(); }
-    save(id, docBody(id, { decision: act, note: note.trim(), decided_at: now() }));
+    const extra = { decision: act, note: note.trim(), decided_at: now() };
+    // flips ticked again from the archive exist only virtually until the owner changes them; a verdict
+    // on the card writes them down, or the store (and so review-decisions) would hold none
+    if (id === "triage" && !flipsTouched()) extra.flips = keptFlips();
+    save(id, docBody(id, extra));
     if (openId === id) openSince = null;   // the save took the time; closeOpen below must not add the ms after it
     reopenSession();
     const card = root.querySelector(`details.card[data-id="${CSS.escape(id)}"]`);
@@ -497,11 +558,11 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       const input = document.getElementById("flipnote-" + btn.dataset.record);
       const note = (input && input.value || "").trim();
       if (!note) { input.placeholder = "A reason is required"; input.focus(); return; }
-      const flips = (triage().flips || []).filter((x) => x.pmid !== btn.dataset.record);
+      const flips = flipsNow().filter((x) => x.pmid !== btn.dataset.record);
       flips.push({ pmid: btn.dataset.record, to: btn.dataset.to, note });
       setFlips(flips);
     } else if (btn.dataset.unflip) {
-      setFlips((triage().flips || []).filter((x) => x.pmid !== btn.dataset.unflip));
+      setFlips(flipsNow().filter((x) => x.pmid !== btn.dataset.unflip));
     }
   });
   root.addEventListener("change", (ev) => {
@@ -510,7 +571,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const seen = new Set(triage().papers_seen || []);
     if (box.checked) seen.add(box.dataset.seen); else seen.delete(box.dataset.seen);
     const prev = state.decisions.triage || {};
-    state.decisions.triage = { ...prev, papers_seen: [...seen].sort(), active_ms: Math.round(activeMs("triage")), updated_at: now() };
+    state.decisions.triage = { ...prev, papers_seen: [...seen].sort(), active_ms: Math.round(activeMs("triage")), updated_at: now(), built_on: BUILT };
     write("review/triage", state.decisions.triage);
   });
 
@@ -528,7 +589,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       findings,
       papers_seen: [...new Set((t && t.papers_seen) || [])].sort(),
     };
-    out.triage = t && t.decision ? { decision: t.decision, note: t.note || "", active_ms: Math.round(activeMs("triage")), flips: (t.flips || []).map((x) => ({ pmid: x.pmid, to: x.to, note: x.note })) } : null;
+    out.triage = t && t.decision ? { decision: t.decision, note: t.note || "", active_ms: Math.round(activeMs("triage")), flips: flipsNow().map((x) => ({ pmid: x.pmid, to: x.to, note: x.note })) } : null;
     return out;
   }
   // claude.use("downloads") resolves to the capability, or to null when this view cannot save
@@ -636,6 +697,34 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
       await emit();
       return;
     }
+    if (MODE.startsWith("earlier")) {
+      // the archive's flips: the owner's own ticked again on its row, a clinician's listed only
+      const own = DATA.triage_earlier.flips.find((x) => x.role === "owner");
+      const clinician = DATA.triage_earlier.flips.find((x) => x.role !== "owner");
+      const flipHere = async (pmid) => {
+        root.querySelector(`[data-flip="${CSS.escape(pmid)}"]`).click(); await step();
+        document.getElementById("flipnote-" + pmid).value = "selftest";
+        root.querySelector(`[data-record="${CSS.escape(pmid)}"]`).click(); await step();
+      };
+      if (MODE === "earlier-undo" || MODE === "earlier-undo-only") { root.querySelector(`[data-unflip="${CSS.escape(own.pmid)}"]`).click(); await step(); }
+      if (MODE === "earlier-add") await flipHere(DATA.triage.find((t) => !flipOf(t.pmid)).pmid);
+      if (MODE === "earlier-flip") await flipHere(clinician.pmid);
+      if (MODE !== "earlier-undecided" && MODE !== "earlier-add" && MODE !== "earlier-undo-only") { root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await step(); }
+      finish();
+      await emit();
+      return;
+    }
+    if (MODE === "flip-undo") {
+      // a flip made and taken back changes nothing: no banner, and I'm done is accepted
+      const pmid = DATA.triage[0].pmid;
+      root.querySelector(`[data-flip="${CSS.escape(pmid)}"]`).click(); await step();
+      document.getElementById("flipnote-" + pmid).value = "selftest";
+      root.querySelector(`[data-record="${CSS.escape(pmid)}"]`).click(); await step();
+      root.querySelector(`[data-unflip="${CSS.escape(pmid)}"]`).click(); await step();
+      finish();
+      await emit();
+      return;
+    }
     card(first.id).open = true; await step();
     // a note on the approve too, so a stray selftest file is recognisable in apply-review's output
     document.getElementById("note-" + first.id).value = "selftest";
@@ -694,14 +783,14 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
             for (const id of Object.keys(saved.decisions)) {
               // a card touched while the store was awaited: a decision made then is the newer choice and
               // wins whole; otherwise the saved entry wins and gains the time saved meanwhile
-              const kept = saved.decisions[id], made = state.decisions[id];
+              const kept = ownEntry(id, saved.decisions[id]), made = state.decisions[id];
               if (!made) { state.decisions[id] = kept; continue; }
               const first = [kept.first_opened_at, made.first_opened_at].filter(Boolean).sort()[0];
               const merged = made.decision ? { ...made } : { ...kept, active_ms: ms(kept.active_ms) + ms(made.active_ms) };
               if (first) merged.first_opened_at = first;
               state.decisions[id] = merged;
             }
-            if (!state.session.started_at && saved.session) state.session = { ...saved.session, ...state.session };
+            if (!state.session.started_at && saved.session) state.session = { ...ownSession(saved.session), ...state.session };
           }
         } catch (e) { /* nothing saved, or storage is blocked */ }
         if (Object.keys(queued).length) persistLocal();
@@ -716,7 +805,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     for (const [path, body] of Object.entries(queued)) { delete queued[path]; write(path, body); }
     storeState("Connecting to the page's store…");
     db.collection("review").onSnapshot((snap) => {
-      for (const d of snap.docs) state.decisions[d.id] = d.data();
+      for (const d of snap.docs) state.decisions[d.id] = ownEntry(d.id, d.data());
       // once "I'm done" is pressed, the line that says what to do next is not replaced by a bare "saved"
       storeState(snap.metadata.hasPendingWrites ? "Saving…" : state.session.finished_at ? finishedLine() : STORE_SAVED);
       if (!openId) render(); else updateBar();
@@ -724,7 +813,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     db.doc("session/main").onSnapshot((snap) => {
       if (!snap.exists) return;
       const was = state.session.finished_at;
-      state.session = snap.data();
+      state.session = ownSession(snap.data());
       if (state.session.finished_at && !was) storeState(finishedLine());
     }, () => {});
   })();

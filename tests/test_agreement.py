@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from archive_helpers import decisions_doc, git, make_archive
+from archive_helpers import decisions_doc, git, make_archive, page_html
 from chd_curator.agreement import pairs, report, tally
 from chd_curator.archive import compact_utc
 from chd_curator.archive_read import read_archive
@@ -236,6 +236,10 @@ def test_triage_verdicts_are_neither_paired_nor_unpaired(
     triage = {"decision": "fix", "note": "n", "active_ms": 1, "flips": []}
     put(archive, tmp_path, "E.A.M", "owner", AT, [], triage=triage)
     put(archive, tmp_path, "Dr X", "second_opinion", "2026-11-19T13:00:00Z", [], triage=triage)
+    # The reader looks up the page an owner's deciding triage verdict was made on.
+    pages = archive / "TBX5" / "r1" / "pages"
+    pages.mkdir(parents=True)
+    page_html(pages / "owner.html", name="E.A.M", role="owner")
     commit(archive)
     view = read_archive(archive, "TBX5", atlas_root)
     assert pairs(view) == ([], [])
@@ -286,3 +290,34 @@ def test_a_top_level_directory_that_is_not_a_symbol_is_named_as_such(
     )
     assert run.exit_code == 2
     assert "top-level directory 'my notes' is not a gene symbol" in run.output
+
+
+@pytest.mark.parametrize(
+    ("case", "phrase"),
+    [
+        ("stray", "is not a .json file directly in a decisions directory"),
+        ("no page", "no filed page under TBX5/r1/pages matches"),
+        ("before built", "before its page was built"),
+    ],
+)
+def test_the_reader_refusals_the_help_names_reach_agreement_as_exit_2(
+    archive: Path, tmp_path: Path, atlas_root: Path, case: str, phrase: str
+) -> None:
+    build(archive, tmp_path, [fnd(G, "approve", D1)], [fnd(G, "fix", D1, "no")])
+    if case == "stray":
+        (archive / "TBX5" / "r1" / "decisions" / "notes.txt").write_text("x", encoding="utf-8")
+    elif case == "no page":
+        triage = {"decision": "approve", "note": "", "active_ms": 1, "flips": []}
+        put(archive, tmp_path, "E.A.M", "owner", "2026-11-19T14:00:00Z", [], triage=triage)
+    else:
+        src = decisions_doc(
+            tmp_path / "early.json", name="Dr Y", role="second_opinion",
+            finished_at="2026-11-19T11:00:00Z", findings=[], built_on="2026-11-19T11:30:00+00:00",
+        )  # fmt: skip
+        shutil.copy(src, archive / "TBX5" / "r1" / "decisions" / "20261119T110000Z--dr-y.json")
+    commit(archive)
+    run = CliRunner().invoke(
+        app, ["agreement", "--archive", str(archive), "--root", str(atlas_root)]
+    )
+    assert run.exit_code == 2, run.output
+    assert phrase in run.output

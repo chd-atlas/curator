@@ -16,7 +16,12 @@ be a paper the page asked to be read. A decided card's ``shown_digest`` must equ
 for that card: the page stores the card's digest with each decision and shows an older one as
 "decided on an earlier version". Such a card is LEFT OUT of the decisions file and named in
 :attr:`Converted.stale`, as the page's own download leaves it out (R-P1-44). A decision stamped
-after ``finished_at`` is refused: it was changed after "I'm done". Notes are copied untouched.
+after ``finished_at`` is refused: it was changed after "I'm done".
+A ``review/triage`` document is read only when stamped with this page's ``built_on`` (the page
+stamps every triage write with its own); one stamped for another page, or not stamped, gives only
+the ``papers_seen`` this page asks to be read and is reported in
+:attr:`Converted.triage_left_out` when it held a verdict, never refused. Notes are copied
+untouched.
 
 Exit codes at the CLI: :class:`ExportError` carries ``exit_code`` 1 when the review is not
 finished (or changed after it was) and 2 for everything else.
@@ -44,27 +49,41 @@ class ExportError(Exception):
         self.exit_code = exit_code
 
 
+def page_data_from_text(text: str, label: str) -> dict[str, Any]:
+    """The inline data of page text (``label`` names the page in each refusal)."""
+    if text.count(_DATA_OPEN) != 1:
+        raise ExportError(
+            f"{label}: expected exactly one data element, found {text.count(_DATA_OPEN)}"
+        )
+    start = text.index(_DATA_OPEN) + len(_DATA_OPEN)
+    end = text.find("</script>", start)
+    if end < 0:
+        raise ExportError(f"{label}: the data element is not closed")
+    try:
+        data = json.loads(text[start:end].replace("<\\/", "</"))
+    except ValueError as exc:
+        raise ExportError(f"{label}: the data element is not JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ExportError(f"{label}: the data element is not an object")
+    return data
+
+
+def page_data_from_bytes(raw: bytes, label: str) -> dict[str, Any]:
+    """The inline data of a page held as bytes (UTF-8), as :func:`page_data` reads a file."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ExportError(f"{label}: cannot be read as UTF-8: {exc}") from exc
+    return page_data_from_text(text, label)
+
+
 def page_data(page_html: Path) -> dict[str, Any]:
     """The page's inline data, from its one ``<script ... id="data">`` element."""
     try:
         text = page_html.read_text(encoding="utf-8")
     except OSError as exc:
         raise ExportError(f"{page_html}: cannot be read: {exc}") from exc
-    if text.count(_DATA_OPEN) != 1:
-        raise ExportError(
-            f"{page_html}: expected exactly one data element, found {text.count(_DATA_OPEN)}"
-        )
-    start = text.index(_DATA_OPEN) + len(_DATA_OPEN)
-    end = text.find("</script>", start)
-    if end < 0:
-        raise ExportError(f"{page_html}: the data element is not closed")
-    try:
-        data = json.loads(text[start:end].replace("<\\/", "</"))
-    except ValueError as exc:
-        raise ExportError(f"{page_html}: the data element is not JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ExportError(f"{page_html}: the data element is not an object")
-    return data
+    return page_data_from_text(text, str(page_html))
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -93,6 +112,7 @@ class Converted:
     decisions: dict[str, Any]
     stale: tuple[str, ...]
     cards: int
+    triage_left_out: bool = False
 
 
 def _when(value: Any, what: str) -> datetime:
@@ -185,6 +205,13 @@ def decisions_from_export(
             }
         )
     triage_doc = docs.get("triage", {})
+    # The conversion matches the page: a triage document is read (decision, note, flips) only when
+    # it is stamped with this page's built_on. Any other keeps just the papers this page asks to be
+    # read, and a verdict in it is reported as left out, never exported.
+    left_out = False
+    if triage_doc.get("built_on") != provenance["built_on"]:
+        left_out = bool(triage_doc.get("decision"))
+        triage_doc = {"papers_seen": [p for p in triage_doc.get("papers_seen", []) if p in needed]}
     for flip in triage_doc.get("flips", []):
         pmid = flip.get("pmid") if isinstance(flip, dict) else None
         if pmid not in triage_now:
@@ -236,4 +263,4 @@ def decisions_from_export(
     )
     if errors:
         raise ExportError(f"the decisions file fails its schema: {errors[0]}")
-    return Converted(result, tuple(stale), len(cards))
+    return Converted(result, tuple(stale), len(cards), left_out)

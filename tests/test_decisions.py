@@ -89,6 +89,7 @@ def stamp(export: Path, page: Path) -> None:
         "reviewer": data["reviewer"],
     }
     edit(export, "session/main", **identity)
+    edit(export, "review/triage", built_on=data["page"]["built_on"])  # the page stamps its triage
 
 
 def page_data(page: Path) -> dict[str, Any]:
@@ -467,3 +468,30 @@ def test_an_export_with_no_finding_documents_still_prints_its_count_line(
     assert read(out)["findings"] == []
     assert "0 decisions: 0 approve, 0 fix, 0 later" in output.splitlines()[-2]
     assert "3 cards on the page" in output
+
+
+@pytest.mark.parametrize("stamped", ["this page", "another page", "unstamped"])
+def test_a_triage_document_not_made_on_this_page_exports_only_the_papers_seen(
+    root: Path, export: Path, page: Path, tmp_path: Path, stamped: str
+) -> None:
+    """R-P4-18/21: the conversion matches the page. A triage verdict made on another page (or by a
+    page that stamped nothing) is left out, with a line saying so, and its papers_seen is kept
+    only for the papers this page asks to be read; it never closes a flip this page did not show."""
+    built = page_data(page)["page"]["built_on"]
+    stamp_value = {"this page": built, "another page": "2020-01-01T00:00:00+00:00"}.get(
+        stamped, ...
+    )
+    seen = ["PMID:90000002"] + ([] if stamped == "this page" else ["PMID:99999999"])
+    edit(export, "review/triage", built_on=stamp_value, papers_seen=seen)
+    out = tmp_path / "decisions.json"
+    code, output = convert(root, export, out)
+    assert code == 0, output
+    got = read(out)
+    line = "left out a triage verdict that was not made on this page"
+    if stamped == "this page":
+        assert got["triage"] is not None and got["triage"]["decision"] == "approve"
+        assert line not in output
+    else:
+        assert got["triage"] is None
+        assert got["papers_seen"] == ["PMID:90000002"]
+        assert output.count(line) == 1

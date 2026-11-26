@@ -19,12 +19,14 @@ import json
 import re
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
+from archive_helpers import commit_all, finding, flip, make_archive, put, tri
 from chd_curator import review_page
 from chd_curator.atlas import schema_validator
 from chd_curator.cli import app
@@ -32,6 +34,9 @@ from chd_curator.decisions import decisions_from_export
 
 FIXTURE = Path(__file__).parent / "fixtures" / "review"
 G, J, A = "CHDA:LIT:0000901", "CHDA:LIT:0000902", "CHDA:LIT:0000903"
+D1, D2 = "sha256:" + "2" * 64, "sha256:" + "4" * 64
+T_X = "2026-11-19T13:00:00Z"
+P1, P2, P3 = "PMID:90000001", "PMID:90000002", "PMID:90000003"
 
 
 @pytest.fixture
@@ -272,7 +277,7 @@ def test_the_papers_needed_card_and_every_quote_state_render(root: Path, stub_at
 def test_a_second_opinion_intro_says_to_press_im_done_before_downloading(
     root: Path, stub_atlas: Path
 ) -> None:
-    """R-P1-46a: downloading without 'I'm done' yields a file `review-page --with` refuses."""
+    """R-P1-46a: downloading without 'I'm done' yields a file `archive-decisions` refuses."""
     code, out = build(root, stub_atlas, "--reviewer", "Dr X", "--role", "second_opinion")
     assert code == 0, out
     dom = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
@@ -283,6 +288,33 @@ def test_a_second_opinion_intro_says_to_press_im_done_before_downloading(
         "When you are done, press I'm done first, then Download my review, "
         "then send the file back." in text
     )
+
+
+NOTICE = (
+    "Your name, verdicts and notes are kept in the atlas's private review archive, "
+    "a private GitHub repository. The curator who sent you this page, and the Claude "
+    "sessions that build review pages, read them to show your verdicts to the curator "
+    "and to measure how often reviewers agree. Nothing with your name is published "
+    "without your separate agreement. Ask the curator, and your name and notes are deleted."
+)
+
+
+def test_a_second_opinion_page_states_the_notice_and_the_owner_page_does_not(
+    root: Path, stub_atlas: Path
+) -> None:
+    """R-REG-12, R-REG-23: a clinician is told what the archive keeps before sending a verdict."""
+    assert len(NOTICE.split()) == 68
+    code, out = build(root, stub_atlas, "--reviewer", "Dr X", "--role", "second_opinion")
+    assert code == 0, out
+    dom = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+    notice = re.search(r'<p class="notice" id="notice">(.*?)</p>', dom, re.S)
+    assert notice, "the second-opinion page has no #notice"
+    assert plain(notice.group(1)) == NOTICE
+    assert dom.index('id="notice"') < dom.index("When you are done")
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    owner = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+    assert "private review archive" not in owner
 
 
 def test_the_papers_needed_card_words_every_text_source(root: Path, stub_atlas: Path) -> None:
@@ -417,27 +449,76 @@ def test_a_store_that_never_answers_falls_back_to_file_mode_after_ten_seconds(
     assert status and "kept in this browser" in status.group(1)
 
 
-def test_a_second_opinion_page_refuses_other_verdicts(
-    root: Path, stub_atlas: Path, tmp_path: Path
+def filed_by_dr_x(archive: Path, tmp_path: Path, j_digest: str = D2) -> None:
+    put(
+        archive, tmp_path, "Dr X", "second_opinion", T_X,
+        [finding(J, "fix", j_digest, T_X, "the carrier count is wrong"),
+         finding(G, "approve", D1, T_X)],
+    )  # fmt: skip
+    commit_all(archive)
+
+
+def no_page(root: Path) -> bool:
+    return not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+
+
+@pytest.mark.parametrize("marked", [True, False])
+def test_a_second_opinion_page_refuses_an_archive(
+    root: Path, stub_atlas: Path, tmp_path: Path, marked: bool
 ) -> None:
-    opinion = second_opinion_file(tmp_path / "x.json")
+    """The CLI's own refusal comes first, even for a directory that is not an archive (where the
+    reader's "not a review archive" would otherwise be the message)."""
+    if marked:
+        archive = make_archive(tmp_path)
+    else:
+        archive = tmp_path / "plain"
+        archive.mkdir()
     code, out = build(
-        root, stub_atlas, "--reviewer", "Dr Y", "--role", "second_opinion", "--with", str(opinion)
-    )
-    assert code == 2 and "drop --with" in out
-    assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+        root, stub_atlas, "--reviewer", "Dr Y", "--role", "second_opinion",
+        "--archive", str(archive),
+    )  # fmt: skip
+    assert code == 2 and "a second-opinion page reads no archive" in out
+    assert no_page(root)
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def test_with_is_gone(root: Path, stub_atlas: Path, tmp_path: Path) -> None:
+    """With colour forced (measured: FORCE_COLOR=1), Typer/Rich styles the usage error and
+    splits ``--with`` into styled segments, so the match runs on the ANSI-stripped text."""
+    opinion = second_opinion_file(tmp_path / "x.json")
+    code, out = build(root, stub_atlas, "--with", str(opinion))
+    assert code == 2 and "--with" in _ANSI.sub("", out)
+    assert no_page(root)
+
+
+def test_a_dirty_archive_refuses_the_page(root: Path, stub_atlas: Path, tmp_path: Path) -> None:
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path)
+    (archive / "stray.txt").write_text("x", encoding="utf-8")
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 2 and "uncommitted changes" in out
+    assert no_page(root)
 
 
 def test_the_owner_page_shows_a_clinicians_verdict_on_its_card(
     root: Path, stub_atlas: Path, tmp_path: Path
 ) -> None:
-    opinion = second_opinion_file(tmp_path / "x.json")
-    code, out = build(root, stub_atlas, "--with", str(opinion))
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 0, out
     page = Path(out.strip().splitlines()[-1])
     data = inline_data(page.read_text(encoding="utf-8"))
     assert data["second_opinions"][J] == [
-        {"name": "Dr X", "decision": "fix", "note": "the carrier count is wrong", "current": True}
+        {
+            "name": "Dr X",
+            "decision": "fix",
+            "note": "the carrier count is wrong",
+            "current": True,
+            "date": "2026-11-19",
+        }
     ]
     dom = dump_dom(page, "")
     assert "Dr X: needs a fix: the carrier count is wrong" in dom
@@ -447,23 +528,25 @@ def test_the_owner_page_shows_a_clinicians_verdict_on_its_card(
 @pytest.mark.parametrize(
     ("override", "why"),
     [
-        (
-            {"reviewer": {"name": "E.A.M", "role": "owner"}},
-            "its reviewer's role is not second_opinion",
-        ),
-        ({"gene": "HGNC:4173"}, "--with"),
+        ({"gene": "HGNC:4173"}, "HGNC:4173"),
         ({"symbol": "GATA4"}, "GATA4"),
         ({"format": 2}, "format"),
-        ({"session": {"started_at": None, "finished_at": None, "active_ms": 0}}, "not finished"),
+        ({"session": {"started_at": None, "finished_at": None, "active_ms": 0}}, "finished"),
     ],
 )
-def test_a_with_file_must_be_a_second_opinion_on_this_gene(
+def test_a_filed_second_opinion_for_another_gene_or_symbol_or_format_or_unfinished_refuses_the_page(
     root: Path, stub_atlas: Path, tmp_path: Path, override: dict[str, Any], why: str
 ) -> None:
+    """Committed by hand, since filing would refuse it: the reader and the gene check must."""
+    archive = make_archive(tmp_path)
     opinion = second_opinion_file(tmp_path / "x.json", **override)
-    code, out = build(root, stub_atlas, "--with", str(opinion))
+    dest = archive / "TBX5" / "r1" / "decisions" / "20261119T130000Z--dr-x.json"
+    dest.parent.mkdir(parents=True)
+    shutil.copy(opinion, dest)
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 2 and why in out
-    assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+    assert no_page(root)
 
 
 def test_review_page_refuses_to_build_when_validate_reports_an_error(
@@ -499,31 +582,32 @@ def test_a_decisions_file_with_a_malformed_date_time_fails_the_schema(
     assert list(validator.iter_errors(opinion)) == []
 
 
-def test_two_files_from_one_reviewer_are_refused(
+def test_two_files_from_one_reviewer_are_one_reviewer_and_only_the_later_verdict_shows(
     root: Path, stub_atlas: Path, tmp_path: Path
 ) -> None:
-    first = second_opinion_file(tmp_path / "a.json")
-    again = second_opinion_file(
-        tmp_path / "b.json", reviewer={"name": " dr x", "role": "second_opinion"}
-    )
-    code, out = build(root, stub_atlas, "--with", str(first), "--with", str(again))
-    assert code == 2 and "already gave" in out and "a.json" in out
-    assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr X", "second_opinion", T_X, [finding(J, "fix", D2, T_X, "wrong")])
+    later = "2026-11-19T14:00:00Z"
+    put(archive, tmp_path, " dr x", "second_opinion", later, [finding(J, "approve", D2, later)])
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    (only,) = data_of(page)["second_opinions"][J]
+    assert (only["name"], only["decision"]) == (" dr x", "approve")
+    text = plain(card_html(dump_dom(page, ""), J))
+    assert "dr x: agrees" in text and "needs a fix" not in text
 
 
 def test_a_verdict_on_an_earlier_version_of_a_card_reads_as_one(
     root: Path, stub_atlas: Path, tmp_path: Path
 ) -> None:
-    opinion = second_opinion_file(tmp_path / "x.json")
-    doc = json.loads(opinion.read_text(encoding="utf-8"))
-    doc["findings"][0]["shown_digest"] = "sha256:" + "9" * 64  # J's card has changed since
-    opinion.write_text(json.dumps(doc), encoding="utf-8")
-    code, out = build(root, stub_atlas, "--with", str(opinion))
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path, j_digest="sha256:" + "9" * 64)  # J's card has changed since
+    code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 0, out
     page = Path(out.strip().splitlines()[-1])
-    assert (
-        inline_data(page.read_text(encoding="utf-8"))["second_opinions"][J][0]["current"] is False
-    )
+    assert data_of(page)["second_opinions"][J][0]["current"] is False
     text = plain(card_html(dump_dom(page, ""), J))
     assert "Dr X: needs a fix on an earlier version: the carrier count is wrong" in text
     assert "Dr X: agrees" in plain(card_html(dump_dom(page, ""), G))  # G's digest still matches
@@ -613,11 +697,9 @@ def test_what_each_card_claims_is_what_the_data_says_card_by_card(
         ),
         encoding="utf-8",
     )
-    opinion = second_opinion_file(tmp_path / "x.json")
-    doc = json.loads(opinion.read_text(encoding="utf-8"))
-    doc["findings"][0]["shown_digest"] = "sha256:" + "9" * 64
-    opinion.write_text(json.dumps(doc), encoding="utf-8")
-    code, out = build(root, stub_atlas, "--with", str(opinion))
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path, j_digest="sha256:" + "9" * 64)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
     assert code == 0, out
     dom = dump_dom(Path(out.strip().splitlines()[-1]), "")
     g, j, a = (plain(card_html(dom, i)) for i in (G, J, A))
@@ -724,7 +806,7 @@ def test_restoring_from_the_browser_takes_only_this_pages_own_current_decisions(
     assert [(f["id"], f["decision"], f["shown_digest"]) for f in restored["findings"]] == [
         (G, "approve", shown[G])
     ]
-    assert restored["session"]["started_at"] == "2026-11-19T09:00:00.000Z"
+    assert restored["session"]["started_at"] is None  # a session no page stamped is not this one's
     assert visible(dom).count(">decided on an earlier version: decide again<") == 4  # J and A
 
 
@@ -1247,6 +1329,730 @@ def test_a_placement_reading_is_rendered_in_its_variant_card_as_text(
     assert any(plain(p) == reading for p in placed), placed
     assert "<b>bold</b>" not in mine and "&lt;b&gt;bold&lt;/b&gt;" in mine
     assert "CP-D8" not in card_html(dom, J)
+
+
+def test_the_owner_page_shows_the_owners_earlier_word_on_its_card(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    old = "sha256:" + "9" * 64
+    put(archive, tmp_path, "E.A.M", "owner", T_X, [
+        finding(J, "fix", D2, T_X, "the count is wrong"),
+        finding(A, "later", old, T_X, "ask the author"),
+        finding(G, "approve", D1, T_X, "fine"),
+    ])  # fmt: skip
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "")
+    assert "Your note, 2026-11-19: Needs a fix: the count is wrong" in plain(card_html(dom, J))
+    assert "Your note, 2026-11-19, on an earlier version: Ask later: ask the author" in plain(
+        card_html(dom, A)
+    )
+    assert "Your note, 2026-11-19: Approve: fine" in plain(card_html(dom, G))
+
+
+def test_a_verdict_with_no_card_reaches_the_fold_with_where_it_is(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    run = root / "local/literature/runs/TBX5/r1"
+    comparison = json.loads((run / "comparison.json").read_text(encoding="utf-8"))
+    del comparison["pairs"][A]
+    comparison["span_only"].remove(A)
+    (run / "comparison.json").write_text(json.dumps(comparison), encoding="utf-8")
+    gone = "CHDA:LIT:0000999"
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr X", "second_opinion", T_X, [
+        finding(A, "fix", D1, T_X, "check the proband count"),
+        finding(gone, "later", D1, T_X, "ask"),
+    ])  # fmt: skip
+    put(archive, tmp_path, "E.A.M", "owner", "2026-11-19T14:00:00Z", [
+        finding(A, "approve", D1, "2026-11-19T14:00:00Z"),
+        finding(gone, "fix", D1, "2026-11-19T14:00:00Z", "wrong gene"),
+    ])  # fmt: skip
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    dom = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+    fold = re.search(r'<details class="static-card" id="not-on-page">(.*?)</details>', dom, re.S)
+    assert fold
+    text = plain(fold.group(1))
+    assert text.startswith("Earlier verdicts on findings not on this page (3)")
+    assert (
+        f"{A}, still in the gene's file: Dr X: needs a fix: check the proband count (2026-11-19)"
+    ) in text
+    assert (
+        f"{gone}, no longer in the gene's file: You: needs a fix: wrong gene (2026-11-19)" in text
+    )
+    assert f"{gone}, no longer in the gene's file: Dr X: ask later: ask (2026-11-19)" in text
+    assert "You: approved" not in text  # the owner's plain approve of an off-page id
+
+
+def test_the_fold_is_absent_when_nothing_is_off_the_page(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    assert "not-on-page" not in visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+
+
+def test_the_page_says_what_archive_it_read(root: Path, stub_atlas: Path, tmp_path: Path) -> None:
+    archive = make_archive(tmp_path)
+    filed_by_dr_x(archive, tmp_path)
+    sha = subprocess.run(
+        ["git", "-C", str(archive), "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()  # fmt: skip
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    meta = plain(visible(dump_dom(page, "")))
+    assert f"Review archive read at {sha}: 1 decisions file from 1 reviewer" in meta
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    meta = plain(visible(dump_dom(Path(out.strip().splitlines()[-1]), "")))
+    assert "No review archive read: earlier notes and second opinions are not shown" in meta
+    code, out = build(root, stub_atlas, "--reviewer", "Dr Y", "--role", "second_opinion")
+    assert code == 0, out
+    dom = visible(dump_dom(Path(out.strip().splitlines()[-1]), ""))
+    assert "Review archive" not in dom and "No review archive" not in dom
+
+
+TICKED = "Your open flips are ticked again on their rows."
+RULE = (
+    "Approve or Needs a fix closes every flip listed here whose paper is not flipped on this "
+    "card when you decide; Ask later, or no verdict, closes none."
+)
+NO_VERDICT_AFTER_UNDO = (
+    "You changed the triage card's flips and it has no verdict. Give it a verdict (Approve, "
+    "Needs a fix or Ask later). Until then I'm done is refused."
+)
+CLEARED = "Your earlier triage verdict was cleared because a flip changed. "
+
+
+def flipped_archive(tmp_path: Path) -> Path:
+    """Dr X has flipped P1 and the owner has flipped P2; both are still open."""
+    archive = make_archive(tmp_path)
+    put(
+        archive,
+        tmp_path,
+        "Dr X",
+        "second_opinion",
+        "2026-11-19T10:00:00Z",
+        [],
+        tri("fix", flip(P1)),
+    )
+    put(archive, tmp_path, "E.A.M", "owner", "2026-11-19T11:00:00Z", [], tri("fix", flip(P2)))
+    commit_all(archive)
+    return archive
+
+
+def triage_rows(dom: str) -> dict[str, str]:
+    card = card_html(dom, "triage")
+    return {
+        re.search(r"PMID:\d+", row).group(0): plain(row)  # type: ignore[union-attr]
+        for row in re.findall(r"<tr>(.*?)</tr>", card, re.S)
+        if "PMID:" in row
+    }
+
+
+def test_the_triage_card_lists_earlier_verdicts_and_open_flips_and_ticks_only_the_owners(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = flipped_archive(tmp_path)
+    put(archive, tmp_path, "Dr Y", "second_opinion", T_X, [], tri("approve"))
+    put(archive, tmp_path, "Dr Z", "second_opinion", T_X, [], tri("later"))
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    assert [
+        (f["name"], f["role"], f["pmid"]) for f in data_of(page)["triage_earlier"]["flips"]
+    ] == [
+        ("E.A.M", "owner", P2),
+        ("Dr X", "second_opinion", P1),
+    ]
+    dom = dump_dom(page, "")
+    text = plain(card_html(dom, "triage"))
+    assert "Your note, 2026-11-19: Needs a fix: n" in text
+    assert "Dr Y, 2026-11-19: agreed" in text and "Dr Z, 2026-11-19: ask later: n" in text
+    assert "Your flip, 2026-11-19: PMID:90000002 to excluded: because" in text
+    assert "Dr X flipped PMID:90000001 to excluded, 2026-11-19: because" in text
+    assert text.count(TICKED) == 1 and text.count(RULE) == 1
+    rows = triage_rows(dom)
+    assert "flipped to excluded because Undo flip" in rows[P2]
+    assert "flipped to" not in rows[P1] and "Exclude instead" in rows[P1]
+    assert "flipped to" not in rows[P3]
+    outside = plain(visible(dom).replace(card_html(dom, "triage"), ""))
+    assert RULE not in outside and TICKED not in outside
+
+
+def test_the_rule_sentence_is_absent_when_no_flip_is_open(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    put(archive, tmp_path, "Dr Y", "second_opinion", T_X, [], tri("approve"))
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    text = plain(card_html(dump_dom(Path(out.strip().splitlines()[-1]), ""), "triage"))
+    assert "Dr Y, 2026-11-19: agreed" in text and TICKED not in text and RULE not in text
+
+
+def test_the_ticked_sentence_goes_when_the_owner_undoes_the_carried_flip(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """R-P4-21: with no row ticked any more, 'ticked again on their rows' would be false."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    kept = plain(card_html(dump_dom(page, ""), "triage"))
+    assert TICKED in kept and RULE in kept
+    undone = plain(card_html(dump_dom(page, "selftest-earlier-undo-only"), "triage"))
+    assert TICKED not in undone and RULE in undone
+
+
+@pytest.mark.parametrize(
+    ("role", "name", "mode", "refused"),
+    [
+        ("second_opinion", "Dr X", "flip-undo", False),
+        ("second_opinion", "Dr X", "noverdict", True),
+        ("owner", "E.A.M", "flip-undo", False),
+    ],
+)
+def test_the_banner_and_the_im_done_refusal_need_flips_that_differ_from_the_opening_set(
+    root: Path, stub_atlas: Path, role: str, name: str, mode: str, refused: bool
+) -> None:
+    """R-P4-21: a flip made and undone changes nothing, so it must not refuse I'm done."""
+    code, out = build(root, stub_atlas, "--reviewer", name, "--role", role)
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), f"selftest-{mode}")
+    decisions = selftest_output(dom)
+    assert (decisions["session"]["finished_at"] is None) is refused
+    banner = re.search(r'<div id="banner"([^>]*)>', visible(dom))
+    assert banner and ("hidden" not in banner.group(1)) is refused
+
+
+def test_a_listed_flip_that_is_not_the_owners_has_the_rule_and_no_ticked_sentence(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    archive = make_archive(tmp_path)
+    put(
+        archive,
+        tmp_path,
+        "Dr X",
+        "second_opinion",
+        "2026-11-19T10:00:00Z",
+        [],
+        tri("fix", flip(P1)),
+    )
+    commit_all(archive)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    text = plain(card_html(dump_dom(Path(out.strip().splitlines()[-1]), ""), "triage"))
+    assert "Dr X flipped PMID:90000001 to excluded, 2026-11-19: because" in text
+    assert text.count(RULE) == 1 and TICKED not in text
+
+
+def test_undoing_the_last_flip_without_a_verdict_shows_the_banner_and_refuses_im_done(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """With no flip left the old banner stayed silent, I'm done was accepted, the download's triage
+    was null and the undone flip stayed open on the archive."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), "selftest-earlier-undo-only")
+    decisions = selftest_output(dom)
+    assert decisions["triage"] is None and decisions["session"]["finished_at"] is None
+    banner = re.search(r'<div id="banner"[^>]*>(.*?)</div>', visible(dom), re.S)
+    assert banner and "hidden" not in banner.group(0).split(">")[0]
+    assert banner.group(1) == NO_VERDICT_AFTER_UNDO
+
+
+@pytest.mark.parametrize(
+    ("mode", "flips", "finished", "banner"),
+    [
+        ("earlier-approve", [P2], True, False),
+        ("earlier-undo", [], True, False),
+        ("earlier-undecided", None, True, False),
+        ("earlier-add", None, False, True),
+        ("earlier-flip", [P2, P1], True, False),
+    ],
+)
+def test_ticked_again_flips_reach_the_file_until_the_owner_undoes_them(
+    root: Path,
+    stub_atlas: Path,
+    tmp_path: Path,
+    atlas_root: Path,
+    mode: str,
+    flips: list[str] | None,
+    finished: bool,
+    banner: bool,
+) -> None:
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]), f"selftest-{mode}")
+    decisions = selftest_output(dom)
+    assert [
+        e.message for e in schema_validator(atlas_root, "review_decisions").iter_errors(decisions)
+    ] == []
+    if flips is None:
+        assert decisions["triage"] is None
+    else:
+        assert [f["pmid"] for f in decisions["triage"]["flips"]] == flips
+        assert decisions["triage"]["decision"] == "approve"
+    assert (decisions["session"]["finished_at"] is not None) is finished
+    shown = visible(dom)
+    hidden = re.search(r'<div id="banner"[^>]*\bhidden', shown) is not None
+    assert hidden is not banner
+    if banner:
+        # the ticked-again flip and the one made here: both are on the card, neither has a verdict
+        assert "The triage card carries 2 flipped papers and no verdict." in plain(shown)
+
+
+@pytest.mark.parametrize("route", ["download", "store"])
+@pytest.mark.parametrize("owner_flips_the_paper", [False, True])
+def test_the_page_and_the_reader_agree_on_which_flips_a_decision_closed(
+    root: Path,
+    stub_atlas: Path,
+    tmp_path: Path,
+    atlas_root: Path,
+    owner_flips_the_paper: bool,
+    route: str,
+) -> None:
+    """The contract: the page's own data is what the reader reads back as 'shown'.
+
+    Both routes to a decisions file are pinned: the page's own download and `review-decisions`
+    over an export of the page's store."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    runner = CliRunner()
+    filed = runner.invoke(
+        app, ["archive-page", "TBX5", "--run", "r1", "--page", str(page), "--archive", str(archive)]
+    )
+    assert filed.exit_code == 0, filed.output
+    decisions = tmp_path / "decisions.json"
+    if route == "download":
+        mode = "earlier-flip" if owner_flips_the_paper else "earlier-approve"
+        decisions.write_text(
+            json.dumps(selftest_output(dump_dom(page, f"selftest-{mode}"))), encoding="utf-8"
+        )
+    else:
+        dump = drive_triage(page, store=True, flip_here=P1 if owner_flips_the_paper else "")
+        exported = runner.invoke(
+            app,
+            ["review-decisions", "TBX5", "--run", "r1", "--page", str(page)]
+            + ["--export", str(export_of(dump["store"], tmp_path / "export"))]
+            + ["--out", str(decisions), "--root", str(root)],
+        )
+        assert exported.exit_code == 0, exported.output
+    done = runner.invoke(
+        app,
+        ["archive-decisions", "TBX5", "--run", "r1", "--decisions", str(decisions)]
+        + ["--archive", str(archive), "--root", str(root)],
+    )
+    assert done.exit_code == 0, done.output
+    got = runner.invoke(
+        app,
+        ["archive-state", "TBX5", "--archive", str(archive), "--root", str(root), "--json"]
+        + ["--atlas-cli", str(stub_atlas)],
+    )
+    assert got.exit_code == 0, got.output
+    rows = {r["name"]: r for r in json.loads(got.output)["triage"]["flips"]}
+    x = rows["Dr X"]
+    assert x["pending"] is owner_flips_the_paper
+    assert (x["closed_by"] is not None) is not owner_flips_the_paper
+    if x["closed_by"] is not None:
+        assert x["closed_by"].endswith("--e-a-m.json") and "/decisions/" in x["closed_by"]
+    assert rows["E.A.M"]["pending"] is True  # the owner's own flip was kept, so it is still open
+
+
+# ---- the owner's ticked-again flips must reach the store export and survive a reload -------------
+
+TRIAGE_DRIVER = """
+(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await wait(300);
+  const root = document.getElementById("root");
+  const triage = () => root.querySelector('details.card[data-id="triage"]');
+  if (window.__findingFirst) {
+    const first = [...root.querySelectorAll("details.card")].find((c) => c.dataset.id !== "triage");
+    first.open = true; await wait(50);
+  }
+  if (!window.__idle) { triage().open = true; await wait(50); }
+  if (window.__flip) {
+    const pmid = window.__flip;
+    root.querySelector(`[data-flip="${pmid}"]`).click(); await wait(50);
+    document.getElementById("flipnote-" + pmid).value = "selftest";
+    root.querySelector(`[data-record="${pmid}"]`).click(); await wait(50);
+    triage().open = true; await wait(50);
+  }
+  if (!window.__idle) {
+    root.querySelector('.actions[data-id="triage"] [data-act="approve"]').click(); await wait(50);
+  }
+  const decided = () => root.querySelector('details.card[data-id="triage"] .sum-chips').textContent;
+  const afterApprove = decided();
+  if (window.__undo) {
+    root.querySelector(`[data-unflip="${window.__undo}"]`).click(); await wait(50);
+  }
+  if (!window.__unfinished) { document.getElementById("finish").click(); await wait(300); }
+  document.getElementById("download").click(); await wait(300);
+  let kept = null;
+  try { kept = Object.fromEntries(Object.entries(localStorage)); } catch (e) { /* none */ }
+  const pre = document.createElement("pre"); pre.id = "drive-dump";
+  pre.textContent = JSON.stringify({ store: window.__store || null, download: window.__lastDownload,
+    kept, afterApprove, banner: document.getElementById("banner").textContent });
+  document.body.appendChild(pre);
+})();
+"""
+
+
+def drive_triage(
+    page: Path,
+    *,
+    store: bool,
+    undo: str = "",
+    flip_here: str = "",
+    seed: Any = None,
+    idle: bool = False,
+    unfinished: bool = False,
+    finding_first: bool = False,
+) -> dict[str, Any]:
+    """The real page, in store or file mode, approving its triage card (and undoing a flip).
+
+    With ``idle`` it touches nothing: it presses "I'm done" and Download my review, as an owner
+    does who opens a page, changes nothing and sends it."""
+    text = page.read_text(encoding="utf-8")
+    marker = '<script type="application/json" id="data">'
+    fake = STORE_FAKE if store else FILE_FAKE
+    if store and seed is not None:
+        fake = fake.replace("window.__store = {};", f"window.__store = {json.dumps(seed)};")
+    head = (
+        f"window.__undo = {json.dumps(undo)};window.__flip = {json.dumps(flip_here)};"
+        f"window.__idle = {json.dumps(idle)};window.__unfinished = {json.dumps(unfinished)};"
+        f"window.__findingFirst = {json.dumps(finding_first)};"
+        f"{TICKING_CLOCK}{fake}"
+    )
+    if not store and seed is not None:
+        entries = json.dumps(seed)
+        head += (
+            f"try {{ for (const [k, v] of Object.entries({entries})) "
+            "localStorage.setItem(k, v); } catch (e) {}"
+        )
+    harness = page.with_name("triage-drive.html")
+    harness.write_text(
+        text.replace(marker, f"<script>{head}</script>" + marker)
+        + f"<script>{TRIAGE_DRIVER}</script>",
+        encoding="utf-8",
+    )
+    dom = dump_dom(harness, "", budget=8000)
+    match = re.search(r'<pre id="drive-dump">(.*?)</pre>', dom, re.S)
+    assert match, "the driver wrote no dump"
+    dump: dict[str, Any] = json.loads(html.unescape(match.group(1)))
+    dump["dom"] = dom
+    return dump
+
+
+def export_of(store: dict[str, Any], where: Path) -> Path:
+    for path, body in store.items():
+        target = where / f"{path}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(body), encoding="utf-8")
+    return where
+
+
+def test_a_store_export_of_an_approved_triage_card_keeps_the_ticked_again_flips(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """The flips are ticked only virtually until the owner changes them; deciding the card must
+    write them, or `review-decisions` exports none and the owner's own flip reads as closed."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    dump = drive_triage(page, store=True)
+    assert [f["pmid"] for f in dump["store"]["review/triage"]["flips"]] == [P2]
+    done = tmp_path / "from-store.json"
+    got = CliRunner().invoke(
+        app,
+        [
+            "review-decisions",
+            "TBX5",
+            "--run",
+            "r1",
+            "--export",
+            str(export_of(dump["store"], tmp_path / "export")),
+        ]
+        + ["--out", str(done), "--page", str(page), "--root", str(root)],
+    )
+    assert got.exit_code == 0, got.output
+    exported = json.loads(done.read_text(encoding="utf-8"))["triage"]
+    assert [(f["pmid"], f["to"]) for f in exported["flips"]] == [(P2, "excluded")]
+    assert exported["decision"] == "approve"
+    # the download of the same page says the same
+    assert json.loads(dump["download"])["triage"]["flips"] == exported["flips"]
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_an_approved_triage_card_with_ticked_again_flips_survives_a_reload(
+    root: Path, stub_atlas: Path, tmp_path: Path, store: bool
+) -> None:
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    first = drive_triage(page, store=store)
+    seed = first["store"] if store else first["kept"]
+    assert seed, "the first visit saved nothing to reload from"
+    second = drive_triage(page, store=store, seed=seed)
+    rows = triage_rows(second["dom"])
+    assert "flipped to excluded" in rows[P2] and "flipped to" not in rows[P1]
+    assert json.loads(second["download"])["triage"]["flips"] == [
+        {"pmid": P2, "to": "excluded", "note": "because"}
+    ]
+    assert second["banner"] == ""
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_undoing_a_ticked_again_flip_after_the_verdict_clears_the_verdict(
+    root: Path, stub_atlas: Path, tmp_path: Path, store: bool
+) -> None:
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    dump = drive_triage(page, store=store, undo=P2)
+    assert "approved" in dump["afterApprove"]
+    assert json.loads(dump["download"])["triage"] is None
+    assert dump["banner"] == CLEARED + NO_VERDICT_AFTER_UNDO
+    if store:
+        assert dump["store"]["review/triage"]["flips"] == []
+        assert "decision" not in dump["store"]["review/triage"]
+
+
+def two_pages_of_one_literature_file(
+    root: Path, stub: Path, archive: Path, tmp: Path
+) -> tuple[Path, Path]:
+    """Page 1 (copied aside) and page 2, built later from the same literature file."""
+    code, out = build(root, stub, "--archive", str(archive))
+    assert code == 0, out
+    first = tmp / "page1.html"
+    shutil.copy(Path(out.strip().splitlines()[-1]), first)
+    code, out = build(root, stub, "--archive", str(archive))
+    assert code == 0, out
+    second = Path(out.strip().splitlines()[-1])
+    one, two = data_of(first)["page"], data_of(second)["page"]
+    assert one["literature_sha256"] == two["literature_sha256"]
+    assert one["built_on"] < two["built_on"]
+    return first, second
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_a_triage_state_belongs_to_the_page_it_was_made_on(
+    root: Path, stub_atlas: Path, tmp_path: Path, atlas_root: Path, store: bool
+) -> None:
+    """R-P4-18. The owner approves page 1's triage card; page 2 (same literature file, built
+    later) opens in the same browser or the same store, and the owner touches nothing. Page 2's
+    card is undecided, the owner's open flip is ticked, the file carries no triage verdict, and
+    once filed it closes nothing a clinician flipped."""
+    archive = flipped_archive(tmp_path)
+    page1, page2 = two_pages_of_one_literature_file(root, stub_atlas, archive, tmp_path)
+    first = drive_triage(page1, store=store)
+    assert "approved" in first["afterApprove"]
+    seed = first["store"] if store else first["kept"]
+    second = drive_triage(page2, store=store, seed=seed, idle=True)
+    chip = re.search(
+        r'data-id="triage".*?<div class="sum-chips">(.*?)</div></summary>', second["dom"], re.S
+    )
+    assert chip and "approved" not in chip.group(1) and "1 flipped" in chip.group(1)
+    rows = triage_rows(second["dom"])
+    assert "flipped to excluded" in rows[P2] and "flipped to" not in rows[P1]
+    download = json.loads(second["download"])
+    assert download["triage"] is None
+    assert download["session"]["finished_at"] > data_of(page2)["page"]["built_on"]
+    runner = CliRunner()
+    assert (
+        runner.invoke(
+            app,
+            [
+                "archive-page",
+                "TBX5",
+                "--run",
+                "r1",
+                "--page",
+                str(page2),
+                "--archive",
+                str(archive),
+            ],
+        ).exit_code
+        == 0
+    )
+    decisions = tmp_path / "decisions.json"
+    decisions.write_text(second["download"], encoding="utf-8")
+    done = runner.invoke(
+        app,
+        ["archive-decisions", "TBX5", "--run", "r1", "--decisions", str(decisions)]
+        + ["--archive", str(archive), "--root", str(root)],
+    )
+    assert done.exit_code == 0, done.output
+    got = runner.invoke(
+        app,
+        ["archive-state", "TBX5", "--archive", str(archive), "--root", str(root), "--json"]
+        + ["--atlas-cli", str(stub_atlas)],
+    )
+    assert got.exit_code == 0, got.output
+    rows_by_name = {r["name"]: r for r in json.loads(got.output)["triage"]["flips"]}
+    assert (rows_by_name["Dr X"]["pending"], rows_by_name["Dr X"]["closed_by"]) == (True, None)
+    assert rows_by_name["E.A.M"]["pending"] is True
+
+
+@pytest.mark.parametrize("stamp", ["this page", "another page", "none"])
+def test_restoring_a_triage_entry_and_a_session_keeps_only_what_this_page_made(
+    root: Path, stub_atlas: Path, stamp: str
+) -> None:
+    """R-P4-18: from this browser, an entry or session not stamped with this page's built_on keeps
+    only the papers this page asks to be read, and a session not stamped for it is not finished."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    info = data_of(page)["page"]
+    built = {"this page": info["built_on"], "another page": "2020-01-01T00:00:00.000Z"}.get(stamp)
+    triage = {
+        "decision": "fix",
+        "note": "n",
+        "decided_at": "2026-11-19T10:00:00Z",
+        "flips": [{"pmid": P1, "to": "excluded", "note": "r"}],
+        "papers_seen": [P2, "PMID:99999999"],
+        **({"built_on": built} if built else {}),
+    }
+    session = {
+        "started_at": "2026-11-19T09:00:00.000Z",
+        "finished_at": "2026-11-19T10:00:00.000Z",
+        **({"page": {"built_on": built}} if built else {}),
+    }
+    saved = json.dumps({"decisions": {"triage": triage}, "session": session})
+    key = f"chd-review:{info['literature_sha256']}:owner:e-a-m"
+    head = f"localStorage.setItem({json.dumps(key)},{json.dumps(saved)});"
+    restored = selftest_output(dump_dom(_persist_page(page, head), "selftest-restore"))
+    if stamp == "this page":
+        assert restored["session"]["started_at"] == "2026-11-19T09:00:00.000Z"
+        assert restored["session"]["finished_at"] == "2026-11-19T10:00:00.000Z"
+        assert restored["triage"]["decision"] == "fix"
+        assert [f["pmid"] for f in restored["triage"]["flips"]] == [P1]
+        assert restored["papers_seen"] == sorted([P2, "PMID:99999999"])
+    else:
+        # a session restored from another page is dropped whole: the page starts its own
+        assert restored["session"]["started_at"] is None
+        assert restored["session"]["finished_at"] is None
+        assert restored["triage"] is None
+        assert restored["papers_seen"] == [P2]
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_a_session_finished_on_another_page_is_not_finished_here(
+    root: Path, stub_atlas: Path, tmp_path: Path, store: bool
+) -> None:
+    """R-P4-18: page 1's "I'm done" is restored with its stamp; on page 2 the session is open."""
+    archive = flipped_archive(tmp_path)
+    page1, page2 = two_pages_of_one_literature_file(root, stub_atlas, archive, tmp_path)
+    first = drive_triage(page1, store=store)
+    assert json.loads(first["download"])["session"]["finished_at"] is not None
+    seed = first["store"] if store else first["kept"]
+    second = drive_triage(page2, store=store, seed=seed, idle=True, unfinished=True)
+    assert json.loads(second["download"])["session"]["finished_at"] is None
+
+
+def test_a_redacted_entry_renders_without_a_dangling_colon(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """After a removal an entry has the name `a removed reviewer` and an empty note: every line
+    that renders `<who>: <verdict>: <note>` leaves out `: <note>` when there is none."""
+    archive = flipped_archive(tmp_path)
+    code, out = build(root, stub_atlas, "--archive", str(archive))
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    data = data_of(page)
+    gone = {"name": "a removed reviewer", "note": ""}
+    data["second_opinions"] = {
+        G: [{"decision": "fix", "current": True, "date": "2026-11-19", **gone}]
+    }
+    earlier = data["triage_earlier"]
+    earlier["clinicians"] = [{"decision": "fix", "date": "2026-11-19", **gone}]
+    earlier["flips"] = [
+        {"role": "second_opinion", "pmid": P1, "to": "excluded", "date": "2026-11-19",
+         "finished_at": T_X, **gone}
+    ]  # fmt: skip
+    data["not_on_page"] = [
+        {"id": "CHDA:LIT:0000999", "role": "second_opinion", "decision": "later",
+         "date": "2026-11-19", "where": "no longer in the gene's file", **gone}
+    ]  # fmt: skip
+    dom = visible(dump_dom(tmp_page(page, data), ""))
+    assert '<li class="fixes">a removed reviewer: needs a fix</li>' in dom
+    triage = plain(card_html(dom, "triage"))
+    assert "a removed reviewer, 2026-11-19: needs a fix" in triage
+    assert "a removed reviewer flipped PMID:90000001 to excluded, 2026-11-19" in triage
+    assert "a removed reviewer, 2026-11-19: needs a fix:" not in triage
+    assert "to excluded, 2026-11-19:" not in triage
+    fold = plain(
+        re.search(
+            r'<details class="static-card" id="not-on-page">(.*?)</details>', dom, re.S
+        ).group(1)
+    )  # type: ignore[union-attr]
+    assert "no longer in the gene's file: a removed reviewer: ask later (2026-11-19)" in fold
+
+
+def test_an_idle_page_on_a_reused_store_converts_without_the_other_pages_verdict(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """R-P4-21: page 2 opens on page 1's store and the owner touches nothing; the store still
+    holds page 1's approved triage, and the conversion leaves it out instead of refusing."""
+    archive = flipped_archive(tmp_path)
+    page1, page2 = two_pages_of_one_literature_file(root, stub_atlas, archive, tmp_path)
+    first = drive_triage(page1, store=True)
+    second = drive_triage(page2, store=True, seed=first["store"], idle=True)
+    assert second["store"]["review/triage"]["decision"] == "approve"  # page 1's, still stored
+    decisions = tmp_path / "decisions.json"
+    done = CliRunner().invoke(
+        app,
+        ["review-decisions", "TBX5", "--run", "r1", "--page", str(page2)]
+        + ["--export", str(export_of(second["store"], tmp_path / "export"))]
+        + ["--out", str(decisions), "--root", str(root)],
+    )
+    assert done.exit_code == 0, done.output
+    assert "left out a triage verdict that was not made on this page" in done.output
+    assert json.loads(decisions.read_text(encoding="utf-8"))["triage"] is None
+
+
+@pytest.mark.parametrize("store", [True, False])
+def test_an_approval_made_after_opening_a_finding_card_first_survives_on_a_reused_store(
+    root: Path, stub_atlas: Path, tmp_path: Path, store: bool
+) -> None:
+    """R-P4-21: on page 2 over page 1's state, open a finding card, then the triage card, then
+    approve it. The verdict must stay on the page and in the store with this page's stamp (the
+    stamp in `docBody` is not redundant with the one made when a card is first opened)."""
+    archive = flipped_archive(tmp_path)
+    page1, page2 = two_pages_of_one_literature_file(root, stub_atlas, archive, tmp_path)
+    first = drive_triage(page1, store=store)
+    seed = first["store"] if store else first["kept"]
+    second = drive_triage(page2, store=store, seed=seed, finding_first=True)
+    assert "approved" in second["afterApprove"]
+    decisions = json.loads(second["download"])
+    assert decisions["triage"]["decision"] == "approve"
+    built = datetime.fromisoformat(data_of(page2)["page"]["built_on"])
+    assert datetime.fromisoformat(decisions["session"]["started_at"]) > built  # page 2's own
+    if store:
+        stored = second["store"]["review/triage"]
+        assert (
+            stored["decision"] == "approve"
+            and stored["built_on"] == data_of(page2)["page"]["built_on"]
+        )
 
 
 def blind_only_html(dom: str) -> str:

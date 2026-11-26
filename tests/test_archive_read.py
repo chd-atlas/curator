@@ -11,7 +11,18 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from archive_helpers import decisions_doc, git, make_archive
+from archive_helpers import (
+    BUILT_ON,
+    SHA,
+    commit_all,
+    finding,
+    flip,
+    git,
+    make_archive,
+    page_html,
+    put,
+    tri,
+)
 from chd_curator.archive import ArchiveError, compact_utc
 from chd_curator.archive_read import (
     ArchiveView,
@@ -26,46 +37,6 @@ from chd_curator.review_page import slug
 G, J, A = "CHDA:LIT:0000901", "CHDA:LIT:0000902", "CHDA:LIT:0000903"
 D1, D2 = "sha256:" + "2" * 64, "sha256:" + "4" * 64
 FIXTURE = Path(__file__).parent / "fixtures" / "review"
-
-
-def finding(fid: str, decision: str, digest: str, at: str, note: str = "") -> dict[str, Any]:
-    return {
-        "id": fid,
-        "shown_digest": digest,
-        "decision": decision,
-        "note": note or ("because" if decision != "approve" else ""),
-        "active_ms": 10,
-        "decided_at": at,
-    }
-
-
-def put(
-    archive: Path,
-    tmp: Path,
-    name: str,
-    role: str,
-    finished: str,
-    findings: list[dict[str, Any]],
-    triage: dict[str, Any] | None = None,
-    run: str = "r1",
-) -> Path:
-    src = decisions_doc(
-        tmp / "src.json",
-        name=name,
-        role=role,
-        finished_at=finished,
-        findings=findings,
-        triage=triage,
-    )
-    dest = archive / "TBX5" / run / "decisions" / f"{compact_utc(finished)}--{slug(name)}.json"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(src, dest)
-    return dest
-
-
-def commit_all(archive: Path) -> None:
-    git(archive, "add", "--", "TBX5")
-    git(archive, "commit", "-m", "add")
 
 
 def view(archive: Path, root: Path) -> ArchiveView:
@@ -177,15 +148,20 @@ def test_state_marks_current_and_pending_from_the_current_files(
     assert (gone["in_file"], gone["current_digest"]) == (False, None)
     assert (by_id[G]["in_file"], by_id[G]["current_digest"]) == (True, D1)
     assert gone["verdicts"][0]["pending"] is False
-    flips = got["triage"]["verdicts"][0]["flips"]
-    assert [(f["pmid"], f["pending"]) for f in flips] == [
-        ("PMID:90000001", True),
-        ("PMID:90000002", False),
-        ("PMID:99999999", False),
+    flips = got["triage"]["flips"]
+    assert [(f["pmid"], f["pending"], f["closed_by"]) for f in flips] == [
+        ("PMID:90000001", True, None),
+        ("PMID:90000002", False, None),
+        ("PMID:99999999", False, None),
     ]
+    assert set(got["triage"]) == {"verdicts", "flips"}
     assert set(got["triage"]["verdicts"][0]) == {
-        "name", "role", "decision", "note", "finished_at", "file", "flips",
+        "name", "role", "decision", "note", "finished_at", "file",
     }  # fmt: skip
+    assert set(flips[0]) == {
+        "pmid", "to", "note", "name", "role", "finished_at", "file", "closed_by", "pending",
+    }  # fmt: skip
+    assert got["format"] == 2
     assert set(by_id[G]["verdicts"][0]) == {
         "name", "role", "decision", "note", "shown_digest", "finished_at", "decided_at",
         "file", "current", "pending",
@@ -200,7 +176,273 @@ def test_later_on_the_current_digest_is_pending(
     commit_all(archive)
     got = state(view(archive, atlas_root), {G: D1}, {})
     assert got["findings"][0]["verdicts"][0]["pending"] is True
-    assert got["triage"] == {"verdicts": []}
+    assert got["triage"] == {"verdicts": [], "flips": []}
+
+
+P = "PMID:90000001"
+T0, T1, T2, T3 = (f"2026-11-19T{h}:00:00Z" for h in ("10", "11", "12", "13"))
+SHOWN = {"archive": {"read": True}}
+
+
+def shows(*entries: tuple[str, str, str, str]) -> dict[str, Any]:
+    """Page data for a page that read the archive and showed each (name, role, pmid, when)."""
+    return {
+        **SHOWN,
+        "triage_earlier": {
+            "flips": [{"name": n, "role": r, "pmid": p, "finished_at": t} for n, r, p, t in entries]
+        },
+    }
+
+
+def flip_rows(archive: Path, root: Path, triage_map: dict[str, str]) -> list[dict[str, Any]]:
+    got = state(view(archive, root), {}, triage_map)
+    rows: list[dict[str, Any]] = got["triage"]["flips"]
+    return rows
+
+
+UNDECIDED = {P: "pending"}
+
+
+def test_a_later_verdict_that_does_not_mention_a_paper_leaves_its_flip_pending(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    # A clinician's page shows no earlier verdicts, so their next file approves the triage
+    # without a flip; that says nothing about the paper they flipped.
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "Dr X", "second_opinion", T1, [], tri("approve"))
+    commit_all(archive)
+    (row,) = flip_rows(archive, atlas_root, UNDECIDED)
+    assert (row["name"], row["file"].endswith("20261119T100000Z--dr-x.json")) == ("Dr X", True)
+    assert (row["pending"], row["closed_by"]) == (True, None)
+    got = state(view(archive, atlas_root), {}, UNDECIDED)["triage"]["verdicts"]
+    assert [(v["name"], v["decision"]) for v in got] == [("Dr X", "approve")]
+
+
+def test_a_reviewers_latest_flip_of_a_paper_is_their_word_on_it(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P, "included")))
+    put(archive, tmp_path, "Dr X", "second_opinion", T2, [], tri("fix", flip(P, "excluded")))
+    put(archive, tmp_path, "Dr X", "second_opinion", T1, [], tri("fix", flip(P, "included")))
+    commit_all(archive)
+    (row,) = flip_rows(archive, atlas_root, UNDECIDED)
+    assert (row["to"], row["finished_at"]) == ("excluded", "2026-11-19T12:00:00+00:00")
+
+
+@pytest.mark.parametrize(
+    ("owner_decision", "page", "owner_flips", "closed"),
+    [
+        ("approve", "shown", False, True),
+        ("fix", "shown", False, True),
+        ("later", "shown", False, False),  # "later" closes nothing
+        ("approve", "no archive key", False, False),  # not shown, not closed
+        ("approve", "read false", False, False),
+        ("approve", "shown elsewhere", False, False),  # the page listed another paper
+        ("approve", "shown", True, False),  # the owner flips the paper again: it stays open
+    ],
+)
+def test_the_owner_closes_a_clinicians_flip_only_by_deciding_a_page_that_showed_it(
+    owner_decision: str,
+    page: str,
+    owner_flips: bool,
+    closed: bool,
+    archive: Path,
+    tmp_path: Path,
+    atlas_root: Path,
+) -> None:
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P)))
+    extra: dict[str, Any] = {
+        "shown": shows(("Dr X", "second_opinion", P, "2026-11-19T12:00:00+02:00")),
+        "no archive key": {},
+        "read false": {
+            "archive": {"read": False},
+            "triage_earlier": shows(("Dr X", "second_opinion", P, T0))["triage_earlier"],
+        },
+        "shown elsewhere": shows(("Dr X", "second_opinion", "PMID:90000002", T0)),
+    }[page]
+    put(archive, tmp_path, "E.A.M", "owner", T1, [],
+        tri(owner_decision, *([flip(P, "included")] if owner_flips else [])),
+        page_extra=extra)  # fmt: skip
+    commit_all(archive)
+    rows = {r["name"]: r for r in flip_rows(archive, atlas_root, UNDECIDED)}
+    mine = rows["Dr X"]
+    if closed:
+        assert mine["closed_by"] == "TBX5/r1/decisions/20261119T110000Z--e-a-m.json"
+    else:
+        assert mine["closed_by"] is None
+    assert mine["pending"] is (not closed)
+    assert ("E.A.M" in rows) is owner_flips
+
+
+def test_a_page_that_showed_an_earlier_flip_does_not_close_the_same_reviewers_later_one(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "Dr X", "second_opinion", T2, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "E.A.M", "owner", T3, [], tri("approve"),
+        page_extra=shows(("Dr X", "second_opinion", P, T0)))  # fmt: skip
+    commit_all(archive)
+    (row,) = flip_rows(archive, atlas_root, UNDECIDED)
+    assert (row["finished_at"], row["pending"], row["closed_by"]) == (
+        "2026-11-19T12:00:00+00:00",
+        True,
+        None,
+    )
+
+
+def test_a_shown_flip_closes_only_the_reviewer_it_names_at_a_shared_instant(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "Dr Y", "second_opinion", T0, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "E.A.M", "owner", T1, [], tri("approve"),
+        page_extra=shows(("Dr X", "second_opinion", P, T0)))  # fmt: skip
+    commit_all(archive)
+    rows = {r["name"]: r for r in flip_rows(archive, atlas_root, UNDECIDED)}
+    assert (rows["Dr X"]["pending"], rows["Dr Y"]["pending"]) == (False, True)
+    assert rows["Dr Y"]["closed_by"] is None
+
+
+@pytest.mark.parametrize("shower", ["first", "second"])
+@pytest.mark.parametrize("decided_on", ["shower", "other"])
+@pytest.mark.parametrize("differs", ["built_on", "sha", "name"])
+def test_a_decision_takes_the_flips_of_the_page_it_was_made_on_not_another_in_the_run(
+    differs: str, decided_on: str, shower: str, archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    # Two owner pages in one run differ in exactly one of the four matched fields (owner pages
+    # may carry different names; every owner file is still keyed "owner"). One shows P.
+    base = {"built_on": BUILT_ON, "sha": SHA, "name": "E.A.M"}
+    other = {
+        "built_on": "2026-11-19T10:30:00+00:00",
+        "sha": "sha256:" + "b" * 64,
+        "name": "Dr Z",
+    }
+    plain, changed = dict(base), {**base, differs: other[differs]}
+    shows_p, quiet = (plain, changed) if shower == "first" else (changed, plain)
+    pages = archive / "TBX5" / "r1" / "pages"
+    pages.mkdir(parents=True)
+    for v, extra in ((shows_p, shows(("Dr X", "second_opinion", P, T0))), (quiet, {})):
+        page_html(
+            pages / f"{compact_utc(v['built_on'])}--{slug(v['name'])}-{v['sha'][7:9]}.html",
+            built_on=v["built_on"], sha=v["sha"], name=v["name"], extra=extra,
+        )  # fmt: skip
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P)))
+    v = shows_p if decided_on == "shower" else quiet
+    put(archive, tmp_path, v["name"], "owner", T1, [], tri("approve"),
+        built_on=v["built_on"], sha=v["sha"], page=False)  # fmt: skip
+    commit_all(archive)
+    rows = {r["name"]: r for r in flip_rows(archive, atlas_root, UNDECIDED)}
+    assert rows["Dr X"]["pending"] is (decided_on != "shower")
+
+
+def test_the_earliest_owner_verdict_that_closed_a_flip_is_named(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P)))
+    for finished, built in ((T2, "2026-11-19T11:30:00+00:00"), (T1, BUILT_ON)):
+        put(archive, tmp_path, "E.A.M", "owner", finished, [], tri("approve"),
+            built_on=built, page_extra=shows(("Dr X", "second_opinion", P, T0)))  # fmt: skip
+    commit_all(archive)
+    (row,) = flip_rows(archive, atlas_root, UNDECIDED)
+    assert row["closed_by"] == "TBX5/r1/decisions/20261119T110000Z--e-a-m.json"
+
+
+def test_an_owners_own_flip_is_closed_by_a_later_decision_that_showed_it(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    put(archive, tmp_path, "E.A.M", "owner", T0, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "E.A.M", "owner", T1, [], tri("approve"), built_on=T0,
+        page_extra=shows(("E.A.M", "owner", P, T0)))  # fmt: skip
+    commit_all(archive)
+    (row,) = flip_rows(archive, atlas_root, UNDECIDED)
+    assert (row["pending"], row["closed_by"]) == (
+        False,
+        "TBX5/r1/decisions/20261119T110000Z--e-a-m.json",
+    )
+
+
+def test_a_flip_to_what_the_paper_already_is_is_not_pending_and_not_closed(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(P, "excluded")))
+    put(archive, tmp_path, "Dr Y", "second_opinion", T0, [], tri("fix", flip(P, "included")))
+    commit_all(archive)
+    rows = {r["name"]: r for r in flip_rows(archive, atlas_root, {P: "excluded"})}
+    assert (rows["Dr X"]["pending"], rows["Dr X"]["closed_by"]) == (False, None)
+    assert (rows["Dr Y"]["pending"], rows["Dr Y"]["closed_by"]) == (True, None)
+    assert [r["name"] for r in flip_rows(archive, atlas_root, {})] == ["Dr X", "Dr Y"]
+    assert [r["pending"] for r in flip_rows(archive, atlas_root, {})] == [False, False]
+
+
+def test_flips_sort_owner_first_then_by_key_and_paper(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    q = "PMID:90000002"
+    put(archive, tmp_path, "Dr Y", "second_opinion", T0, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("fix", flip(q), flip(P)))
+    put(archive, tmp_path, "E.A.M", "owner", T1, [], tri("fix", flip(P)))
+    commit_all(archive)
+    rows = flip_rows(archive, atlas_root, {P: "included", q: "included"})
+    assert [(r["name"], r["pmid"]) for r in rows] == [
+        ("E.A.M", P),
+        ("Dr X", P),
+        ("Dr X", q),
+        ("Dr Y", P),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("page_extra", "phrase"),
+    [
+        ({"archive": {"read": True}}, "triage_earlier"),
+        ({"archive": {"read": True}, "triage_earlier": {}}, "triage_earlier.flips"),
+        ({"archive": {"read": True}, "triage_earlier": {"flips": {}}}, "triage_earlier.flips"),
+        (shows(("Dr X", "clinician", P, T0)), "role"),
+        (shows(("Dr X", "second_opinion", P, "2026-11-19T10:00:00")), "finished_at"),
+        (shows(("Dr X", "second_opinion", P, "yesterday")), "finished_at"),
+        (
+            {
+                **shows(("Dr X", "second_opinion", P, T0)),
+                "triage_earlier": {"flips": [{"name": "Dr X"}]},
+            },
+            "pmid",
+        ),
+        ({"archive": {"read": True}, "triage_earlier": {"flips": [7]}}, "triage_earlier.flips"),
+    ],
+)
+def test_a_page_that_read_the_archive_must_say_which_flips_it_showed(
+    page_extra: dict[str, Any], phrase: str, archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    put(archive, tmp_path, "E.A.M", "owner", T1, [], tri("approve"), page_extra=page_extra)
+    commit_all(archive)
+    with pytest.raises(ArchiveError, match=phrase) as raised:
+        view(archive, atlas_root)
+    assert ".html" in str(raised.value)
+
+
+def test_an_owner_decision_with_no_filed_page_is_a_broken_archive(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    path = put(archive, tmp_path, "E.A.M", "owner", T1, [], tri("fix", flip(P)))
+    shutil.rmtree(archive / "TBX5" / "r1" / "pages")
+    commit_all(archive)
+    with pytest.raises(ArchiveError, match="no filed page") as raised:
+        view(archive, atlas_root)
+    assert path.name in str(raised.value)
+
+
+def test_a_decisions_file_hidden_from_the_working_tree_is_still_read_from_head(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    f = [finding(G, "approve", D1, "2026-11-19T12:00:00Z")]
+    path = put(archive, tmp_path, "E.A.M", "owner", "2026-11-19T12:00:00Z", f)
+    commit_all(archive)
+    git(archive, "update-index", "--skip-worktree", str(path.relative_to(archive)))
+    path.unlink()
+    assert git(archive, "status", "--porcelain") == ""
+    got = view(archive, atlas_root)
+    assert got.files == 1
+    assert latest(got.verdicts)[("owner", G)].decision == "approve"
 
 
 @pytest.mark.parametrize(
@@ -212,6 +454,7 @@ def test_later_on_the_current_digest_is_pending(
         ("unfinished", "not finished"),
         ("twogenes", "two genes"),
         ("notjson", "is not a .json file"),
+        ("nested", "is not a .json file"),
         ("ownerkey", "keyed as the owner"),
         ("twice", f"decides {G} more than once"),
     ],
@@ -244,6 +487,9 @@ def test_read_archive_refuses(
         put(archive, tmp_path, "E.A.M", "owner", "2026-11-19T12:00:00Z", both)
     elif case == "notjson":
         (first.parent / "notes.txt").write_text("hello", "utf-8")
+    elif case == "nested":
+        (first.parent / "old").mkdir()
+        shutil.copy(first, first.parent / "old" / first.name)
     commit_all(archive)
     if case == "dirty":
         (archive / "stray.txt").write_text("x", "utf-8")
@@ -361,3 +607,27 @@ def test_archive_state_refuses_another_gene_and_a_dirty_archive(
     code, out = run_state(archive, root, stub_atlas)
     assert code == 2
     assert "uncommitted" in out
+
+
+def test_a_file_finished_before_its_page_was_built_is_refused_by_the_reader(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    """The reader refuses what filing refuses: a session that ended before its page existed."""
+    put(archive, tmp_path, "Dr X", "second_opinion", T0, [], tri("approve"),
+        built_on="2026-11-19T10:30:00+00:00")  # fmt: skip
+    commit_all(archive)
+    with pytest.raises(ArchiveError, match="before its page was built"):
+        view(archive, atlas_root)
+
+
+def test_an_owner_file_finished_before_the_flip_it_claims_to_close_closes_nothing(
+    archive: Path, tmp_path: Path, atlas_root: Path
+) -> None:
+    """A page may be said to show a flip filed after the owner finished (a stale restore did
+    that): such a file cannot have closed it, whatever its page's data says."""
+    put(archive, tmp_path, "Dr X", "second_opinion", T2, [], tri("fix", flip(P)))
+    put(archive, tmp_path, "E.A.M", "owner", T1, [], tri("approve"), built_on=T0,
+        page_extra=shows(("Dr X", "second_opinion", P, T2)))  # fmt: skip
+    commit_all(archive)
+    (row,) = flip_rows(archive, atlas_root, UNDECIDED)
+    assert (row["pending"], row["closed_by"]) == (True, None)

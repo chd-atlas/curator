@@ -202,11 +202,14 @@ def require_identity(archive: Path) -> None:
         _local(archive, key)
 
 
-def commit(archive: Path, paths: Sequence[Path], message: str, contents: Sequence[bytes]) -> str:
+def commit(
+    archive: Path, paths: Sequence[Path], message: str, contents: Sequence[bytes | None]
+) -> str:
     """Commit exactly ``paths`` (relative to ``archive``); the short sha.
 
     ``contents`` are the bytes each path must hold in ``HEAD`` afterwards; a path that does
-    not is a :class:`GitError` (git can exit 0 having committed nothing for a path).
+    not is a :class:`GitError` (git can exit 0 having committed nothing for a path). A content
+    of None means the path must be absent from ``HEAD`` (a deletion).
     """
     names = [str(p) for p in paths]
     added = _git(archive, "add", "--", *names)
@@ -373,7 +376,8 @@ def check_decisions(doc: object, label: str, symbol: str, validator: Draft202012
     """Refuse a decisions file the archive could not read back; the file name it must carry.
 
     ``label`` names the file in each message. The checks, in order: a JSON object, the atlas's
-    schema, a finished session, the right symbol, a second opinion not keyed as the owner, no
+    schema, a finished session, a session that did not finish before its page was built
+    (parsed instants), the right symbol, a second opinion not keyed as the owner, no
     finding decided twice, and a reviewer name with an ASCII letter or digit for the file
     name. The returned name is ``<finished_at, compact UTC>--<reviewer slug>.json``.
     """
@@ -387,6 +391,11 @@ def check_decisions(doc: object, label: str, symbol: str, validator: Draft202012
     finished = doc["session"]["finished_at"]
     if not finished:
         raise ArchiveError(f"{label}: the session is not finished (session.finished_at is empty)")
+    built = doc["page"]["built_on"]
+    if datetime.fromisoformat(finished) < datetime.fromisoformat(built):
+        raise ArchiveError(
+            f"{label}: the session finished at {finished}, before its page was built at {built}"
+        )
     if doc["symbol"] != symbol:
         raise ArchiveError(f"{label} is for {doc['symbol']}, not {symbol}")
     name = str(doc["reviewer"]["name"])
