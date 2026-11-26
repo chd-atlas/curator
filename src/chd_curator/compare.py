@@ -176,6 +176,30 @@ def _without_approval(finding: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in finding.items() if k not in APPROVAL_FIELDS}
 
 
+def differing_fields(
+    first: Mapping[str, Any], second: Mapping[str, Any], schema: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """The names, sorted, of the fields in which two copies of one finding differ as a judge
+    would see them: after the notation rules, a variant's span ignored, ``review marks`` named
+    as ``compare`` names them. Empty when the copies agree or differ only in span.
+
+    Fields ``diff`` does not compare (``summary``, ``locators``, ``review_note``,
+    ``shares_probands_with``, the bookkeeping) are not read."""
+    ruled_a, ruled_b = _ruled(first), _ruled(second)
+    diffed = diff_findings([ruled_a], [ruled_b], schema, by_id=True)
+    if str(first["id"]) not in diffed.pairs:
+        raise CompareError(f"{first['id']}: the two copies do not pair by id")
+    defs = schema["$defs"]
+    found = _verdict(
+        ruled_a,
+        ruled_b,
+        diffed.fields.get(str(first["id"]), ()),
+        variant_schema(defs),
+        defs,
+    )
+    return tuple(name for name, _, _ in found.fields)
+
+
 def _judged_pair(
     batch: str,
     first: Mapping[str, Any],

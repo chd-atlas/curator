@@ -162,8 +162,10 @@ def _safe(raw: bytes, path: Path) -> Any:
         raise MergeError(f"{path}: cannot be read as YAML: {exc}") from exc
 
 
-def _read_curated(root: Path, run: RunPaths, symbol: str) -> _Curated:
-    if run.merge.exists():
+def _read_curated(
+    root: Path, run: RunPaths, symbol: str, *, refuse_merged: bool = True
+) -> _Curated:
+    if refuse_merged and run.merge.exists():
         raise MergeError(
             f"{run.merge}: the run is already merged; nothing was written. Remove the file only "
             "if the earlier merge stopped part-way"

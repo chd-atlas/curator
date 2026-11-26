@@ -476,6 +476,13 @@ def load_normalise(p: RunPaths) -> dict[tuple[str, int], str | None]:
 
 
 def load_judge(p: RunPaths) -> dict[str, tuple[JudgeDecision, ...]]:
+    """The judges' decisions by finding id.
+
+    A judge keys the decisions for a finding it added by its own local id (``CHDA:LIT:07...``).
+    When the run has an ``assemble.json``, such a key is read under the id ``assemble`` gave the
+    finding in the literature file, because the review page and the quote check look findings up
+    there. A key ``assemble.json`` does not map stays as it is, so a run not yet assembled is
+    refused by naming that id; a mapped key that is already another key is refused."""
     found: dict[str, tuple[JudgeDecision, ...]] = {}
     for path in _yaml_files(p.judge, ".decisions.yaml"):
         data = _read_yaml(path)
@@ -508,7 +515,18 @@ def load_judge(p: RunPaths) -> dict[str, tuple[JudgeDecision, ...]]:
                     )
                 )
             found[str(finding_id)] = tuple(decisions)
-    return found
+    assembled = load_assemble(p)
+    if assembled is None or not assembled.added:
+        return found
+    mapped: dict[str, tuple[JudgeDecision, ...]] = {}
+    for key, decisions_ in found.items():
+        final = assembled.added.get(key, key)
+        if final in mapped:
+            raise RunFormatError(
+                f"{p.assemble}: maps {key} to {final}, but the judge files already decide {final}"
+            )
+        mapped[final] = decisions_
+    return mapped
 
 
 @dataclass(frozen=True)

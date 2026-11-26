@@ -689,18 +689,10 @@ def _delete_key(entry: CommentedMap, key: str) -> None:
         entry.ca.items[keys[-2]] = [None, None, moved, None]
 
 
-def with_fields_set(
-    raw: bytes, finding_id: str, fields: Mapping[str, Any], drop: Sequence[str] = ()
-) -> bytes:
-    """The file's new content with `fields` set on one finding and the `drop` keys removed.
-
-    A key the finding holds keeps its place; a new one goes after the nearest key before it in
-    the model's order, as ``with_normalised`` places a variant's. Values are styled as
-    ``with_findings_added`` styles them. A blank line or note that followed the finding moves
-    to its new last key. An unknown finding, or a key the model does not have, is refused.
-    Nothing else changes; not validated here (the caller's write is).
-    """
-    data = load_round_trip(raw)
+def _set_fields(
+    data: CommentedMap, finding_id: str, fields: Mapping[str, Any], drop: Sequence[str]
+) -> None:
+    """`with_fields_set`'s edit, done in place on a loaded file."""
     entry = next((f for f in data.get("findings") or [] if str(f.get("id")) == finding_id), None)
     if entry is None:
         raise RecordError(f"no such finding: {finding_id}")
@@ -721,6 +713,46 @@ def with_fields_set(
     for key in drop:
         if key in entry:
             _delete_key(entry, key)
+
+
+def with_fields_set(
+    raw: bytes, finding_id: str, fields: Mapping[str, Any], drop: Sequence[str] = ()
+) -> bytes:
+    """The file's new content with `fields` set on one finding and the `drop` keys removed.
+
+    A key the finding holds keeps its place; a new one goes after the nearest key before it in
+    the model's order, as ``with_normalised`` places a variant's. Values are styled as
+    ``with_findings_added`` styles them. A blank line or note that followed the finding moves
+    to its new last key. An unknown finding, or a key the model does not have, is refused.
+    Nothing else changes; not validated here (the caller's write is).
+    """
+    data = load_round_trip(raw)
+    _set_fields(data, finding_id, fields, drop)
+    return dump_bytes(data)
+
+
+def with_findings_replaced(raw: bytes, findings: Sequence[Mapping[str, Any]]) -> bytes:
+    """The file's new content with each of `findings` replacing the file's finding of its id.
+
+    A replacement is whole: every key the new finding holds is set (styled as
+    ``with_findings_added`` styles it) and every key it lacks is removed, so ``verified_by`` and
+    an approval go unless the new finding carries them. Findings stay where they were, and a
+    blank line or note that followed one stays with it. An id not in the file, or one given
+    twice, is refused (:class:`RecordError`), and so is a key the model does not have. Not
+    validated here (the caller's write is).
+    """
+    data = load_round_trip(raw)
+    ids = [str(f.get("id")) for f in findings]
+    repeated = sorted({i for i in ids if ids.count(i) > 1})
+    if repeated:
+        raise RecordError(f"more than one replacement for {', '.join(repeated)}")
+    held = {str(f.get("id")): f for f in data.get("findings") or []}
+    for finding in findings:
+        fid = str(finding["id"])
+        if fid not in held:
+            raise RecordError(f"no such finding: {fid}")
+        gone = [k for k in held[fid] if k not in finding]
+        _set_fields(data, fid, {k: v for k, v in finding.items() if k != "id"}, gone)
     return dump_bytes(data)
 
 
@@ -729,7 +761,8 @@ def with_triage(raw: bytes, changes: Sequence[TriageChange]) -> bytes:
 
     An entry must hold the change's ``before`` decision (else refused, as is an unknown PMID).
     ``reason`` and ``note`` are written, in that order, directly after ``decision`` (replacing
-    ones already there) when the change carries them; every other key keeps its place.
+    ones already there) when the change carries them; a change to ``included`` first removes the
+    entry's ``reason`` and ``note``; every other key keeps its place.
     """
     data = load_round_trip(raw)
     entries = {str(t.get("pmid")): t for t in data.get("triage") or []}
@@ -743,6 +776,10 @@ def with_triage(raw: bytes, changes: Sequence[TriageChange]) -> bytes:
                 f"not {change.before!r}"
             )
         entry["decision"] = change.after
+        if change.after == "included":
+            for key in ("note", "reason"):
+                if key in entry:
+                    _delete_key(entry, key)
         for key, value in (("reason", change.reason), ("note", change.note)):
             if value is None:
                 continue

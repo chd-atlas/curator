@@ -36,6 +36,7 @@ from ruamel.yaml.error import YAMLError
 from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, sources, variantvalidator
+from chd_curator import assemble as assemble_module
 from chd_curator import batch as batch_module
 from chd_curator import compare as compare_module
 from chd_curator import merge as merge_module
@@ -1127,6 +1128,50 @@ def compare(
     except OSError as exc:
         raise _fail(f"{paths.dir}: cannot be written: {exc}", 1) from None
     typer.echo(compare_module.summary(prepared.comparison))
+
+
+@app.command("assemble")
+def assemble(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    verifier: str | None = typer.Option(
+        None,
+        "--verifier",
+        help="The blind reader's name for verified_by; a backfill needs it, other runs read it.",
+    ),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Apply a run's judge findings, the notation rules and the blind agreement to the gene's file.
+
+    A judge's finding replaces the finding of its id, or is added under the next LIT id; the
+    notation rules then fix every finding of the run; and each finding the readers agreed on
+    gains `verified_by`. Writes assemble.json, the id registry (when findings were added) and the
+    literature file, in that order. A re-run replaces the findings it already numbered and
+    changes no byte when nothing was edited. Exit 2, nothing written, for every refusal: no
+    merge.json or comparison.json, a judge finding no decision covers, a field changed that no
+    decision names, a judged paper with no Publication, an assemble.json naming ids the file
+    lacks, or a file changed since it was read. Exit 1 on an OS error.
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        paths = RunPaths(root, symbol, run)
+        built = assemble_module.assemble_run(root, paths, approved, verifier)
+        assemble_module.commit(paths, built)
+    except (
+        AtlasError,
+        assemble_module.AssembleError,
+        merge_module.MergeError,
+        RunFormatError,
+        RecordError,
+        DiffError,
+        WriteRefused,
+    ) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(assemble_module.summary(built.record))
 
 
 def _atlas_commit(root: Path) -> str | None:

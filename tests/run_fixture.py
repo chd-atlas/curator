@@ -75,9 +75,10 @@ def copy_run_fixture(destination: Path) -> RunPaths:
 
 
 def copy_judge_round(p: RunPaths) -> None:
-    """Copy the judge round (``judging/`` and ``judge/``) into the run."""
-    shutil.copytree(JUDGE_FIXTURE / "judging", p.judging)
-    shutil.copytree(JUDGE_FIXTURE / "judge", p.judge)
+    """Copy the judge round (``judging/``, ``judge/``) into the run; ``judging/`` may already
+    hold the manifests ``compare`` wrote."""
+    shutil.copytree(JUDGE_FIXTURE / "judging", p.judging, dirs_exist_ok=True)
+    shutil.copytree(JUDGE_FIXTURE / "judge", p.judge, dirs_exist_ok=True)
 
 
 def atlas_digest_root(destination: Path, atlas_root: Path) -> Path:

@@ -2,7 +2,7 @@
 
 Literature curation tools for the [CHD atlas](https://github.com/chd-atlas/chd-atlas.github.io).
 `chd-curator` searches PubMed for a published gene, records the hits, adds papers and compares a
-blind second extraction with the first, and writes a drafted gene synthesis. It also checks a
+blind second extraction with the first, applies the judges' findings, and writes a drafted gene synthesis. It also checks a
 run's quotes against their papers, builds the review page a person reads, and turns that page's
 saved decisions into the file the atlas applies. Five Claude Code skills drive agents through the
 extraction steps.
@@ -237,6 +237,70 @@ appears in two batches, a blind finding does not satisfy the atlas's `Finding` s
 names an id outside its batch or an undeclared field. A re-run is otherwise allowed, so a
 corrected verify file can be compared again: it removes the `judging/judge-*.md` files an earlier
 run wrote, writes the new ones and `comparison.json` last. It exits 1 on an OS error.
+
+### Assemble a run
+
+`chd-curator assemble <SYMBOL> --run <run id> [--verifier NAME] [--root .] [--atlas-cli PATH]`
+applies the judges' findings, the notation rules and the blind agreement to the gene's literature
+file. It needs `merge.json` and `comparison.json`, and reads every `judging/judge-NN.findings.yaml`
+(a `findings:` list; each finding must cite a paper of batch NN, satisfy the atlas's `Finding`
+schema and carry no approval field or `verified_by`). The steps, in this order:
+
+1. **The judges' findings.** A finding whose id `comparison.json` lists under `differs` or
+   as read by the first pass only replaces the file's finding of that id; every `differs` id
+   needs one, and a first-pass-only finding the judges did not write stays as merged. A finding with a local id
+   `CHDA:LIT:07NNnnn` is added, numbered from the `LIT` counter in (year, PMID number, position)
+   order; its paper needs a Publication (otherwise the command names `chd-curator
+   add-publication <PMID>` and exits 2), and a triage entry that `merge` set to `excluded` goes
+   back to `included`, without its reason and note; an entry anyone else excluded is refused. A
+   `shares_probands_with` entry naming a judge's local id becomes its final id. The judge's
+   decisions file stays as the judge wrote it: the run's loader for decisions (so `quotes` and `review-page`) reads a
+   decision keyed by a local id under its final id once `assemble.json` maps it, and an
+   unassembled run is refused by `review-page`, naming that id.
+2. **What a judge may change.** In a `new` run (a `reread` plan is treated alike, though no command writes one yet, so that
+   path is untested) a judge's finding for a `differs` id may
+   differ from the file's finding (both after the notation rules, a variant's `as_reported` span
+   ignored) only in the compared fields `comparison.json` lists for it; `review marks` lists the
+   marks. `summary`, `locators`, `review_note` and `shares_probands_with` are not compared and are
+   free. A first-pass-only finding may change in any field. In a `backfill` run only the declared
+   fields are taken from a judge's finding, and every other field of it must equal the file's;
+   a backfill adds no finding.
+3. **Notation.** The rules apply to every finding of the run (the findings `merge.json` numbered,
+   the replaced ones and the added ones); in a backfill only when `variants` is a declared field,
+   and only to the findings `comparison.json` paired, because elsewhere they would rewrite the
+   variants of an approved finding. Each change is recorded in `assemble.json` with its rules.
+4. **Blind agreement.** `verified_by` goes on every finding listed as agreed or span only. A
+   judged or added finding carries none. In a `new` run the name is the verify
+   findings' `extracted_by` (one value across `verify/`, else exit 2; `--verifier` is refused); a
+   backfill's blind pass records no `extracted_by`, so `--verifier NAME` is required there.
+
+A last check re-reads the result and refuses it if anything but these steps moved: a finding
+dropped, reordered or added unexpectedly, a field changed that no step above is entitled to
+change, another triage entry, or a top-level key.
+
+The files are written in this order: `assemble.json`; the id registry (only when findings were
+added); the literature file. `assemble.json` goes first on purpose: it maps each judge's local id
+to the final id, and written last, a crash between it and the literature file would let a re-run
+number the same added finding again. A crash after it leaves a map naming ids the file lacks, and
+a re-run then exits 2 saying a previous assemble stopped part-way; the curator removes
+`assemble.json` and runs again. After a complete assemble a re-run changes no byte. After a fix
+round (the judge edited a finding, an added one still under its local id) a re-run replaces the
+findings it numbered before under their final ids, numbers only local ids it has not seen, and
+keeps every earlier mapping and notation record in `assemble.json`.
+
+Example output: `replaced 1 judged findings, added 1 (CHDA:LIT:0009005), fixed 0 names by rule,
+marked 2 verified`. The line states the totals `assemble.json` records: `replaced` counts the
+judged findings that replaced a merged one (a fix round's second replacement of an added finding
+is not counted again), `added` every finding numbered, across rounds. It exits 2, with every file
+unchanged, for every refusal: no `merge.json` or `comparison.json`; modes in `batches.json` and
+`merge.json` that disagree; a judge file that is misnamed or for a batch the plan lacks; a judge
+finding with an approval field or `verified_by`, citing a paper outside its batch, repeating an
+id, or with an id that is neither a `differs` id, a first-pass-only id, an id of an earlier assemble
+nor `CHDA:LIT:07...`; a `differs` id with no judge finding, or one `comparison.json` also lists as
+agreed; a field changed that no decision names; a paper with no Publication; a triage entry
+someone else excluded; an `assemble.json` naming ids the file lacks; a blind pass with more than
+one `extracted_by`; a file any write would refuse (the atlas's schema, an anchor, an approval
+changed) or changed since it was read. It exits 1 on an OS error.
 
 ### Review a run
 

@@ -1,0 +1,173 @@
+gene: HGNC:11604
+searches:
+  - id: 1
+    source: pubmed
+    query: ("TBX5"[tiab]) AND stub-query
+    run_on: 2026-11-19
+    hits: 4
+    new_hits: 4
+triage:
+  - pmid: PMID:91000001
+    search: 1
+    decision: included
+  - pmid: PMID:91000002
+    search: 1
+    decision: included
+  - pmid: PMID:91000003
+    search: 1
+    decision: included
+  - pmid: PMID:91000004
+    search: 1
+    decision: excluded
+    reason: not_human_genetics
+    note: A mouse model; no human carrier is reported.
+findings:
+  - id: CHDA:LIT:0009001
+    publication: PMID:91000001
+    design: family_segregation
+    methods: [exome]
+    count_unit: families
+    screened: 1
+    carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+    variant_classes: [snv_indel]
+    variants:
+      - id: 1
+        as_reported: "c.1085delC, p.(Pro362Argfs*8)"
+        locator: {kind: in_text, element: Results - Patients}
+        kind: snv_indel
+        reported: {c: c.1085delC, p: "p.(Pro362Argfs*8)"}
+        placement: unplaced
+        zygosity: heterozygous
+        carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+        phenotypes: [HP:0001631]
+    phenotypes: [HP:0001631]
+    lesion_groups: [septal]
+    syndromic: syndromic
+    shares_probands_with: unknown
+    locators:
+      - {kind: in_text, element: Results - Patients}
+    summary: One family with Holt-Oram syndrome had a heterozygous frameshift in TBX5 and an atrial septal defect in the affected father and daughter.
+    extracted_by: agent:literature-extract/claude-sonnet-5-5
+    verified_by: agent:literature-verify/claude-opus-5-5
+    approved_by: E.A.M
+    approved_on: 2026-11-19
+    approved_digest: sha256:da89e4f29593f9c5f6d69e21c6ab229d68deb4aff156edccbbc6d9554f061c53
+  - id: CHDA:LIT:0009002
+    publication: PMID:91000002
+    design: case_report
+    methods: [exome]
+    count_unit: probands
+    screened: 1
+    carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+    variant_classes: [snv_indel]
+    variants:
+      - id: 1
+        as_reported: c.100C>T, p.(Arg34Ter)
+        locator: {kind: in_text, element: Results - Patients}
+        kind: snv_indel
+        placement: unplaced
+        reported: {c: c.100C>T, p: p.(Arg34Ter)}
+        zygosity: heterozygous
+        with: [2]
+        phase: trans
+        carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+        phenotypes: [HP:0001629]
+      - id: 2
+        as_reported: c.250G>A, p.(Gly84Arg)
+        locator: {kind: in_text, element: Results - Patients}
+        kind: snv_indel
+        placement: unplaced
+        reported: {c: c.250G>A, p: p.(Gly84Arg)}
+        zygosity: heterozygous
+        with: [1]
+        phase: trans
+        carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+        phenotypes: [HP:0001629]
+    phenotypes: [HP:0001629]
+    lesion_groups: [septal]
+    syndromic: isolated
+    shares_probands_with: unknown
+    locators:
+      - {kind: in_text, element: Results - Patients}
+    summary: One proband with a ventricular septal defect carried two heterozygous TBX5 variants, a nonsense and a missense, in trans.
+    extracted_by: agent:literature-extract/claude-sonnet-5-5
+    verified_by: agent:literature-verify/claude-opus-5-5
+  - id: CHDA:LIT:0009003
+    publication: PMID:91000002
+    design: family_segregation
+    methods: [exome]
+    count_unit: families
+    screened: 2
+    carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+    variant_classes: [snv_indel]
+    variants:
+      - id: 1
+        as_reported: c.835C>T, p.(Arg279Ter)
+        locator: {kind: in_text, element: Results - Family B}
+        kind: snv_indel
+        placement: unplaced
+        reported: {c: c.835C>T, p: p.(Arg279Ter)}
+        zygosity: heterozygous
+        carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+        phenotypes: [HP:0001631]
+    phenotypes: [HP:0001631]
+    lesion_groups: [septal]
+    syndromic: isolated
+    shares_probands_with: unknown
+    locators:
+      - {kind: in_text, element: Results - Family B}
+    summary: One family carried a heterozygous TBX5 nonsense variant, and three relatives had an atrial septal defect.
+    extracted_by: agent:literature-extract/claude-sonnet-5-5
+  - id: CHDA:LIT:0009004
+    publication: PMID:91000003
+    design: case_report
+    methods: [exome]
+    count_unit: probands
+    screened: 1
+    carriers: {de_novo: 0, inherited: 0, origin_unknown: 1}
+    variant_classes: [snv_indel]
+    variants:
+      - id: 1
+        as_reported: c.700+1G>A
+        locator: {kind: in_text, element: Abstract}
+        kind: snv_indel
+        placement: unplaced
+        reported: {c: c.700+1G>A}
+        zygosity: heterozygous
+        carriers: {de_novo: 0, inherited: 0, origin_unknown: 1}
+        phenotypes: [HP:0001631]
+    phenotypes: [HP:0001631]
+    lesion_groups: [septal]
+    syndromic: isolated
+    shares_probands_with: unknown
+    locators:
+      - {kind: in_text, element: Abstract}
+    summary: Exome sequencing of a fetus with an atrial septal defect found a heterozygous TBX5 splice-donor variant.
+    extracted_by: agent:literature-extract/claude-sonnet-5-5
+    verified_by: agent:literature-verify/claude-opus-5-5
+  - id: CHDA:LIT:0009005
+    publication: PMID:91000002
+    design: case_report
+    methods: [exome]
+    count_unit: probands
+    screened: 1
+    carriers: {de_novo: 0, inherited: 0, origin_unknown: 1}
+    variant_classes: [snv_indel]
+    variants:
+      - id: 1
+        as_reported: c.998G>A, p.(Gly333Glu)
+        locator: {kind: supplementary, file: supplementary table S1, row: null, sheet: null}
+        kind: snv_indel
+        placement: unplaced
+        reported: {c: c.998G>A, p: p.(Gly333Glu)}
+        zygosity: heterozygous
+        carriers: {de_novo: 0, inherited: 0, origin_unknown: 1}
+        phenotypes: [HP:0001631]
+    phenotypes: [HP:0001631]
+    lesion_groups: [septal]
+    syndromic: isolated
+    shares_probands_with: unknown
+    locators:
+      - {kind: supplementary, file: supplementary table S1, row: null, sheet: null}
+    summary: A third carrier listed in a supplementary table had a heterozygous TBX5 missense variant and an atrial septal defect.
+    extracted_by: agent:literature-verify/claude-opus-5-5

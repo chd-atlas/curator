@@ -272,6 +272,7 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "batch",
         "merge",
         "compare",
+        "assemble",
         "review-page",
         "review-decisions",
         "archive-page",

@@ -1,0 +1,507 @@
+"""``chd-curator assemble``: the judges' findings, the notation rules and the blind agreement,
+applied to the gene's curated literature file.
+
+A merged and compared run is assembled in one pass. Everything is read once, every output is
+built in memory and checked, and only then is anything written; a refusal is an
+:class:`AssembleError` (or one of the readers' errors) raised before the first write, so a
+refused run leaves every file as it was. The writes go in this order: ``assemble.json``; the id
+registry (when findings were added); the literature file. ``assemble.json`` is first because the
+ids it maps are what stops a re-run numbering an added finding twice: written last, a crash
+between the two files would let a re-run number it again. Written first, a crash leaves a map
+naming ids the file lacks, and a re-run refuses until the curator removes ``assemble.json``.
+
+What is applied, in this order:
+
+1. The judges' findings (``judging/judge-NN.findings.yaml``). A finding whose id is in the
+   comparison's ``differs`` or ``only_first`` replaces the file's finding of that id. A finding
+   with a local id ``CHDA:LIT:07...`` is added, numbered from the counter; one a previous
+   ``assemble.json`` mapped (under its local id or its final id) replaces the finding it was
+   numbered as. In a backfill only the declared fields of a judged finding are taken from the
+   judge, and every other field must equal the file's.
+2. The notation rules, on every finding of the run (a backfill: on the findings the comparison
+   paired, when ``variants`` is a declared field).
+3. ``verified_by`` on the findings the comparison lists as ``agreed`` or ``span_only``. A judged
+   finding carries none.
+
+In a new or reread run (a reread plan is handled like a new one; no command writes one yet, so
+that path is untested), whatever a judge changed in a finding that ``differs`` lists must be a
+field ``differs`` names for it, so a field nobody recorded a decision for cannot reach the owner
+looking like blind agreement. A last check re-reads the result and refuses it if anything but
+these changes moved.
+
+Exit codes (see the CLI): 2 is every refusal, 1 an ``OSError``.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Final
+
+from chd_curator.compare import differing_fields
+from chd_curator.diff import DiffError, parse_findings_file
+from chd_curator.merge import (
+    PREFIX,
+    _Curated,
+    _read_curated,
+    _safe,
+    _years,
+    append_numbered,
+)
+from chd_curator.notation import NotationChange, apply_rules
+from chd_curator.records import (
+    is_empty,
+    read_counter,
+    with_counter,
+    with_fields_set,
+    with_findings_replaced,
+    with_triage,
+    with_verified,
+)
+from chd_curator.run import (
+    AssembleRecord,
+    BatchPlan,
+    MergeRecord,
+    RunFormatError,
+    RunPaths,
+    TriageChange,
+    load_assemble,
+    load_batches,
+    load_comparison,
+    load_merge,
+    load_pass,
+    write_assemble,
+)
+from chd_curator.write import (
+    APPROVAL_FIELDS,
+    check_literature,
+    check_registry,
+    write_literature,
+    write_registry,
+)
+
+_JUDGE_FILE: Final = re.compile(r"judge-([0-9]{2,})\.findings\.yaml")
+_JUDGE_MANIFEST: Final = re.compile(r"judge-[0-9]{2,}\.md")
+_LOCAL_ID: Final = re.compile(r"CHDA:LIT:07[0-9]{5}")
+_ANY: Final = frozenset({"*"})
+
+
+class AssembleError(Exception):
+    """A refusal; the command exits 2 and has written nothing."""
+
+
+@dataclass(frozen=True)
+class Assembled:
+    """Everything an assemble writes, built and checked before the first write."""
+
+    curated: _Curated
+    record: AssembleRecord
+    literature: bytes
+    registry: bytes | None
+    added: frozenset[str]
+
+
+def _judge_findings(
+    run: RunPaths, plan: BatchPlan, schema: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Every finding of ``judging/judge-NN.findings.yaml``, each citing a paper of batch NN."""
+    batches = {b.id: b for b in plan.batches}
+    found: list[dict[str, Any]] = []
+    seen: dict[str, Path] = {}
+    if not run.judging.is_dir():
+        return found
+    for path in sorted(run.judging.iterdir()):
+        if _JUDGE_MANIFEST.fullmatch(path.name):
+            continue
+        match = _JUDGE_FILE.fullmatch(path.name)
+        if match is None or match.group(1) not in batches:
+            raise AssembleError(
+                f"{path}: is not a judge file of a batch in batches.json (judge-NN.md or "
+                "judge-NN.findings.yaml); a misnamed file would drop its findings without a sound"
+            )
+        batch = batches[match.group(1)]
+        try:
+            rows = parse_findings_file(path.read_bytes(), schema)
+        except DiffError as exc:
+            raise AssembleError(f"{path}: {exc}") from None
+        for row in rows:
+            fid = str(row["id"])
+            for name in (*APPROVAL_FIELDS, "verified_by"):
+                if name in row:
+                    raise AssembleError(f"{path}: {fid} carries {name}; a judge's finding may not")
+            if row["publication"] not in batch.papers:
+                raise AssembleError(
+                    f"{path}: {fid} cites {row['publication']}, which batch {batch.id} "
+                    "does not read"
+                )
+            if fid in seen:
+                raise AssembleError(f"{path}: {fid} is also in {seen[fid]}")
+            seen[fid] = path
+            found.append(row)
+    return found
+
+
+def _rewrite_refs(
+    finding: Mapping[str, Any],
+    mapping: Mapping[str, str],
+    held: frozenset[str],
+    *,
+    others_ok: bool = False,
+) -> dict[str, Any]:
+    """The finding with a ``shares_probands_with`` local id replaced by its final id.
+
+    A ref in neither `mapping` nor `held` is refused, unless `others_ok` leaves it for
+    ``append_numbered``, which maps the ids of the findings it numbers and refuses the rest."""
+    out = dict(finding)
+    shared = out.get("shares_probands_with")
+    if isinstance(shared, list):
+        rewritten = []
+        for ref in shared:
+            if ref in mapping:
+                rewritten.append(mapping[ref])
+            elif ref in held or others_ok:
+                rewritten.append(ref)
+            else:
+                raise AssembleError(
+                    f"{finding['id']}: shares_probands_with names {ref}, which is neither a "
+                    "finding the judges added nor one in the file"
+                )
+        out["shares_probands_with"] = rewritten
+    return out
+
+
+def _verifier(run: RunPaths, plan: BatchPlan, given: str | None, to_mark: bool) -> str | None:
+    """The name to write as ``verified_by``, or None when nothing is marked.
+
+    A backfill takes ``--verifier`` (its blind pass records no ``extracted_by``) and refuses a run
+    without it. Any other run refuses ``--verifier`` and takes the one ``extracted_by`` its verify
+    findings share, refusing two or more."""
+    if plan.mode == "backfill":
+        if not given:
+            raise AssembleError(
+                "a backfill needs --verifier NAME: its blind pass records no extracted_by"
+            )
+        return given if to_mark else None
+    if given is not None:
+        raise AssembleError(
+            f"--verifier belongs to a backfill; a {plan.mode} run takes it from the blind pass's "
+            "extracted_by"
+        )
+    names: set[str] = set()
+    if run.verify.is_dir():
+        for path in sorted(run.verify.glob("batch-*.findings.yaml")):
+            try:
+                rows = load_pass(path)
+            except RunFormatError as exc:
+                raise AssembleError(str(exc)) from None
+            for row in rows:
+                by = row.get("extracted_by")
+                if not isinstance(by, str) or not by:
+                    raise AssembleError(f"{path}: {row['id']} has no extracted_by")
+                names.add(by)
+    if len(names) > 1:
+        raise AssembleError(
+            f"the blind pass's findings name more than one extracted_by: {', '.join(sorted(names))}"
+        )
+    if not to_mark:
+        return None
+    if not names:
+        raise AssembleError(f"{run.verify}: holds no finding to read the verifier's name from")
+    return next(iter(names))
+
+
+def _declared_edit(
+    file_finding: Mapping[str, Any], judge: Mapping[str, Any], declared: frozenset[str]
+) -> tuple[dict[str, Any], list[str]]:
+    """What a backfill takes from a judge's whole finding: the declared fields it changes, and
+    the keys to drop. Any other field of the judge's finding must equal the file's."""
+    skip = {*declared, *APPROVAL_FIELDS, "verified_by"}
+    stray = sorted(
+        k for k in (set(file_finding) | set(judge)) - skip if file_finding.get(k) != judge.get(k)
+    )
+    if stray:
+        raise AssembleError(
+            f"{judge['id']}: the judge changed fields the run did not declare: {stray}"
+        )
+    fields = {
+        k: judge[k]
+        for k in sorted(declared)
+        if k in judge
+        and file_finding.get(k) != judge[k]
+        and not (is_empty(file_finding.get(k)) and is_empty(judge[k]))
+    }
+    drop = [k for k in sorted(declared) if k not in judge and not is_empty(file_finding.get(k))]
+    if "verified_by" in file_finding:
+        drop.append("verified_by")
+    return fields, drop
+
+
+def _check_nothing_else_moved(
+    c: _Curated,
+    after: bytes,
+    *,
+    new_ids: frozenset[str],
+    allowed: Mapping[str, frozenset[str]],
+    triage: Sequence[TriageChange],
+    verifier: str | None,
+) -> None:
+    """Refuse a result where anything moved that no step above is entitled to move."""
+    before, now = _safe(c.lit, c.lit_path), _safe(after, c.lit_path)
+    other = {"findings", "triage"}
+    if {k: v for k, v in before.items() if k not in other} != {
+        k: v for k, v in now.items() if k not in other
+    }:
+        raise AssembleError(f"{c.lit_path}: a top-level key other than findings and triage moved")
+    changed = {t.pmid for t in triage}
+    old_t, new_t = before.get("triage") or [], now.get("triage") or []
+    if [t["pmid"] for t in old_t] != [t["pmid"] for t in new_t]:
+        raise AssembleError(f"{c.lit_path}: the triage entries or their order changed")
+    for was, is_ in zip(old_t, new_t, strict=True):
+        if was != is_ and was["pmid"] not in changed:
+            raise AssembleError(f"{was['pmid']}: its triage entry changed without a reason")
+    old_f, new_f = before.get("findings") or [], now.get("findings") or []
+    old_ids = [str(f["id"]) for f in old_f]
+    new_all = [str(f["id"]) for f in new_f]
+    if new_all[: len(old_ids)] != old_ids or set(new_all[len(old_ids) :]) != new_ids:
+        raise AssembleError(f"{c.lit_path}: findings were dropped, reordered or added unexpectedly")
+    if len(new_all) != len(old_ids) + len(new_ids):
+        raise AssembleError(f"{c.lit_path}: a finding id appears twice")
+    for was, is_ in zip(old_f, new_f, strict=False):
+        fid = str(was["id"])
+        permitted = allowed.get(fid, frozenset())
+        moved = {k for k in set(was) | set(is_) if was.get(k) != is_.get(k)}
+        if permitted != _ANY and (stray := sorted(moved - permitted)):
+            raise AssembleError(f"{fid}: fields nobody was entitled to change moved: {stray}")
+        if "verified_by" in moved and is_.get("verified_by") not in (None, verifier):
+            raise AssembleError(f"{fid}: verified_by is {is_.get('verified_by')!r}, not {verifier}")
+
+
+def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None) -> Assembled:
+    """Build the assembled literature file and ``assemble.json`` for a run; see the module
+    docstring. Reads only. Raises :class:`AssembleError` (or ``MergeError``, ``RunFormatError``,
+    ``DiffError``, ``RecordError``) for every refusal."""
+    merged = load_merge(run)
+    if merged is None:
+        raise AssembleError(
+            f"{run.merge}: the run has no merge.json; run `chd-curator merge` first"
+        )
+    if not run.comparison.is_file():
+        raise AssembleError(
+            f"{run.comparison}: the run has no comparison.json; run `chd-curator compare` first"
+        )
+    plan = load_batches(run)
+    if plan.mode != merged.mode:
+        raise AssembleError(
+            f"merge.json is a {merged.mode} merge but batches.json plans {plan.mode}"
+        )
+    comparison = load_comparison(run)
+    c = _read_curated(root, run, approved, refuse_merged=False)
+    schema: Any = c.lit_validator.schema
+    previous = load_assemble(run) or AssembleRecord((), {}, (), (), None)
+    for local, final in previous.added.items():
+        if final not in c.findings:
+            raise AssembleError(
+                f"{run.assemble}: maps {local} to {final}, which {c.lit_path} lacks. A previous "
+                "assemble stopped part-way: remove assemble.json and run it again"
+            )
+    judged = _judge_findings(run, plan, schema)
+    backfill = plan.mode == "backfill"
+    declared = frozenset(plan.fields)
+
+    differs, only_first = set(comparison.differs), set(comparison.only_first)
+    prior_final = set(previous.added.values())
+    replacements: dict[str, dict[str, Any]] = {}  # file id -> the judge's finding
+    additions: list[dict[str, Any]] = []
+    for finding in judged:
+        jid = str(finding["id"])
+        if jid in differs or jid in only_first:
+            target = jid
+        elif not backfill and jid in previous.added:
+            target = previous.added[jid]
+        elif not backfill and jid in prior_final:
+            target = jid
+        elif not backfill and _LOCAL_ID.fullmatch(jid):
+            additions.append(finding)
+            continue
+        else:
+            raise AssembleError(
+                f"judging: {jid} is neither a finding that differs or was read by one pass "
+                "only, nor an added finding (CHDA:LIT:07...)"
+                + ("; a backfill adds no finding" if backfill else "")
+            )
+        if target in replacements:
+            raise AssembleError(f"judging: more than one judge finding replaces {target}")
+        replacements[target] = {**finding, "id": target}
+    for fid in sorted(differs):
+        if fid not in replacements:
+            raise AssembleError(f"{fid}: differs, but no judge finding decides it")
+    for fid in sorted(replacements):
+        if fid not in c.findings:
+            raise AssembleError(f"{fid}: a judge finding replaces it, but {c.lit_path} lacks it")
+    for fid in sorted(set(replacements) & {*comparison.agreed, *comparison.span_only}):
+        raise AssembleError(f"{fid}: comparison.json lists it as agreed and as judged")
+
+    if not backfill:
+        for fid in sorted(differs):
+            stray = sorted(
+                set(differing_fields(c.findings[fid], replacements[fid], schema))
+                - set(comparison.differs[fid])
+            )
+            if stray:
+                raise AssembleError(
+                    f"{fid}: the judge changed {stray}, which no decision covers "
+                    f"(differs lists {list(comparison.differs[fid])})"
+                )
+
+    # Papers of judge-added findings: a Publication and an `included` triage entry each.
+    registered = {str(r["id"]) for r in _safe(c.pubs, c.pub_path).get("publications") or []}
+    added_back = {fid for fid in replacements if fid in prior_final}
+    cited = sorted(
+        {str(f["publication"]) for f in [*additions, *(replacements[i] for i in added_back)]}
+        | {
+            str(replacements[fid]["publication"])
+            for fid in replacements
+            if fid not in prior_final
+            and str(replacements[fid]["publication"]) != str(c.findings[fid]["publication"])
+        }
+    )
+    for pmid in cited:
+        if pmid not in registered:
+            raise AssembleError(
+                f"{pmid}: a judge's finding cites it but publications.yaml lacks it; run "
+                f"`chd-curator add-publication {pmid}` first"
+            )
+    triage: list[TriageChange] = []
+    for pmid in cited:
+        entry = c.triage.get(pmid)
+        if entry is None:
+            raise AssembleError(f"{pmid}: is not in the triage of {c.lit_path}")
+        decision = entry.get("decision")
+        if decision == "included":
+            continue
+        if decision == "excluded" and _excluded_by_merge(merged, pmid):
+            triage.append(TriageChange(pmid, "excluded", "included", None, None))
+            continue
+        raise AssembleError(
+            f"{pmid}: a judge's finding cites it but its triage decision is {decision!r}, "
+            "which merge did not set: someone else decided it"
+        )
+
+    # Build the literature file in memory.
+    literature = c.lit
+    counter = read_counter(c.reg, PREFIX)
+    new_map: dict[str, str] = {}
+    new_counter = counter
+    if additions:
+        prepared = [
+            _rewrite_refs(f, previous.added, frozenset(c.findings), others_ok=True)
+            for f in additions
+        ]
+        years = _years(c, run, sorted({str(f["publication"]) for f in additions}))
+        literature, new_map, new_counter = append_numbered(literature, prepared, years, counter)
+    mapping = {**previous.added, **new_map}
+    held = frozenset(c.findings) | frozenset(new_map.values())
+    new_ids = frozenset(new_map.values())
+
+    if backfill:
+        for fid in sorted(replacements):
+            fields, drop = _declared_edit(c.findings[fid], replacements[fid], declared)
+            literature = with_fields_set(literature, fid, fields, drop)
+    else:
+        whole = [_rewrite_refs(replacements[fid], mapping, held) for fid in sorted(replacements)]
+        if whole:
+            literature = with_findings_replaced(literature, whole)
+    if triage:
+        literature = with_triage(literature, triage)
+
+    # The notation rules.
+    if backfill:
+        scope = sorted(comparison.pairs) if "variants" in declared else []
+    else:
+        scope = sorted({*merged.ids.values(), *replacements, *new_ids})
+    now = {str(f["id"]): f for f in _safe(literature, c.lit_path).get("findings") or []}
+    for fid in scope:
+        if fid not in now:
+            raise AssembleError(f"{fid}: is in the run but not in {c.lit_path}")
+    changes: list[NotationChange] = []
+    ruled: list[dict[str, Any]] = []
+    for fid in scope:
+        fixed, found = apply_rules(now[fid])
+        if found:
+            changes.extend(found)
+            ruled.append(fixed)
+    if ruled:
+        if backfill:
+            for fixed in ruled:
+                literature = with_fields_set(
+                    literature, str(fixed["id"]), {"variants": fixed["variants"]}
+                )
+        else:
+            literature = with_findings_replaced(literature, ruled)
+
+    # Blind agreement.
+    to_mark = sorted({*comparison.agreed, *comparison.span_only})
+    name = _verifier(run, plan, verifier, bool(to_mark))
+    if to_mark and name is not None:
+        literature = with_verified(literature, to_mark, name)
+
+    allowed: dict[str, frozenset[str]] = {}
+    for fid in replacements:
+        allowed[fid] = _ANY if not backfill else frozenset({*declared, "verified_by"})
+    for fixed in ruled:
+        allowed[str(fixed["id"])] = _allow(allowed, str(fixed["id"]), "variants")
+    for fid in to_mark:
+        allowed[fid] = _allow(allowed, fid, "verified_by")
+    _check_nothing_else_moved(
+        c, literature, new_ids=new_ids, allowed=allowed, triage=triage, verifier=name
+    )
+
+    touched = {*replacements, *new_ids}
+    kept = [n for n in previous.notation if n.finding not in touched]
+    notation = sorted([*kept, *changes], key=lambda n: n.finding)
+    replaced = tuple(sorted(fid for fid in replacements if fid not in prior_final))
+    record = AssembleRecord(replaced, mapping, tuple(notation), tuple(to_mark), name)
+    registry = with_counter(c.reg, PREFIX, new_counter) if new_counter != counter else None
+    return Assembled(c, record, literature, registry, new_ids)
+
+
+def _allow(allowed: Mapping[str, frozenset[str]], fid: str, key: str) -> frozenset[str]:
+    held = allowed.get(fid, frozenset())
+    return held if held == _ANY else held | {key}
+
+
+def _excluded_by_merge(merged: MergeRecord, pmid: str) -> bool:
+    return any(t.pmid == pmid and t.after == "excluded" for t in merged.triage)
+
+
+def commit(run: RunPaths, built: Assembled) -> None:
+    """Check every write, then write ``assemble.json``, the registry and the literature file."""
+    c = built.curated
+    check_literature(
+        c.lit_path, built.literature, c.lit_validator, expected=c.lit, added=built.added
+    )
+    if built.registry is not None:
+        check_registry(c.reg_path, built.registry, expected=c.reg)
+    write_assemble(run, built.record)
+    if built.registry is not None:
+        write_registry(c.reg_path, built.registry, expected=c.reg)
+    write_literature(
+        c.lit_path, built.literature, c.lit_validator, expected=c.lit, added=built.added
+    )
+
+
+def summary(record: AssembleRecord) -> str:
+    """The line ``assemble`` prints: the totals ``assemble.json`` records."""
+    ids = sorted(record.added.values())
+    if not ids:
+        added = "added 0"
+    elif len(ids) == 1:
+        added = f"added 1 ({ids[0]})"
+    else:
+        added = f"added {len(ids)} ({ids[0]}..{ids[-1]})"
+    return (
+        f"replaced {len(record.replaced)} judged findings, {added}, "
+        f"fixed {len(record.notation)} names by rule, marked {len(record.verified)} verified"
+    )
