@@ -243,11 +243,6 @@ def test_fake_records_the_peak_of_concurrent_calls() -> None:
     assert b.peak == 4  # type: ignore[attr-defined]
 
 
-def test_claude_code_waits_for_a_later_task() -> None:
-    with pytest.raises(BackendError, match="later task"):
-        make_backend(spec("claude_code"))
-
-
 # ---- fix round 1 ----
 
 HTTP_KINDS = [("openai_compat", {"base_url": "http://h/v1"}), ("anthropic", {})]

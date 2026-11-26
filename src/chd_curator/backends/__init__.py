@@ -14,6 +14,7 @@ from chd_curator.backends.base import (
     now,
     urllib_post,
 )
+from chd_curator.backends.claude_code import ClaudeCode
 from chd_curator.backends.fake import Fake
 from chd_curator.backends.openai_compat import OpenAICompat
 from chd_curator.backends.replay import Replay
@@ -38,4 +39,6 @@ def make_backend(spec: BackendSpec, *, post: Post = urllib_post, clock: Clock = 
         return Replay(spec)
     if spec.kind == "fake":
         return Fake(spec)
-    raise BackendError("the claude_code backend is built in a later task")
+    if spec.kind == "claude_code":
+        return ClaudeCode(spec, post, clock)
+    raise BackendError(f"{spec.id}: unknown backend kind {spec.kind!r}")
