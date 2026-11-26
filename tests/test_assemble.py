@@ -131,6 +131,7 @@ def test_assemble_on_the_fixture_gives_the_literal_file_record_and_summary(
     assert (p.dir / "assemble.json").read_text() == (
         "{\n"
         ' "added": {\n  "CHDA:LIT:0701001": "CHDA:LIT:0009005"\n },\n'
+        ' "approvals": {\n  "CHDA:LIT:0009003": null,\n  "CHDA:LIT:0009005": null\n },\n'
         ' "format": 1,\n'
         ' "judged": {\n'
         '  "CHDA:LIT:0009003": '
@@ -210,6 +211,36 @@ def test_a_fix_round_after_the_owner_approved_a_judged_finding_leaves_it_untouch
     assert record is not None
     assert record.replaced == (JUDGED,) and record.added == {ADDED: ADDED_FINAL}
     assert sorted(record.judged) == [JUDGED, ADDED_FINAL]
+    # recorded after the re-run: the owner's approval of 0009003 is what the file then carried
+    assert record.approvals == {JUDGED: "sha256:" + "0" * 64, ADDED_FINAL: None}
+
+
+def test_a_backfill_fix_round_may_change_a_finding_whose_approval_the_first_assemble_voided(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    """R-P2-66(a) amended: the finding sent back as "Needs a fix" still carries its old, void
+    approval, which nobody re-granted, so the judge may change it again. Its approval fields
+    stay exactly as they were."""
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [somewhere]\n",
+    )
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(JUDGED_BACKFILL)
+    args = ("--verifier", "agent:literature-verify/test-model")
+    assert _assemble(p, stub_atlas, *args)[0] == 0
+    approval = {
+        k: v for k, v in _findings(p)["CHDA:LIT:0009001"].items() if k.startswith("approved")
+    }
+    assert approval["approved_by"] == "E.A.M"
+    _edit(_judge1(p), "cohorts: [elsewhere]", "cohorts: [another]")
+    code, out = _assemble(p, stub_atlas, *args)
+    assert code == 0, out
+    after = _findings(p)["CHDA:LIT:0009001"]
+    assert after["cohorts"] == ["another"]
+    assert {k: v for k, v in after.items() if k.startswith("approved")} == approval
 
 
 def test_a_judge_that_changes_an_approved_finding_is_refused_naming_it_and_nothing_is_written(
@@ -666,7 +697,7 @@ def _judge_key_added_twice(p: RunPaths) -> None:
 
 def _stale_assemble(p: RunPaths) -> None:
     write_assemble(
-        p, AssembleRecord((), {ADDED: "CHDA:LIT:0009005"}, (), (), None, {})
+        p, AssembleRecord((), {ADDED: "CHDA:LIT:0009005"}, (), (), None, {}, {})
     )  # the file has no 0009005
 
 
@@ -1396,6 +1427,6 @@ def test_the_judge_fixture_is_the_one_the_literal_expects() -> None:
         ]
     ]
     assert ids == [JUDGED, ADDED]
-    assert assemble_module.summary(AssembleRecord((), {}, (), (), None, {})) == (
+    assert assemble_module.summary(AssembleRecord((), {}, (), (), None, {}, {})) == (
         "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 0 verified"
     )

@@ -1163,11 +1163,11 @@ def assemble(
     each judge finding whose digest assemble.json records unchanged, and changes no byte when
     nothing was edited. Exit 2, nothing written, for every refusal found before the first write
     (a write refused after earlier ones exits 2 naming the files already written): no merge.json or
-    comparison.json, a judge finding no decision covers, a changed judge finding for an approved
-    finding, a finding edited after compare that no longer agrees with its blind finding, a field
-    changed that no decision names, a judged paper with no Publication, an
-    assemble.json naming ids the file lacks, or a file changed since it was read. Exit 1 on an
-    OS error.
+    comparison.json, a judge finding no decision covers, a changed judge finding for a finding
+    approved since the assemble that applied it, a finding edited after compare that no longer
+    agrees with its blind finding, a field changed that no decision names, a judged paper with no
+    Publication, an assemble.json naming ids the file lacks, or a file changed since it was read.
+    Exit 1 on an OS error.
     """
     _require_root(root)
     try:

@@ -328,6 +328,7 @@ ASSEMBLE = AssembleRecord(
     ("CHDA:LIT:0009003",),
     "agent:literature-verify/claude-opus-5-5",
     {"CHDA:LIT:0009001": "a" * 64, "CHDA:LIT:0009003": "0123456789abcdef" * 4},
+    {"CHDA:LIT:0009001": "sha256:" + "b" * 64, "CHDA:LIT:0009003": None},
 )
 COMPARISON = Comparison(
     {"CHDA:LIT:0901001": "CHDA:LIT:0801001"},
@@ -354,7 +355,10 @@ def test_each_writer_round_trips_through_its_loader(tmp_path: Path) -> None:
     assert load_batches(p) == PLAN
     # The bytes are the contract: sorted keys, indent 1, a trailing newline, no ASCII escaping.
     assert p.assemble.read_text(encoding="utf-8").startswith(
-        '{\n "added": {\n  "CHDA:LIT:0701001": "CHDA:LIT:0009003"\n },\n "format": 1,'
+        '{\n "added": {\n  "CHDA:LIT:0701001": "CHDA:LIT:0009003"\n },\n "approvals": {\n'
+        '  "CHDA:LIT:0009001": "sha256:'
+        + "b" * 64
+        + '",\n  "CHDA:LIT:0009003": null\n },\n "format": 1,'
     )
     assert '"after": "e"' in p.assemble.read_text(encoding="utf-8")
     assert '"before": "é"' in p.assemble.read_text(encoding="utf-8")
@@ -476,6 +480,7 @@ def _assemble_base() -> dict[str, Any]:
         "verified": [],
         "verifier": None,
         "judged": {"CHDA:LIT:0009003": "0" * 64},
+        "approvals": {"CHDA:LIT:0009003": None},
     }
 
 
@@ -498,6 +503,10 @@ def _assemble_base() -> dict[str, Any]:
         ("assemble", lambda d: d.update(verifier=3), "'verifier'"),
         ("assemble", lambda d: d.pop("judged"), r"missing \['judged'\]"),
         ("assemble", lambda d: d.update(judged=[]), "'judged' is not an object"),
+        ("assemble", lambda d: d.pop("approvals"), r"missing \['approvals'\]"),
+        ("assemble", lambda d: d.update(approvals=[]), "'approvals' is not an object"),
+        ("assemble", lambda d: d.update(approvals={"x": None}), "'x'"),
+        ("assemble", lambda d: d.update(approvals={"CHDA:LIT:0009003": 7}), "7"),
         ("assemble", lambda d: d.update(judged={"x": "0" * 64}), "'x'"),
         ("assemble", lambda d: d.update(judged={"CHDA:LIT:0009003": "abc"}), "'abc'"),
         ("assemble", lambda d: d.update(judged={"CHDA:LIT:0009003": "A" * 64}), "'AAAA"),

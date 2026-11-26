@@ -315,10 +315,12 @@ the final id it decides (the finding as parsed from the judge's file: sorted-key
 UTF-8). A re-run does not apply a finding whose digest is unchanged, so what the file holds for it
 since (an approval `apply-review` wrote, a placement `normalise` wrote) stays as it is: the judges'
 file keeps its findings across fix rounds, the owner approves some findings between rounds, and
-the re-run still works. A judge finding whose digest changed replaces an unapproved finding as
-before; for a finding carrying `approved_by` the command exits 2 naming its id (`approved; a judge
-may not change an approved finding`). That refusal needs a digest recorded by an earlier assemble,
-so a backfill's first application to an approved finding's declared fields is not refused.
+the re-run still works. `assemble.json` records, in `approvals`, the `approved_digest` each of
+those findings carried just after the write (null when none). A judge finding whose digest changed
+replaces the file's finding and keeps its approval fields: a void approval (a backfill's first
+assemble voids the one a finding carried) stays void. The one refusal is exit 2 naming the id
+(`approved; a judge may not change an approved finding`) when the file's `approved_digest` now
+differs from the recorded one, that is when the owner approved the finding after that assemble.
 
 Example output: `replaced 1 judged findings, added 1 (CHDA:LIT:0009005), fixed 0 names by rule,
 marked 2 verified`. The line states the totals `assemble.json` records: `replaced` counts the
@@ -331,7 +333,7 @@ exits 2 naming the files already written, `assemble.json` first; they stay as wr
 finding with an approval field or `verified_by`, citing a paper outside its batch, repeating an
 id, or with an id that is neither a `differs` id, a first-pass-only id, an id of an earlier assemble
 nor `CHDA:LIT:07...`; a `differs` id with no judge finding, or one `comparison.json` also lists as
-agreed; a finding to be marked `verified_by` that no longer agrees with its blind finding; a changed judge finding for a finding that carries `approved_by`; a field changed that
+agreed; a finding to be marked `verified_by` that no longer agrees with its blind finding; a changed judge finding for a finding approved since the assemble that applied it; a field changed that
 no decision names; a paper with no Publication; a triage entry
 someone else excluded; an `assemble.json` naming ids the file lacks; a blind pass with more than
 one `extracted_by`; a file any write would refuse (the atlas's schema, an anchor, an approval

@@ -801,7 +801,9 @@ def write_merge(p: RunPaths, record: MergeRecord) -> None:
 class AssembleRecord:
     """What an assemble did. ``judged`` maps each final id a judge's finding decides (a
     replaced or an added finding) to the sha256 hex of that finding as the judge wrote it:
-    its parsed mapping as sorted-key compact JSON, UTF-8."""
+    its parsed mapping as sorted-key compact JSON, UTF-8. ``approvals`` maps the same ids to the
+    ``approved_digest`` the file's finding carried just after that assemble wrote it (None when
+    it carried none)."""
 
     replaced: tuple[str, ...]
     added: dict[str, str]
@@ -809,10 +811,11 @@ class AssembleRecord:
     verified: tuple[str, ...]
     verifier: str | None
     judged: dict[str, str]
+    approvals: dict[str, str | None]
 
 
 _ASSEMBLE_KEYS: Final = frozenset(
-    {"format", "replaced", "added", "notation", "verified", "verifier", "judged"}
+    {"format", "replaced", "added", "notation", "verified", "verifier", "judged", "approvals"}
 )
 _SHA256_HEX: Final = re.compile(r"[0-9a-f]{64}")
 _NOTATION_KEYS: Final = frozenset({"finding", "variant", "field", "before", "after", "rules"})
@@ -840,6 +843,12 @@ def load_assemble(p: RunPaths) -> AssembleRecord | None:
                 f"{path}: 'judged' {fid} is {digest!r}; expected 64 lowercase hex digits"
             )
         judged[fid] = digest
+    if not isinstance(data["approvals"], dict):
+        raise RunFormatError(f"{path}: 'approvals' is not an object")
+    approvals: dict[str, str | None] = {}
+    for key, digest in data["approvals"].items():
+        fid = _finding_id(key, path, "an 'approvals' key")
+        approvals[fid] = None if digest is None else _str(digest, path, f"approvals {fid}")
     changes: list[NotationChange] = []
     for entry in _list(data["notation"], path, "notation"):
         row = _keys(entry, _NOTATION_KEYS, path, "a notation change")
@@ -861,6 +870,7 @@ def load_assemble(p: RunPaths) -> AssembleRecord | None:
         _ids(data["verified"], path, "verified"),
         _str_or_null(data["verifier"], path, "verifier"),
         judged,
+        approvals,
     )
 
 
@@ -885,5 +895,6 @@ def write_assemble(p: RunPaths, record: AssembleRecord) -> None:
             "verified": list(record.verified),
             "verifier": record.verifier,
             "judged": record.judged,
+            "approvals": record.approvals,
         },
     )

@@ -29,9 +29,10 @@ What is applied, in this order:
 ``assemble.json`` records, for each final id a judge's finding decides, the sha256 of that
 finding as read (``judge_digest``). On a re-run a finding whose digest is unchanged is not
 applied again, so what the file holds for it (an approval, a placement ``normalise`` wrote) stays
-as it is; a changed finding replaces an unapproved one, and for one carrying ``approved_by`` is
-refused, naming its id. The refusal needs a recorded digest, so a first application, including a
-backfill's change to an approved finding's declared fields, is not refused by it.
+as it is. ``assemble.json`` also records the ``approved_digest`` each of them carried just after
+the write (``approvals``). A changed finding replaces the file's finding and keeps its approval
+fields (a void approval stays void), except that it is refused, naming its id, when the file's
+``approved_digest`` now differs from the recorded one: the owner approved it after that assemble.
 
 In a new or reread run (a reread plan is handled like a new one; no command writes one yet, so
 that path is untested), whatever a judge changed in a finding that ``differs`` lists must be a
@@ -369,7 +370,7 @@ def read_state(root: Path, run: RunPaths, approved: str) -> RunState:
         )
     comparison = load_comparison(run)
     c = read_curated(root, run, approved, refuse_merged=False)
-    previous = load_assemble(run) or AssembleRecord((), {}, (), (), None, {})
+    previous = load_assemble(run) or AssembleRecord((), {}, (), (), None, {}, {})
     for local, final in previous.added.items():
         if final not in c.findings:
             raise AssembleError(
@@ -414,9 +415,11 @@ def accept_judged(
     finding replaces, in scope or not. `digests` maps each
     judge finding's id to ``judge_digest`` of the finding as read, before any caller edited it.
 
-    A changed finding for an approved file finding is refused, but only where an earlier assemble
-    recorded a digest for it: a first application may change an approved finding's declared
-    fields in a backfill."""
+    A changed judge finding is refused (naming its id) only when the owner approved the file's
+    finding after the assemble that applied it: an earlier assemble recorded the finding's digest
+    and its ``approved_digest``, and the file's now differs. A finding that still carries the
+    approval it had then (a backfill's first assemble leaves it void) is replaced, and
+    ``apply_judged`` keeps its approval fields."""
     merged, plan, comparison = state.merged, state.plan, state.comparison
     c, schema, previous = state.curated, state.schema, state.previous
     backfill = plan.mode == "backfill"
@@ -453,7 +456,12 @@ def accept_judged(
         if recorded == digest:
             unchanged[target] = digest
             continue
-        if recorded is not None and target in c.findings and "approved_by" in c.findings[target]:
+        if (
+            recorded is not None
+            and target in previous.approvals
+            and target in c.findings
+            and c.findings[target].get("approved_digest") != previous.approvals[target]
+        ):
             raise AssembleError(f"{target}: approved; a judge may not change an approved finding")
         replacements[target] = {**finding, "id": target}
     decided = {*replacements, *unchanged}
@@ -562,7 +570,13 @@ def apply_judged(state: RunState, run: RunPaths, accepted: Accepted) -> AppliedJ
             backfill_allowed[fid] = permitted
             literature = with_fields_set(literature, fid, fields, drop)
     else:
-        literature = replace_judged(literature, replacements, mapping, held)
+        kept = {
+            fid: {k: v for k, v in c.findings[fid].items() if k in APPROVAL_FIELDS}
+            for fid in replacements
+        }
+        literature = replace_judged(
+            literature, {fid: {**f, **kept[fid]} for fid, f in replacements.items()}, mapping, held
+        )
     if triage:
         literature = with_triage(literature, triage)
     return AppliedJudged(literature, new_map, new_counter, mapping, held, new_ids, backfill_allowed)
@@ -641,8 +655,10 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
         **accepted.digests,
         **{applied.new_map[local]: d for local, d in accepted.addition_digests.items()},
     }
+    after = {str(f["id"]): f for f in safe_load(literature, c.lit_path).get("findings") or []}
+    approvals = {fid: after[fid].get("approved_digest") for fid in judged_digests}
     record = AssembleRecord(
-        replaced, mapping, tuple(notation), tuple(to_mark), name, judged_digests
+        replaced, mapping, tuple(notation), tuple(to_mark), name, judged_digests, approvals
     )
     registry = with_counter(c.reg, PREFIX, new_counter) if new_counter != counter else None
     return Assembled(c, record, literature, registry, new_ids)
