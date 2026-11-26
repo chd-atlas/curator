@@ -7,21 +7,27 @@ root is written.
 
 * An extract or verify pass of a ``new`` or ``reread`` run is appended with ``append_numbered``,
   so its findings are numbered from the ``LIT`` counter (which is raised in the copy: ``ID002`` is
-  not hidden). No Publication is added and no triage entry changes.
-* A judge pass replaces, by id, the findings of the file it names, and numbers the ones with a
-  local id ``CHDA:LIT:07...``. An id an earlier ``assemble.json`` mapped is a replacement of the
-  finding it was numbered as.
+  not hidden). No Publication is added. The exclusions of the pass's own
+  ``batch-NN.papers.json`` are applied to the copy's triage by the function ``merge`` uses
+  (``exclusion_changes``), so an excluded paper is not reported as cited by no finding; a paper
+  of the batch that is neither excluded nor cited is.
+* A judge pass goes through ``assemble``'s own acceptance and application functions
+  (``accept_judged``, ``apply_judged``): a finding replaces the finding of its id, or is numbered
+  when its local id is ``CHDA:LIT:07...``; an id an earlier ``assemble.json`` mapped is a
+  replacement of the finding it was numbered as; a finding whose digest ``assemble.json`` records
+  unchanged is not applied again.
 * In a ``backfill`` run an extract or verify pass goes through merge's backfill (the same
-  functions, so a field a finding already holds is refused), and a judge pass replaces findings
-  by id.
+  functions, so a field a finding already holds is refused), and a judge pass takes the declared
+  fields of each judged finding by ``assemble``'s edit.
 
-Errors expected before ``merge`` and ``normalise`` are not reported: ``LIT003`` (a paper that
-another batch covers), ``LIT011`` (a Publication ``merge`` adds), ``LIT022`` for a ``mane``
-variant lacking ``hgvs_c``, ``grch38`` or ``normalisation``, and ``LIT025`` for a paper's ``p.``
-with no ``hgvs_p``. Anything else is. The validator's answer is believed only when its exit code
-is 0 or 1, its last line is the summary, the summary's error count equals the ``ERROR`` lines and
-agrees with the exit code, and nothing holds a traceback; otherwise its raw output is the report
-and the exit code is 1, so a crashed validator is never "OK".
+Errors expected before ``merge`` and ``normalise`` are not reported: ``LIT003`` for a paper that
+is not a paper of the batch (another batch reads it), ``LIT011`` (a Publication ``merge`` adds),
+``LIT022`` for a ``mane`` variant lacking ``hgvs_c``, ``grch38`` or ``normalisation``, and
+``LIT025`` for a paper's ``p.`` with no ``hgvs_p``. Anything else is. The validator's answer is
+believed only when its exit code is 0 or 1, its last line is the summary, the summary's error
+count equals the ``ERROR`` lines and agrees with the exit code, and nothing holds a traceback;
+otherwise its raw output is the report and the exit code is 1, so a crashed validator is never
+"OK".
 
 Exit codes (see the CLI): 0 only when nothing unexpected was reported, 1 for an unexpected error
 or an answer that cannot be believed, 2 for a batch file that does not load.
@@ -32,7 +38,7 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -54,22 +60,27 @@ from chd_curator.merge import (
     backfill_fields,
     check_backfill_declaration,
     check_new_findings,
+    exclusion_changes,
+    exclusion_reasons,
     paper_years,
     read_curated,
 )
-from chd_curator.records import read_counter, with_counter
+from chd_curator.records import read_counter, with_counter, with_triage
 from chd_curator.run import (
     Batch,
     BatchPlan,
+    RunFormatError,
     RunPaths,
     load_batches,
+    load_papers,
 )
 
 PASSES: Final = ("extract", "verify", "judge")
 _NOT_COPIED: Final = frozenset({"curation", "local", ".git", ".venv"})
 _SUMMARY: Final = re.compile(r"([0-9]+) error\(s\), ([0-9]+) warning\(s\)")
 _ERROR: Final = re.compile(r"ERROR \[([A-Z]+[0-9]+)\] (.*)")
-_HIDDEN_CODES: Final = frozenset({"LIT003", "LIT011"})
+_HIDDEN_CODES: Final = frozenset({"LIT011"})
+_LIT003_MESSAGE: Final = re.compile(r": (PMID:[0-9]+) is included but no finding cites it$")
 _LIT022_ENDINGS: Final = (
     "a mane variant needs hgvs_c",
     "a mane variant needs grch38",
@@ -91,7 +102,10 @@ class Checked:
     lines: tuple[str, ...]
 
 
-def _expected(error_code: str, message: str) -> bool:
+def _expected(error_code: str, message: str, own_papers: Collection[str]) -> bool:
+    if error_code == "LIT003":
+        found = _LIT003_MESSAGE.search(message)
+        return found is not None and found.group(1) not in own_papers
     return (
         error_code in _HIDDEN_CODES
         or (error_code == "LIT022" and message.endswith(_LIT022_ENDINGS))
@@ -99,8 +113,9 @@ def _expected(error_code: str, message: str) -> bool:
     )
 
 
-def report(exit_code: int, stdout: str, stderr: str) -> Checked:
-    """The report on one run of ``chd-atlas validate``; see the module docstring."""
+def report(exit_code: int, stdout: str, stderr: str, own_papers: Collection[str]) -> Checked:
+    """The report on one run of ``chd-atlas validate``; see the module docstring. `own_papers`
+    are the batch's papers: ``LIT003`` is expected for any other."""
     lines = [line.rstrip() for line in stdout.splitlines() if line.strip()]
     raw = [line.rstrip() for line in (stdout + "\n" + stderr).splitlines() if line.strip()]
     summary = _SUMMARY.fullmatch(lines[-1]) if lines else None
@@ -123,7 +138,7 @@ def report(exit_code: int, stdout: str, stderr: str) -> Checked:
     unexpected = []
     for line in errors:
         found = _ERROR.fullmatch(line)
-        if found is None or not _expected(found.group(1), found.group(2)):
+        if found is None or not _expected(found.group(1), found.group(2), own_papers):
             unexpected.append(line)
     if unexpected:
         return Checked(1, (lines[-1], "UNEXPECTED ERRORS:", *unexpected))
@@ -216,8 +231,39 @@ def _applied(
             check_new_findings(found, batch, c, {})
             years = paper_years(c, run, sorted({str(f["publication"]) for f in found}))
             literature, _, new_counter = append_numbered(c.lit, found, years, counter)
+            literature = _with_exclusions(literature, path, batch, found, c, schema)
     registry = with_counter(c.reg, PREFIX, new_counter) if new_counter != counter else None
     return c, literature, registry, notes
+
+
+def _with_exclusions(
+    literature: bytes,
+    findings_path: Path,
+    batch: Batch,
+    found: Sequence[Mapping[str, Any]],
+    c: Curated,
+    schema: Mapping[str, Any],
+) -> bytes:
+    """`literature` with the exclusions of the pass's own ``batch-NN.papers.json`` applied to its
+    triage, by the function ``merge`` uses. A paper whose entry already reads ``excluded`` (the
+    run is merged) is left as it is; any other refusal of that function is the command's."""
+    papers_path = findings_path.with_name(f"batch-{batch.id}.papers.json")
+    if not papers_path.is_file():
+        raise CheckError(f"{papers_path}: the batch has no such file")
+    try:
+        outcomes = {o.pmid: o for o in load_papers(papers_path)}
+    except RunFormatError as exc:
+        raise CheckError(str(exc)) from None
+    for pmid in outcomes:
+        if pmid not in batch.papers:
+            raise CheckError(f"{papers_path}: names {pmid}, which is not in batch {batch.id}")
+    todo = {
+        pmid: o
+        for pmid, o in outcomes.items()
+        if not (o.exclude and c.triage.get(pmid, {}).get("decision") == "excluded")
+    }
+    changes = exclusion_changes(c, todo, found, exclusion_reasons(schema))
+    return with_triage(literature, changes) if changes else literature
 
 
 def _build_scratch(
@@ -257,5 +303,5 @@ def check_batch(
             code, stdout, stderr = run_validate(Path(scratch), atlas_cli)
         except AtlasError as exc:
             return Checked(1, (*notes, "UNEXPECTED ERRORS:", str(exc)))
-    done = report(code, stdout, stderr)
+    done = report(code, stdout, stderr, batch.papers)
     return Checked(done.code, (*notes, *done.lines))

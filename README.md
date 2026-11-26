@@ -188,6 +188,8 @@ the run directory unchanged, when any batch is inconsistent: a paper of a batch 
 `papers.json`, or one named there that the batch does not hold; a finding that cites a paper
 outside its batch, repeats a local id or one already in the file, or carries `verified_by` or an
 approval; an evidence key that is not a finding of its batch; a paper that already has a finding;
+a paper its `papers.json` gives a study type and reading but that no finding of its batch cites
+(cite it, or exclude it with a reason: the atlas refuses an included paper nothing cites);
 an exclusion reason outside the atlas's list, or of a paper not `included` now; a study type the
 atlas does not allow, or a null one left unnamed; a `--study-type` for any paper that needs no
 Publication from it; a paper with no year; a `shares_probands_with` that names neither a finding
@@ -326,8 +328,11 @@ How the pass is applied, by the run's mode in `batches.json`:
 
 - `new` or `reread`, `--pass extract` or `verify`: the findings of `extract/batch-NN.findings.yaml`
   (or `verify/`) are appended as `merge` would number them, from the `LIT` counter (raised in the
-  copy, so `ID002` is not among the expected errors). No Publication is added and no triage
-  entry changes. A `shares_probands_with` entry naming a local id of another batch of
+  copy, so `ID002` is not among the expected errors). No Publication is added. The exclusions of
+  the pass's own `batch-NN.papers.json` are applied to the copy's triage by the function `merge`
+  uses, so an excluded paper is not reported as cited by no finding; a paper of the batch that is
+  neither excluded nor cited is reported (`LIT003`). A missing `papers.json`, or an exclusion
+  `merge` would refuse, exits 2. A `shares_probands_with` entry naming a local id of another batch of
   `batches.json` is dropped in the copy only, and the command prints `NOT CHECKED: <finding>
   shares_probands_with <local id> (batch NN; merge resolves it)` before the summary line; any other
   entry that names no finding of the pass or of the file exits 2.
@@ -344,7 +349,8 @@ How the pass is applied, by the run's mode in `batches.json`:
 
 It prints the validator's summary line, then either `OK: only the errors expected before merge and
 normalise` (exit 0) or `UNEXPECTED ERRORS:` and each error line the validator printed that is not
-expected (exit 1). The expected errors, which are not listed, are `LIT003`, `LIT011`, `LIT022`
+expected (exit 1). The expected errors, which are not listed, are `LIT003` for a paper that is
+not a paper of the batch, `LIT011`, `LIT022`
 when its message ends `a mane variant needs hgvs_c`, `... grch38` or `... normalisation`, and
 `LIT025` when it ends `but the variant has no hgvs_p`. Warnings are never listed.
 

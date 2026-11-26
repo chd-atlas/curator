@@ -363,6 +363,13 @@ def _no_year(p: RunPaths) -> None:
     _edit(p.dir / "texts.json", '"year": "2021"', '"year": ""')
 
 
+def _read_but_cited_nowhere(p: RunPaths) -> None:
+    """Batch 02's reader gives PMID:91000003 a study type and a reading and reports no finding
+    on it (and none on 91000004, which it excludes)."""
+    (p.extract / "batch-02.findings.yaml").write_text("findings: []\n")
+    (p.extract / "batch-02.evidence.yaml").write_text("{}\n")
+
+
 def _anchor_in_the_curated_file(p: RunPaths) -> None:
     _edit(_literature(p), "    syndromic: syndromic\n", "    syndromic: &s syndromic\n")
 
@@ -541,6 +548,14 @@ REFUSALS: list[tuple[str, Callable[[RunPaths], None], tuple[str, ...], str]] = [
         lambda p: None,
         ("--study-type", "91000002=case_report"),
         "is not PMID:<n>=<type>",
+    ),
+    (
+        "a paper read but cited by no finding and not excluded",
+        _read_but_cited_nowhere,
+        (),
+        "PMID:91000003: batch-02.papers.json gives it a study type and reading, but no finding "
+        "of batch 02 cites it; add a finding that cites it, or exclude it in "
+        "batch-02.papers.json with a reason",
     ),
     (
         "an anchor in the curated file, refused after everything is built",

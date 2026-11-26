@@ -314,7 +314,7 @@ def _plan_new(
     schema: Mapping[str, Any],
 ) -> _Writes:
     allowed_types = _study_types(root)
-    reasons = _enum(schema, "ExclusionReason")
+    reasons = exclusion_reasons(schema)
     cited_in_file = {str(f["publication"]) for f in c.findings.values()}
     flat: list[dict[str, Any]] = []
     local_batch: dict[str, str] = {}
@@ -345,13 +345,19 @@ def _plan_new(
         outcomes.update({o.pmid: o for o in papers})
         local_ids = {str(f["id"]) for f in found}
         check_new_findings(found, batch, c, local_batch)
+        for pmid in sorted(unaccounted_papers(batch, papers, found), key=pmid_key):
+            raise MergeError(
+                f"{pmid}: {papers_path.name} gives it a study type and reading, but no finding "
+                f"of batch {batch.id} cites it; add a finding that cites it, or exclude it in "
+                f"{papers_path.name} with a reason"
+            )
         for key in quotes:
             if key not in local_ids:
                 raise MergeError(f"{evidence_path}: {key} is not a finding of batch {batch.id}")
         evidence[batch.id] = quotes
         flat.extend(found)
 
-    changes = _exclusions(c, outcomes, flat, reasons)
+    changes = exclusion_changes(c, outcomes, flat, reasons)
     for pmid, outcome in outcomes.items():
         if outcome.study_type is not None and outcome.study_type not in allowed_types:
             raise MergeError(
@@ -397,6 +403,21 @@ def _plan_new(
     )
 
 
+def unaccounted_papers(
+    batch: Batch, papers: Sequence[PaperOutcome], found: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """The papers of `batch` that its ``papers.json`` read (a study type and reading, no
+    exclusion) and that none of its findings cites. The atlas refuses such a paper (``LIT003``:
+    included, cited by no finding), and neither merge's other checks nor a later command would
+    say so before the validator does."""
+    cited = {str(f["publication"]) for f in found}
+    return [
+        o.pmid
+        for o in papers
+        if o.exclude is None and o.pmid in batch.papers and o.pmid not in cited
+    ]
+
+
 def check_new_findings(
     found: Sequence[Mapping[str, Any]], batch: Batch, c: Curated, local_batch: dict[str, str]
 ) -> None:
@@ -419,12 +440,21 @@ def check_new_findings(
                 raise MergeError(f"{local}: carries {name}; an agent's finding may not")
 
 
-def _exclusions(
+def exclusion_reasons(schema: Mapping[str, Any]) -> list[str]:
+    """The exclusion reasons the atlas's schema allows."""
+    return _enum(schema, "ExclusionReason")
+
+
+def exclusion_changes(
     c: Curated,
     outcomes: Mapping[str, PaperOutcome],
     findings: Sequence[Mapping[str, Any]],
     reasons: Sequence[str],
 ) -> list[TriageChange]:
+    """The triage changes the papers' exclusions make, shared by ``merge`` and ``check-batch``:
+    one ``included`` -> ``excluded`` per excluded paper, refused for a reason outside `reasons`,
+    a paper some finding of `findings` cites, or a paper whose triage decision is not
+    ``included``."""
     cited = {str(f["publication"]) for f in findings}
     changes: list[TriageChange] = []
     for pmid in sorted((p for p, o in outcomes.items() if o.exclude), key=pmid_key):

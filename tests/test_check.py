@@ -246,6 +246,96 @@ def test_a_variant_whose_phenotypes_are_not_the_findings_is_reported_and_nothing
     assert list(scratch_parent.iterdir()) == []
 
 
+def test_a_pass_that_reads_a_paper_and_cites_it_nowhere_is_not_ok(
+    tmp_path: Path, atlas_root: Path, atlas_cli: Path
+) -> None:
+    """R-P2-13 amended, measured as m1b: batch 01's extract pass reports no finding on its only
+    paper. LIT003 for that paper is listed; the other batch's two papers' LIT003 stay hidden."""
+    errors, warnings = _baseline(tmp_path, atlas_root, atlas_cli)
+    root, _ = _real_root(tmp_path, atlas_root)
+    (root / "local/literature/runs/TBX5/r1/extract/batch-01.findings.yaml").write_text(
+        "findings: []\n"
+    )
+    code, out = _check(root, atlas_cli)
+    assert code == 1
+    assert out == (
+        f"{errors + 3} error(s), {warnings} warning(s)\nUNEXPECTED ERRORS:\n"
+        f"ERROR [LIT003] {_FILE}:pmid PMID:91000002: PMID:91000002 is included but no finding "
+        "cites it\n"
+    )
+
+
+def test_a_paper_the_pass_excludes_in_papers_json_is_excluded_in_the_copy_and_gives_ok(
+    tmp_path: Path, atlas_root: Path, atlas_cli: Path
+) -> None:
+    """Batch 02's papers.json excludes PMID:91000004 (not_human_genetics). Without that exclusion
+    applied to the copy the validator reports LIT003 for it, inside the batch and so listed."""
+    errors, warnings = _baseline(tmp_path, atlas_root, atlas_cli)
+    root, _ = _real_root(tmp_path, atlas_root)
+    batch = root / "local/literature/runs/TBX5/r1/extract/batch-02.findings.yaml"
+    batch.write_text(batch.read_text().replace("placement: unplaced", "placement: mane"))
+    code, out = _check(root, atlas_cli, batch="02")
+    assert (code, out) == (0, f"{errors + 5} error(s), {warnings} warning(s)\n" + OK_LINE)
+
+
+@pytest.mark.parametrize("pass_", ["extract", "verify"])
+def test_the_exclusion_reaches_the_copys_triage_as_merge_would_write_it(
+    tmp_path: Path, atlas_root: Path, pass_: str
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    assert _check(p.root, cli, batch="02", pass_=pass_)[0] == 0
+    lit = YAML_SAFE.load((_seen(tmp_path) / "curation/literature/TBX5.yaml").read_text())
+    entry = {t["pmid"]: t for t in lit["triage"]}["PMID:91000004"]
+    assert entry == {
+        "pmid": "PMID:91000004",
+        "search": 1,
+        "decision": "excluded",
+        "reason": "not_human_genetics",
+        "note": "A mouse model; no human carrier is reported.",
+    }
+    assert {t["pmid"]: t["decision"] for t in lit["triage"]}["PMID:91000003"] == "included"
+
+
+def test_a_papers_json_that_is_missing_or_excludes_a_cited_paper_exits_2_and_validates_nothing(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    papers = p.extract / "batch-02.papers.json"
+    saved = papers.read_text()
+    papers.unlink()
+    code, out = _check(p.root, cli, batch="02")
+    assert (code, out) == (2, f"error: {papers}: the batch has no such file\n")
+    entries = json.loads(saved)
+    entries[0] = {"pmid": "PMID:91000003", "exclude": {"reason": "not_human_genetics", "note": "x"}}
+    papers.write_text(json.dumps(entries))
+    code, out = _check(p.root, cli, batch="02")
+    assert (code, out) == (
+        2,
+        "error: PMID:91000003: is excluded in papers.json and cited by a finding\n",
+    )
+    assert not (_seen(tmp_path) / "args").exists()
+
+
+@pytest.mark.parametrize(
+    ("batch", "pmid", "listed"),
+    [("01", "PMID:91000002", True), ("01", "PMID:91000003", False), ("02", "PMID:91000002", False)],
+    ids=["inside the batch", "the other batch's paper", "the first batch's paper from batch 02"],
+)
+def test_lit003_is_hidden_only_for_a_paper_outside_the_batch(
+    tmp_path: Path, atlas_root: Path, batch: str, pmid: str, listed: bool
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    line = f"ERROR [LIT003] {_FILE}:pmid {pmid}: {pmid} is included but no finding cites it"
+    cli = _fake(tmp_path, _stdout(line), code=1)
+    code, out = _check(p.root, cli, batch=batch)
+    if listed:
+        assert (code, out) == (1, f"1 error(s), 3 warning(s)\nUNEXPECTED ERRORS:\n{line}\n")
+    else:
+        assert (code, out) == (0, "1 error(s), 3 warning(s)\n" + OK_LINE)
+
+
 # ---- the scratch root --------------------------------------------------------------------------
 
 

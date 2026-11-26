@@ -1152,8 +1152,9 @@ def assemble(
     each judge finding whose digest assemble.json records unchanged, and changes no byte when
     nothing was edited. Exit 2, nothing written, for every refusal: no merge.json or
     comparison.json, a judge finding no decision covers, a changed judge finding for an approved
-    finding, a field changed that no decision names, a judged paper with no Publication, an assemble.json naming ids the file
-    lacks, or a file changed since it was read. Exit 1 on an OS error.
+    finding, a field changed that no decision names, a judged paper with no Publication, an
+    assemble.json naming ids the file lacks, or a file changed since it was read. Exit 1 on an
+    OS error.
     """
     _require_root(root)
     try:
@@ -1191,8 +1192,10 @@ def check_batch(
     `local`, `.git` and `.venv` is linked), `chd-atlas validate` runs on the copy, and the copy
     is removed. Nothing under `--root` is written. Prints the validator's summary line, then
     `OK: only the errors expected before merge and normalise` (exit 0), or `UNEXPECTED ERRORS:`
-    and each error line (exit 1). The expected errors are LIT003, LIT011, LIT022 for a mane
-    variant lacking hgvs_c, grch38 or normalisation, and LIT025 for a p. with no hgvs_p. A
+    and each error line (exit 1). The expected errors are LIT003 for a paper outside the batch,
+    LIT011, LIT022 for a mane variant lacking hgvs_c, grch38 or normalisation, and LIT025 for a
+    p. with no hgvs_p. An extract or verify pass is applied with the exclusions of its own
+    papers.json, so a paper of the batch that is neither excluded nor cited is reported. A
     validator that crashes, exits other than 0 or 1, or prints a summary that does not match its
     error lines is never OK: its raw output is printed and the exit code is 1. Exit 2 for a batch
     file that does not load.
