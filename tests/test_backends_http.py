@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import http.server
 import json
 import threading
 from pathlib import Path
@@ -343,3 +344,56 @@ def test_a_bad_max_tokens_setting_is_a_backend_error(
 def test_fake_refuses_a_script_that_is_not_a_list(script: Any) -> None:
     with pytest.raises(BackendError, match="list"):
         make_backend(spec("fake", {"answers": {"k": script}}))
+
+
+class _Hits(http.server.BaseHTTPRequestHandler):
+    hits: list[str]
+    location: str | None = None
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("content-length", 0)))
+        self.hits.append(self.headers.get("x-api-key") or self.headers.get("authorization") or "")
+        self.send_response(302 if self.location else 200)
+        if self.location:
+            self.send_header("Location", self.location)
+        self.send_header("content-length", "0")
+        self.end_headers()
+
+    def log_message(self, *args: Any) -> None:
+        pass
+
+
+@pytest.fixture
+def two_servers() -> Any:
+    """Loopback servers A (answers 302 to B) and B (counts what reaches it)."""
+    servers = []
+    handlers = []
+    for _ in range(2):
+        handler = type("H", (_Hits,), {"hits": []})
+        server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        handlers.append(handler)
+    a, b = servers
+    handlers[0].location = f"http://127.0.0.1:{b.server_port}/stolen"
+    yield f"http://127.0.0.1:{a.server_port}", handlers[0], handlers[1]
+    for s in servers:
+        s.shutdown()
+        s.server_close()
+
+
+def test_the_default_transport_never_sends_a_key_to_a_redirect_target(
+    monkeypatch: pytest.MonkeyPatch, two_servers: Any
+) -> None:
+    from chd_curator.backends.base import urllib_post
+
+    url, a, b = two_servers
+    monkeypatch.setenv("K", KEY)
+    backend = make_backend(spec("openai_compat", {"base_url": url, "timeout_seconds": 5}, "K"))
+    with pytest.raises(BackendError, match="HTTP 302") as info:
+        backend.ask(req())
+    # The Anthropic URL is a constant, so its default transport is called directly.
+    status, _, _ = urllib_post(url + "/v1/messages", {"x-api-key": KEY}, b"{}", 5.0)
+    assert status == 302
+    assert a.hits == [f"Bearer {KEY}", KEY]
+    assert b.hits == [] and KEY not in str(info.value)
