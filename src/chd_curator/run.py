@@ -475,8 +475,26 @@ def load_normalise(p: RunPaths) -> dict[tuple[str, int], str | None]:
     return readings
 
 
-def load_judge(p: RunPaths) -> dict[str, tuple[JudgeDecision, ...]]:
-    """The judges' decisions by finding id.
+_JUDGE_DECISIONS_FILE: Final = re.compile(r"judge-([0-9]{2,})\.decisions\.yaml")
+
+
+def judge_decision_batches(p: RunPaths) -> dict[str, str | None]:
+    """Each key of the judge decisions files with the batch number in the name of the file that
+    holds it (``judge-NN.decisions.yaml``; None for any other name). A key in two files is
+    ``load_judge``'s refusal, not this function's."""
+    out: dict[str, str | None] = {}
+    for path in _yaml_files(p.judge, ".decisions.yaml"):
+        data = _read_yaml(path)
+        named = _JUDGE_DECISIONS_FILE.fullmatch(path.name)
+        if isinstance(data, dict):
+            for key in data:
+                out[str(key)] = named.group(1) if named else None
+    return out
+
+
+def load_judge(p: RunPaths, only: str | None = None) -> dict[str, tuple[JudgeDecision, ...]]:
+    """The judges' decisions by finding id. With `only` (a batch number) only
+    ``judge-<only>.decisions.yaml`` is read.
 
     A judge keys the decisions for a finding it added by its own local id (``CHDA:LIT:07...``).
     When the run has an ``assemble.json``, such a key is read under the id ``assemble`` gave the
@@ -486,11 +504,14 @@ def load_judge(p: RunPaths) -> dict[str, tuple[JudgeDecision, ...]]:
 
     A key may also be the id of a finding only the blind reader reported (an ``only_second`` id
     of ``comparison.json``, ``CHDA:LIT:08...``): the judge's account of whether that finding was
-    added, a row with ``field`` ``finding`` whose ``decision`` is ``second`` when it was adopted.
+    added, a row with ``field`` ``finding`` whose ``decision`` is ``second`` when it was adopted
+    (its ``value`` then names the judge's local id of the finding written for it).
     ``assemble`` refuses an ``only_second`` id with no such row; the key is read as it is, since
     no literature file holds that finding."""
     found: dict[str, tuple[JudgeDecision, ...]] = {}
     for path in _yaml_files(p.judge, ".decisions.yaml"):
+        if only is not None and path.name != f"judge-{only}.decisions.yaml":
+            continue
         data = _read_yaml(path)
         if not isinstance(data, dict):
             raise RunFormatError(f"{path}: the file is not a mapping of finding id to decisions")
@@ -833,7 +854,8 @@ class AssembleRecord:
     ``approved_digest`` the file's finding carried just after that assemble wrote it (None when
     it carried none). ``blind_only`` maps each finding only the blind reader reported (an id of
     ``comparison.json``'s ``only_second``) to the decision of the judge's ``finding`` row for it:
-    ``second`` (adopted), ``first`` or ``neither`` (not added)."""
+    ``first`` or ``neither`` (not added), or, when the judge adopted it (``second``), the final id
+    of the finding the judge wrote for it."""
 
     replaced: tuple[str, ...]
     added: dict[str, str]
@@ -897,9 +919,12 @@ def load_assemble(p: RunPaths) -> AssembleRecord | None:
     blind_only: dict[str, str] = {}
     for key, decision in data["blind_only"].items():
         fid = _finding_id(key, path, "a 'blind_only' key")
-        if decision not in _DECISIONS:
+        if decision not in ("first", "neither") and not (
+            isinstance(decision, str) and _FINDING_ID.fullmatch(decision)
+        ):
             raise RunFormatError(
-                f"{path}: 'blind_only' {fid} is {decision!r}; expected one of {_DECISIONS}"
+                f"{path}: 'blind_only' {fid} is {decision!r}; expected 'first', 'neither' or "
+                "the final id of the finding that adopted it"
             )
         blind_only[fid] = decision
     changes: list[NotationChange] = []

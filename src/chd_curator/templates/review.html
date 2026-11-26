@@ -357,6 +357,7 @@ pre#selftest-output { white-space: pre-wrap; font-size: 11px; }
     const cards = list.map((b) => `<div class="static-card" data-blind="${esc(b.id)}">
       <div class="paperline"><span class="mono">${esc(b.id)}</span> · ${b.paper.title ? esc(b.paper.title) : "title not recorded in this run"} · ${esc(b.paper.year)} · <a href="${esc(b.paper.pubmed_url)}" target="_blank" rel="noopener">PubMed</a></div>
       <p class="summary">${esc(b.summary)}</p>
+      ${b.adopted_as ? `<div class="both">The judge adopted this finding: adopted as <span class="mono">${esc(b.adopted_as)}</span></div>` : ""}
       ${b.rows.map((r) => `<div class="frow judged"><div class="fleft"><div class="fname">${esc(r.name)} ${stateChip("judged")}</div><div class="fval">${esc(r.value)}</div>${disagreement({ state: "judged", first: r.first, verify: r.verify, judge: r.judge })}</div><div class="fright">${quotes(r.quotes)}</div></div>`).join("")}
     </div>`).join("");
     return `<h2 class="section">Only the blind reader reported this</h2><div class="paperline">The first reader did not report these findings and the blind reader did. A judge decided whether to add each as a finding of its own. They have no card and need no decision from you.</div>${cards}`;

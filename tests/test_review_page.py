@@ -1309,3 +1309,15 @@ def test_review_page_refuses_an_approval_void_on_a_finding_it_does_not_show(
     assert "2 error(s), 3 warning(s)" in out and "CHDA:LIT:0000555" in out
     assert f", {A}" not in out and "does not show" in out
     assert not list((root / "local/literature/runs/TBX5/r1").glob("review*.html"))
+
+
+def test_the_blind_only_section_says_which_finding_adopted_it(root: Path, stub_atlas: Path) -> None:
+    from chd_curator.run import AssembleRecord, RunPaths, write_assemble
+
+    run = RunPaths(root, "TBX5", "r1")
+    write_assemble(run, AssembleRecord((), {}, (), (), None, {}, {}, {"CHDA:LIT:0801004": A}))
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    dom = dump_dom(Path(out.strip().splitlines()[-1]))
+    assert f"adopted as {A}" in plain(blind_only_html(dom))
+    assert "adopted as" not in plain(card_html(dom, J))

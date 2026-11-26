@@ -22,8 +22,10 @@ What is applied, in this order:
    paired, when ``variants`` is a declared field).
    Every finding only the blind reader reported (``comparison.json``'s ``only_second``) needs a
    judge decision with a ``finding`` row, keyed by its own id in ``judge/judge-NN.decisions.yaml``
-   (``second``: the judge adopted it, as a finding of its own; ``first`` or ``neither``: not
-   added). A missing one is a refusal, and ``assemble.json`` records each decision (``blind_only``).
+   (``second``: the judge adopted it, and ``value`` names the local ``07`` id of the finding it
+   wrote for it; ``first`` or ``neither``: not added, and ``value`` names no judge finding), in
+   the file of the id's own batch. A missing or inconsistent one is a refusal, and
+   ``assemble.json`` records each decision (``blind_only``; the final id for an adopted one).
    A backfill has none: ``compare`` pairs its blind fields by finding id, so its ``only_second``
    is empty.
 3. ``verified_by`` on the findings the comparison lists as ``agreed`` or ``span_only``. A judged
@@ -56,7 +58,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -91,6 +93,7 @@ from chd_curator.run import (
     RunFormatError,
     RunPaths,
     TriageChange,
+    judge_decision_batches,
     load_assemble,
     load_batches,
     load_blind_only,
@@ -113,6 +116,7 @@ from chd_curator.write import (
 _JUDGE_FILE: Final = re.compile(r"judge-([0-9]{2,})\.findings\.yaml")
 _JUDGE_MANIFEST: Final = re.compile(r"judge-[0-9]{2,}\.md")
 LOCAL_ID: Final = re.compile(r"CHDA:LIT:07[0-9]{5}")
+_FINDING_IDS: Final = re.compile(r"CHDA:LIT:[0-9]{7}")
 _ANY: Final = frozenset({"*"})
 
 
@@ -362,11 +366,13 @@ class RunState:
     previous: AssembleRecord
     decisions: Mapping[str, tuple[JudgeDecision, ...]] = field(default_factory=dict)
     blind: Mapping[str, str] = field(default_factory=dict)
+    decision_batches: Mapping[str, str | None] = field(default_factory=dict)
 
 
-def read_state(root: Path, run: RunPaths, approved: str) -> RunState:
+def read_state(root: Path, run: RunPaths, approved: str, only: str | None = None) -> RunState:
     """The run's merge record, plan, comparison, curated files and previous assemble record
-    (empty when there is none), refused unless they agree. Reads only."""
+    (empty when there is none), refused unless they agree. Reads only. With `only` (a batch
+    number) the judge decisions are read from that batch's file alone."""
     merged = load_merge(run)
     if merged is None:
         raise AssembleError(
@@ -392,10 +398,14 @@ def read_state(root: Path, run: RunPaths, approved: str) -> RunState:
             )
     decisions: dict[str, tuple[JudgeDecision, ...]] = {}
     blind: dict[str, str] = {}
+    batches: dict[str, str | None] = {}
     if comparison.only_second:
-        decisions = load_judge(run)
+        decisions = load_judge(run, only=only)
+        batches = judge_decision_batches(run) if only is None else {}
         blind = {fid: str(row["publication"]) for fid, row in load_blind_only(run).items()}
-    return RunState(merged, plan, comparison, c, c.lit_validator.schema, previous, decisions, blind)
+    return RunState(
+        merged, plan, comparison, c, c.lit_validator.schema, previous, decisions, blind, batches
+    )
 
 
 @dataclass(frozen=True)
@@ -416,31 +426,74 @@ class Accepted:
     digests: dict[str, str]
     addition_digests: dict[str, str]
     blind_only: dict[str, str]
+    blind_links: dict[str, str]
 
 
 def blind_only_decisions(
-    state: RunState, in_scope: Callable[[str], bool] = lambda _: True
-) -> dict[str, str]:
+    state: RunState,
+    judge_ids: Collection[str],
+    in_scope: Callable[[str], bool] = lambda _: True,
+) -> tuple[dict[str, str], dict[str, str]]:
     """The judge's decision, by id, for each finding only the blind reader reported (an
-    ``only_second`` id of `in_scope`): the ``decision`` of its ``finding`` row in the judge's
-    decisions file, the first when it has several. Every such id must have one, or the blind
-    reader's finding would vanish without a record; the refusal names all that do not."""
+    ``only_second`` id of `in_scope`), and the judge's local id of the finding that adopted each
+    ``second`` one.
+
+    The decision is that of the ``finding`` row of the id's entry in the judge's decisions file
+    (the first row when there are several). Every such id must have one, or the blind reader's
+    finding would vanish without a record, and the entry must sit in ``judge-NN.decisions.yaml``
+    for the id's own batch NN. A ``second`` decision names in its ``value`` exactly one judge
+    finding of that batch, a local id among `judge_ids` (this run's judge findings and the local
+    ids an earlier assemble mapped); a ``first`` or ``neither`` decision names none. Every breach
+    is reported, each naming its id."""
     found: dict[str, str] = {}
+    links: dict[str, str] = {}
     missing: list[str] = []
+    problems: list[str] = []
     for sid in sorted(state.comparison.only_second):
         if not in_scope(sid):
             continue
         rows = [d for d in state.decisions.get(sid, ()) if d.field == "finding"]
-        if rows:
-            found[sid] = rows[0].decision
-        else:
+        if not rows:
             missing.append(sid)
+            continue
+        batch = sid[11:13]
+        where = state.decision_batches.get(sid, batch)
+        if where != batch:
+            problems.append(
+                f"{sid}: its decision is in the file for batch {where}, but a finding only the "
+                f"blind reader reported in batch {batch} is decided in judge-{batch}.decisions.yaml"
+            )
+            continue
+        decision = rows[0]
+        named = _FINDING_IDS.findall(decision.value)
+        judge_named = [i for i in named if i in judge_ids]
+        if decision.decision == "second":
+            own = [i for i in judge_named if LOCAL_ID.fullmatch(i) and i[11:13] == batch]
+            if len(own) != 1 or len(judge_named) != 1:
+                problems.append(
+                    f"{sid}: adopted (second), but its value {decision.value!r} does not name "
+                    f"exactly one judge finding of batch {batch} (write the local id "
+                    f"CHDA:LIT:07{batch}nnn of the finding the judge wrote for it, which "
+                    f"judge-{batch}.findings.yaml must hold)"
+                )
+                continue
+            links[sid] = own[0]
+        elif judge_named:
+            problems.append(
+                f"{sid}: decided {decision.decision}, so not added, but its value names the "
+                f"judge finding {judge_named[0]}"
+            )
+            continue
+        found[sid] = decision.decision
     if missing:
-        raise AssembleError(
+        problems.insert(
+            0,
             f"{', '.join(missing)}: reported only by the blind reader, but no judge decision "
-            "records whether it was added"
+            "records whether it was added",
         )
-    return found
+    if problems:
+        raise AssembleError("; ".join(problems))
+    return found, links
 
 
 def accept_judged(
@@ -459,8 +512,9 @@ def accept_judged(
     finding replaces, in scope or not. `digests` maps each
     judge finding's id to ``judge_digest`` of the finding as read, before any caller edited it.
 
-    Every ``only_second`` id of `in_scope` needs a judge decision with a ``finding`` row
-    (``blind_only_decisions``); `in_scope` is applied to those ids too.
+    Every ``only_second`` id of `in_scope` needs a judge decision with a ``finding`` row, in its
+    own batch's file, and an adopted one must name its judge finding (``blind_only_decisions``);
+    `in_scope` is applied to those ids too.
 
     A changed judge finding is refused (naming its id) only when the owner approved the file's
     finding after the assemble that applied it: an earlier assemble recorded the finding's digest
@@ -516,7 +570,8 @@ def accept_judged(
     for fid in sorted(needed):
         if fid not in decided:
             raise AssembleError(f"{fid}: differs, but no judge finding decides it")
-    blind_only = blind_only_decisions(state, in_scope)
+    judge_ids = {str(f["id"]) for f in judged} | set(previous.added)
+    blind_only, blind_links = blind_only_decisions(state, judge_ids, in_scope)
     for fid in sorted(decided):
         if fid not in c.findings:
             raise AssembleError(f"{fid}: a judge finding replaces it, but {c.lit_path} lacks it")
@@ -578,6 +633,7 @@ def accept_judged(
         target_digests,
         addition_digests,
         blind_only,
+        blind_links,
     )
 
 
@@ -719,7 +775,10 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
         name,
         judged_digests,
         approvals,
-        accepted.blind_only,
+        {
+            sid: mapping[accepted.blind_links[sid]] if sid in accepted.blind_links else decision
+            for sid, decision in accepted.blind_only.items()
+        },
     )
     registry = with_counter(c.reg, PREFIX, new_counter) if new_counter != counter else None
     return Assembled(c, record, literature, registry, new_ids)

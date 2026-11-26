@@ -274,12 +274,18 @@ schema and carry no approval field or `verified_by`). The steps, in this order:
    A finding only the blind reader reported (`comparison.json` lists it as read by the blind pass only; there is none in
    a backfill, whose blind fields `compare` pairs by finding id) is the judge's to account for: the
    judge's decisions file needs an entry keyed by that blind id (`CHDA:LIT:08NNnnn`) holding a
-   row whose `field` is `finding`. Its `decision` is `second` when the judge adopted the finding
-   (the judge also writes it as a finding of its own, with a local `07` id), `first` or `neither`
-   when it did not; `quote`, `where` and `rule` give the reason. `assemble` exits 2, with nothing
+   row whose `field` is `finding`, in the decisions file of the id's own batch
+   (`judge-NN.decisions.yaml`, NN being digits 3 and 4 of the id's number). Its `decision` is
+   `second` when the judge adopted the finding: the `value` then names the local `07` id of the
+   finding the judge wrote for it, which that batch's `judging/judge-NN.findings.yaml` must hold
+   (or an earlier assemble must have mapped). It is `first` or `neither` when the judge did not
+   add it, and the `value` then names no judge finding; `quote`, `where` and `rule` give the
+   reason. `assemble` exits 2, with nothing
    written, naming every such id that has no entry or whose entry has no `finding` row
    ("reported only by the blind reader, but no judge decision records whether it was added"), and
-   records the decisions in `assemble.json`, under its blind-only entry.
+   likewise for an adopted finding that names no judge finding, a not-added one that names one, or
+   an entry in another batch's file. It records the decisions in `assemble.json`, under its
+   blind-only entry (the final id of the adopting finding for an adopted one).
 2. **What a judge may change.** In a `new` run (a `reread` plan is treated alike, though no command writes one yet, so that
    path is untested) a judge's finding for a `differs` id may
    differ from the file's finding (both after the notation rules, a variant's `as_reported` span
@@ -382,7 +388,8 @@ How the pass is applied, by the run's mode in `batches.json`:
   `comparison.json` and exits 2 with `assemble`'s message where `assemble` would refuse; the
   check that a judge changed only the fields a `differs` id names covers every `differs` id a
   judge finding of this batch's file replaces, as in `assemble`. A finding only the blind
-  reader reported, on a paper of this batch, needs its `finding` decision as in `assemble`. It does
+  reader reported, on a paper of this batch, needs its `finding` decision as in `assemble`, read from this batch's own
+  `judge-NN.decisions.yaml` alone. It does
   not run the notation rules or write `verified_by`.
 - `backfill`, `--pass extract` or `verify`: the declared fields are filled by `merge`'s own
   backfill functions, so a field a finding already holds is refused (exit 2). Check a backfill
@@ -423,7 +430,7 @@ since (a backfill voids approvals, and the page shows such a card as "approval v
 a `LIT015` on a finding the page has no card for is refused too, naming the finding. The page's
 validate line is the summary validate printed. A finding only the blind reader reported has no
 card: the page lists it apart, read-only, under "Only the blind reader reported this" (its paper,
-the blind reader's summary, the judge's decision and the quote with its check), with no decision
+the blind reader's summary, the judge's decision, "adopted as <final id>" once assembled, and the quote with its check), with no decision
 control, so a decisions file never names it. The page saves two ways: opened as a claude.ai artifact it
 saves to the page's store; opened as a plain file it saves in the browser. A page published as a claude.ai artifact needs the `downloads` capability beside `db`: claude.ai never lets a page download a file itself, so without `downloads` "Download my review" cannot save there (the page says the review was not saved). "Download my review"
 (available at any time) gives a decisions file, which the atlas's `literature apply-review`

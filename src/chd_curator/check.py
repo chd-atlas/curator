@@ -259,7 +259,7 @@ def _applied(
     if not path.is_file():
         raise CheckError(f"{path}: the batch has no such file")
     if which == "judge":
-        state = read_state(root, run, approved)
+        state = read_state(root, run, approved, only=batch.id)
         c = state.curated
         read = judge_findings(run, plan, state.schema, only=batch.id)
         digests = {str(f["id"]): judge_digest(f) for f in read}

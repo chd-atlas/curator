@@ -1034,6 +1034,7 @@ def test_a_finding_only_the_blind_reader_reported_is_listed_read_only_with_the_j
             },
             "summary": "A sibling listed in the supplementary table carried the same "
             "heterozygous frameshift and an atrial septal defect.",
+            "adopted_as": None,
             "rows": [
                 {
                     "name": "finding",
@@ -1096,3 +1097,14 @@ def test_a_first_pass_only_finding_with_no_judge_or_quote_still_has_a_card(
     ev.write_text(text[text.index(J) :])  # G's quotes are the file's first block
     c = card(build(run, stub_atlas), G)
     assert (c["agreement"], c["group"], c["n_judged"]) == ("one_reader", "one_reader", 0)
+
+
+def test_an_adopted_blind_only_finding_carries_the_final_id_assemble_recorded(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    from chd_curator.run import AssembleRecord, write_assemble
+
+    write_assemble(run, AssembleRecord((), {}, (), (), None, {}, {}, {BLIND: "CHDA:LIT:0000903"}))
+    assert [b["adopted_as"] for b in build(run, stub_atlas)["blind_only"]] == ["CHDA:LIT:0000903"]
+    write_assemble(run, AssembleRecord((), {}, (), (), None, {}, {}, {BLIND: "first"}))
+    assert [b["adopted_as"] for b in build(run, stub_atlas)["blind_only"]] == [None]

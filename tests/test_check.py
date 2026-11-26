@@ -674,6 +674,21 @@ def test_a_judge_pass_missing_the_blind_only_decision_exits_2_with_assembles_mes
     assert not (tmp_path / "seen").exists() and _snapshot(p.root) == before
 
 
+def test_a_judge_pass_reads_only_its_own_batchs_decisions_file_for_the_blind_only_rule(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(b) addendum: another batch's decisions file, even a malformed one, is not read; the
+    batch's own file with a `second` that names no judge finding is refused as assemble does."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    (p.judge / "judge-02.decisions.yaml").write_text("not: [a mapping of decisions\n")
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    assert _check(p.root, cli, pass_="judge")[0] == 0
+    _edit(p.judge / "judge-01.decisions.yaml", "value: CHDA:LIT:0701001", "value: reported")
+    code, out = _check(p.root, cli, pass_="judge")
+    assert code == 2
+    assert "CHDA:LIT:0801003: adopted (second), but its value 'reported' does not name" in out
+
+
 def test_another_batchs_judge_file_is_not_read(
     tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

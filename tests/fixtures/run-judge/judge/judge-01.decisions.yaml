@@ -23,5 +23,5 @@ CHDA:LIT:0801003:
   quote: 'Table S1: carrier 3 carried c.998G>A, p.(Gly333Glu), heterozygous'
   rule: 'A synthetic rule: a carrier in a supplement is a finding, added as CHDA:LIT:0701001.'
   second: reported
-  value: reported
+  value: CHDA:LIT:0701001
   where: Table S1

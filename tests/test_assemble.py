@@ -138,7 +138,7 @@ def test_assemble_on_the_fixture_gives_the_literal_file_record_and_summary(
         "{\n"
         ' "added": {\n  "CHDA:LIT:0701001": "CHDA:LIT:0009005"\n },\n'
         ' "approvals": {\n  "CHDA:LIT:0009003": null,\n  "CHDA:LIT:0009005": null\n },\n'
-        ' "blind_only": {\n  "CHDA:LIT:0801003": "second"\n },\n'
+        ' "blind_only": {\n  "CHDA:LIT:0801003": "CHDA:LIT:0009005"\n },\n'
         ' "format": 1,\n'
         ' "judged": {\n'
         '  "CHDA:LIT:0009003": '
@@ -760,6 +760,8 @@ def _id_missing_from_the_file(p: RunPaths) -> None:
     data["only_first"].append("CHDA:LIT:0009999")
     path.write_text(json.dumps(data))
     _edit(_judge1(p), "id: CHDA:LIT:0701001", "id: CHDA:LIT:0009999")
+    # 0801003 was adopted as that 0701001; it is no longer, or the link breaks first
+    _set_entry(p, decision="neither", value="not added")
 
 
 def _excluded_by_someone_else(p: RunPaths) -> None:
@@ -1495,9 +1497,11 @@ def test_a_judge_decision_for_the_blind_only_finding_is_recorded_in_assemble_jso
     code, out = _assemble(p, stub_atlas)
     assert code == 0, out
     assert out.endswith("marked 2 verified, 1 blind-only decided\n")
-    assert json.loads((p.dir / "assemble.json").read_text())["blind_only"] == {BLIND_ONLY: "second"}
+    assert json.loads((p.dir / "assemble.json").read_text())["blind_only"] == {
+        BLIND_ONLY: ADDED_FINAL
+    }
     record = load_assemble(p)
-    assert record is not None and record.blind_only == {BLIND_ONLY: "second"}
+    assert record is not None and record.blind_only == {BLIND_ONLY: ADDED_FINAL}
 
 
 def test_a_blind_only_finding_no_judge_decision_accounts_for_is_refused_with_nothing_written(
@@ -1530,7 +1534,7 @@ def test_a_blind_only_finding_the_judge_did_not_add_is_recorded_with_its_decisio
 ) -> None:
     p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
     data = YAML_SAFE.load(_decisions1(p).read_text())
-    data[BLIND_ONLY][0]["decision"] = decision
+    data[BLIND_ONLY][0].update(decision=decision, value="not added")
     _decisions1(p).write_text(json.dumps(data))
     code, out = _assemble(p, stub_atlas)
     assert code == 0, out
@@ -1603,4 +1607,58 @@ def test_a_first_pass_only_finding_the_judge_left_alone_and_with_no_quotes_gets_
         "one_reader",
         "unapproved",
         False,
+    )
+
+
+def _set_entry(p: RunPaths, **row: str) -> None:
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    data[BLIND_ONLY][0].update(row)
+    _decisions1(p).write_text(json.dumps(data))
+
+
+@pytest.mark.parametrize("value", ["reported", "CHDA:LIT:0701099", "CHDA:LIT:0009003"])
+def test_an_adopted_blind_only_finding_must_name_the_judge_finding_that_adopts_it(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    """R-P2-66(b) addendum: `second` names no judge finding (prose), a 07 id the batch's judging
+    file lacks, or a finding that is not the judge's addition: refused, nothing written."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _set_entry(p, value=value)
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: adopted (second), but its value {value!r} does not name exactly one "
+        "judge finding of batch 01",
+    )
+
+
+def test_a_blind_only_finding_decided_not_added_must_not_name_a_judge_finding(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _set_entry(p, decision="first")
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: decided first, so not added, but its value names the judge finding {ADDED}",
+    )
+
+
+def test_a_blind_only_decision_must_sit_in_its_own_batchs_decisions_file(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    moved = {BLIND_ONLY: data.pop(BLIND_ONLY)}
+    _decisions1(p).write_text(json.dumps(data))
+    (p.judge / "judge-02.decisions.yaml").write_text(json.dumps(moved))
+    _expect_refused(
+        p,
+        stub_atlas,
+        f"{BLIND_ONLY}: its decision is in the file for batch 02, but a finding only the blind "
+        "reader reported in batch 01 is decided in judge-01.decisions.yaml",
     )

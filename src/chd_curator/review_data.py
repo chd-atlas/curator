@@ -24,7 +24,8 @@ the judge files: ``agreed`` (listed ``agreed`` or ``span_only``), ``judged`` (li
 ``differs``, which must then have judge decisions) or ``one_reader`` (covered, in no list).
 A finding only the blind reader reported (``comparison.json``'s ``only_second``) is in no
 literature file and has no card. It is listed apart as ``blind_only``, read-only, with its paper,
-the blind reader's summary and the judge's decision rows on it, and takes no decision, so a
+the blind reader's summary and the judge's decision rows on it (and, once assembled, the
+final id of the finding that adopted it as ``adopted_as``), and takes no decision, so a
 decisions file never names it. A judge key that is such an id is not an unknown finding.
 When the run holds ``normalise.json`` (written by ``chd-curator normalise --run``), a variant
 card carries that variant's ``reading`` (None when it has none); an entry naming a finding or
@@ -52,6 +53,7 @@ from chd_curator.run import (
     JudgeDecision,
     PaperText,
     RunPaths,
+    load_assemble,
     load_blind_only,
     load_comparison,
     load_evidence,
@@ -684,6 +686,7 @@ def _blind_only(
     judge: Mapping[str, Sequence[JudgeDecision]],
     checks: Sequence[QuoteCheck],
     paper: _Paper,
+    recorded: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """The findings only the blind reader reported, by id: the paper, the blind reader's summary
     and each decision of the judge on it as a row shaped like a judged finding row, its quote
@@ -710,6 +713,9 @@ def _blind_only(
                 "id": sid,
                 "paper": paper.info(str(blind[sid]["publication"])),
                 "summary": str(blind[sid].get("summary", "")),
+                "adopted_as": next(
+                    (v for v in [recorded.get(sid)] if v not in (None, "first", "neither")), None
+                ),
                 "rows": rows,
             }
         )
@@ -759,6 +765,7 @@ def build_review_data(
             f"{lit_path} does not hold (all such pairs: {unknown})"
         )
     blind = load_blind_only(run)
+    assembled = load_assemble(run)
     covered = _covered(comparison, judge, evidence)
     stray = sorted(covered - held)
     if stray:
@@ -844,7 +851,9 @@ def build_review_data(
         ],
         "triage": _triage(triage_entries, paper),
         "findings": cards,
-        "blind_only": _blind_only(comparison, blind, judge, checks, paper),
+        "blind_only": _blind_only(
+            comparison, blind, judge, checks, paper, assembled.blind_only if assembled else {}
+        ),
     }
     if reviewer.role == "owner":
         data["second_opinions"] = _second_opinions(
