@@ -720,6 +720,24 @@ chd-curator check-site --site /path/to/site.yaml [--shadow-role triage-screen]
 Exit 0 when every role is configured and allowed (or shadowed); exit 2, one line per role, when not.
 Only the two triage roles may be shadowed.
 
+### Asking a role's model
+
+```bash
+chd-curator ask --role extract --requests req.jsonl --answers ans.jsonl \
+    --site /path/to/site.yaml --root /path/to/atlas [--cache DIR] \
+    [--validate check-batch --run r1] [--shadow] [--allow-errors]
+```
+
+One request per line, `{"key": ..., "inputs": {...}}` (a `check-batch` request also carries `gene`
+and `batch`, and `mode` when it is `backfill`). Each request is answered from the cache, or by the
+role's backend, parsed as one JSON object, validated against the role's answer schema (readers and
+the judge with `--validate check-batch` through the batch check, which writes the answer as the
+batch's contract files under the run directory and removes them again if it refuses), and retried
+at most twice with the errors appended. A model the register does not qualify, a repeated key and
+an input that does not fit the backend's context are refused, never truncated. Exit 0 when every
+request has an answer, 1 when one has an `error` row (unless `--allow-errors`), 2 for a bad
+argument or an unqualified model. It writes no approval.
+
 ## Develop
 
 curator's tests run against a real atlas checkout and stop if any of these is unset:

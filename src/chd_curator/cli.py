@@ -36,6 +36,7 @@ from ruamel.yaml.error import YAMLError
 from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, sources, variantvalidator
+from chd_curator import ask as ask_module
 from chd_curator import assemble as assemble_module
 from chd_curator import batch as batch_module
 from chd_curator import check as check_module
@@ -1712,3 +1713,62 @@ def check_site(
             typer.echo(f"error: {line}")
         raise typer.Exit(code=2)
     typer.echo(f"site ok: {len(loaded.roles)} role(s) configured, {len(shadow_role)} in shadow")
+
+
+@app.command("ask")
+def ask_command(
+    role: str = typer.Option(..., "--role", help=f"One of {', '.join(ROLES)}."),
+    requests: Path = typer.Option(..., "--requests", help="JSONL of {key, inputs} rows."),
+    answers: Path = typer.Option(..., "--answers", help="The JSONL file to write."),
+    site: Path = typer.Option(..., "--site", help="The site config YAML."),
+    root: Path = typer.Option(..., "--root", help="Atlas checkout root."),
+    cache: Path | None = typer.Option(None, "--cache", help="A directory of validated answers."),
+    validate: str = typer.Option("schema", "--validate", help="schema or check-batch."),
+    run: str | None = typer.Option(None, "--run", help="The run id (needed by check-batch)."),
+    shadow: bool = typer.Option(False, "--shadow", help="Run a model the register does not allow."),
+    allow_errors: bool = typer.Option(
+        False, "--allow-errors", help="Exit 0 although some request has an error row."
+    ),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Ask a role's model once per request, validate, retry at most twice, cache by input.
+
+    Writes one answer row per request, in the requests' order, to `--answers`: `{key, parsed,
+    attempts, usage, seconds, model_key, input_digest, rules_digest}` or `{key, error,
+    attempts}`. Prints one summary line. Exit 0 when every request has an answer (or with
+    `--allow-errors`); 1 when a request has an error row; 2 for a bad argument, request, site,
+    run or a model the register does not qualify for the role (unless `--shadow`), before any
+    call. Writes no approval: it writes answers, and with `--validate check-batch` the batch's
+    contract files under the run directory.
+    """
+    _require_root(root)
+    if validate not in ("schema", "check-batch"):
+        raise _fail(f"--validate {validate!r} is not schema or check-batch", 2)
+    try:
+        loaded = load_site(site)
+        entries = register_mod.load_register()
+        summary = ask_module.ask(
+            role,
+            requests,
+            answers,
+            loaded,
+            entries,
+            root,
+            cache,
+            "check-batch" if validate == "check-batch" else "schema",
+            run,
+            shadow,
+            atlas_cli=atlas_cli,
+        )
+    except (SiteError, register_mod.RegisterError, ask_module.AskUsageError) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    tokens = sum(summary.usage.values())
+    failed = f"{len(summary.failed)} ({', '.join(summary.failed)})" if summary.failed else "0"
+    extra = (", shadow: true" if shadow else "") + (f", run: {run}" if run else "")
+    typer.echo(
+        f"asked {summary.asked}, cached {summary.cached}, failed {failed}, tokens {tokens}{extra}"
+    )
+    if summary.failed and not allow_errors:
+        raise typer.Exit(code=1)
