@@ -148,6 +148,8 @@ def test_comparison_loads_and_a_missing_one_is_empty(run_copy: RunPaths) -> None
         ("CHDA:LIT:0000901",),
         ("CHDA:LIT:0000903",),
         {"CHDA:LIT:0000902": ("phenotypes", "variants")},
+        (),
+        ("CHDA:LIT:0801004",),
     )
     run_copy.comparison.unlink()
     assert load_comparison(run_copy) == Comparison({}, (), (), {})
@@ -155,7 +157,7 @@ def test_comparison_loads_and_a_missing_one_is_empty(run_copy: RunPaths) -> None
 
 def test_judge_decisions_load_with_their_fields(run_copy: RunPaths) -> None:
     judged = load_judge(run_copy)
-    assert list(judged) == ["CHDA:LIT:0000902"]
+    assert list(judged) == ["CHDA:LIT:0000902", "CHDA:LIT:0801004"]
     decisions = judged["CHDA:LIT:0000902"]
     assert decisions[0] == JudgeDecision(
         "phenotypes",

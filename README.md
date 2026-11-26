@@ -271,6 +271,15 @@ schema and carry no approval field or `verified_by`). The steps, in this order:
    decisions file stays as the judge wrote it: the run's loader for decisions (so `quotes` and `review-page`) reads a
    decision keyed by a local id under its final id once `assemble.json` maps it, and an
    unassembled run is refused by `review-page`, naming that id.
+   A finding only the blind reader reported (`comparison.json` lists it as read by the blind pass only; there is none in
+   a backfill, whose blind fields `compare` pairs by finding id) is the judge's to account for: the
+   judge's decisions file needs an entry keyed by that blind id (`CHDA:LIT:08NNnnn`) holding a
+   row whose `field` is `finding`. Its `decision` is `second` when the judge adopted the finding
+   (the judge also writes it as a finding of its own, with a local `07` id), `first` or `neither`
+   when it did not; `quote`, `where` and `rule` give the reason. `assemble` exits 2, with nothing
+   written, naming every such id that has no entry or whose entry has no `finding` row
+   ("reported only by the blind reader, but no judge decision records whether it was added"), and
+   records the decisions in `assemble.json`, under its blind-only entry.
 2. **What a judge may change.** In a `new` run (a `reread` plan is treated alike, though no command writes one yet, so that
    path is untested) a judge's finding for a `differs` id may
    differ from the file's finding (both after the notation rules, a variant's `as_reported` span
@@ -323,9 +332,10 @@ assemble voids the one a finding carried) stays void. The one refusal is exit 2 
 differs from the recorded one, that is when the owner approved the finding after that assemble.
 
 Example output: `replaced 1 judged findings, added 1 (CHDA:LIT:0009005), fixed 0 names by rule,
-marked 2 verified`. The line states the totals `assemble.json` records: `replaced` counts the
+marked 2 verified, 1 blind-only decided`. The line states the totals `assemble.json` records: `replaced` counts the
 judged findings that replaced a merged one (a fix round's second replacement of an added finding
-is not counted again), `added` every finding numbered, across rounds. It exits 2, with every file
+is not counted again), `added` every finding numbered, across rounds, `blind-only decided`
+the findings only the blind reader reported whose decisions `assemble.json` records. It exits 2, with every file
 unchanged, for every refusal found before the first write (and a write refused after earlier ones
 exits 2 naming the files already written, `assemble.json` first; they stay as written): no
 `merge.json` or `comparison.json`; modes in `batches.json` and
@@ -333,7 +343,7 @@ exits 2 naming the files already written, `assemble.json` first; they stay as wr
 finding with an approval field or `verified_by`, citing a paper outside its batch, repeating an
 id, or with an id that is neither a `differs` id, a first-pass-only id, an id of an earlier assemble
 nor `CHDA:LIT:07...`; a `differs` id with no judge finding, or one `comparison.json` also lists as
-agreed; a finding to be marked `verified_by` that no longer agrees with its blind finding; a changed judge finding for a finding approved since the assemble that applied it; a field changed that
+agreed; a finding only the blind reader reported with no `finding` decision of the judge; a finding to be marked `verified_by` that no longer agrees with its blind finding; a changed judge finding for a finding approved since the assemble that applied it; a field changed that
 no decision names; a paper with no Publication; a triage entry
 someone else excluded; an `assemble.json` naming ids the file lacks; a blind pass with more than
 one `extracted_by`; a file any write would refuse (the atlas's schema, an anchor, an approval
@@ -371,7 +381,8 @@ How the pass is applied, by the run's mode in `batches.json`:
   backfill), the same Publication and triage rules for an added finding. It needs `merge.json` and
   `comparison.json` and exits 2 with `assemble`'s message where `assemble` would refuse; the
   check that a judge changed only the fields a `differs` id names covers every `differs` id a
-  judge finding of this batch's file replaces, as in `assemble`. It does
+  judge finding of this batch's file replaces, as in `assemble`. A finding only the blind
+  reader reported, on a paper of this batch, needs its `finding` decision as in `assemble`. It does
   not run the notation rules or write `verified_by`.
 - `backfill`, `--pass extract` or `verify`: the declared fields are filled by `merge`'s own
   backfill functions, so a field a finding already holds is refused (exit 2). Check a backfill
@@ -399,7 +410,8 @@ kind), or an unreadable gene or run. It exits 1 on an OS error while a file is r
 `judge/` files against the text of the finding's paper and writes
 `local/literature/runs/<SYMBOL>/<run id>/quotes.json`. A quote whose paper has no text is
 recorded as not checked (`checked: false`, `found: false` in `quotes.json`), never as not
-found.
+found. A decision keyed by a finding only the blind reader reported is checked against that
+finding's own paper, its publication in the verify pass.
 
 `chd-curator review-page <SYMBOL> --run <run id> --reviewer <name> [--role owner|second_opinion]
 [--with <decisions.json> ...]` writes the run's review page, one self-contained HTML file:
@@ -409,7 +421,10 @@ must be a format 1 decisions file by a second opinion on the same gene). It refu
 when `chd-atlas validate` reports an error other than `LIT015`, an approval whose finding changed
 since (a backfill voids approvals, and the page shows such a card as "approval void: re-approve");
 a `LIT015` on a finding the page has no card for is refused too, naming the finding. The page's
-validate line is the summary validate printed. The page saves two ways: opened as a claude.ai artifact it
+validate line is the summary validate printed. A finding only the blind reader reported has no
+card: the page lists it apart, read-only, under "Only the blind reader reported this" (its paper,
+the blind reader's summary, the judge's decision and the quote with its check), with no decision
+control, so a decisions file never names it. The page saves two ways: opened as a claude.ai artifact it
 saves to the page's store; opened as a plain file it saves in the browser. A page published as a claude.ai artifact needs the `downloads` capability beside `db`: claude.ai never lets a page download a file itself, so without `downloads` "Download my review" cannot save there (the page says the review was not saved). "Download my review"
 (available at any time) gives a decisions file, which the atlas's `literature apply-review`
 applies, and `review-decisions` below gives one from the store; both leave out a card decided on

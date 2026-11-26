@@ -55,6 +55,11 @@ VERIFIER = "agent:literature-verify/claude-opus-5-5"
 ADDED = "CHDA:LIT:0701001"
 ADDED_FINAL = "CHDA:LIT:0009005"
 JUDGED = "CHDA:LIT:0009003"
+BLIND_ONLY = "CHDA:LIT:0801003"
+BLIND_ONLY_REFUSAL = (
+    f"{BLIND_ONLY}: reported only by the blind reader, but no judge decision records whether "
+    "it was added"
+)
 
 EXPECTED = Path(__file__).parent / "fixtures" / "run-judge-expected"
 ASSEMBLED_FILE = (EXPECTED / "assembled-TBX5.yaml").read_text()
@@ -123,7 +128,7 @@ def test_assemble_on_the_fixture_gives_the_literal_file_record_and_summary(
     assert code == 0, out
     assert out == (
         "replaced 1 judged findings, added 1 (CHDA:LIT:0009005), fixed 0 names by rule, "
-        "marked 2 verified\n"
+        "marked 2 verified, 1 blind-only decided\n"
     )
     assert _lit(p).read_text() == ASSEMBLED_FILE
     assert (
@@ -133,6 +138,7 @@ def test_assemble_on_the_fixture_gives_the_literal_file_record_and_summary(
         "{\n"
         ' "added": {\n  "CHDA:LIT:0701001": "CHDA:LIT:0009005"\n },\n'
         ' "approvals": {\n  "CHDA:LIT:0009003": null,\n  "CHDA:LIT:0009005": null\n },\n'
+        ' "blind_only": {\n  "CHDA:LIT:0801003": "second"\n },\n'
         ' "format": 1,\n'
         ' "judged": {\n'
         '  "CHDA:LIT:0009003": '
@@ -404,12 +410,12 @@ def test_decisions_keyed_by_the_judges_local_id_are_read_under_the_final_id_once
 ) -> None:
     p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
     before = (p.judge / "judge-01.decisions.yaml").read_bytes()
-    assert sorted(load_judge(p)) == [JUDGED, ADDED]
+    assert sorted(load_judge(p)) == [JUDGED, ADDED, BLIND_ONLY]
     with pytest.raises(ReviewDataError, match="CHDA:LIT:0701001"):
         _review(p)
     assert _assemble(p, stub_atlas)[0] == 0
     decisions = load_judge(p)
-    assert sorted(decisions) == [JUDGED, ADDED_FINAL]
+    assert sorted(decisions) == [JUDGED, ADDED_FINAL, BLIND_ONLY]
     assert [(d.field, d.value) for d in decisions[ADDED_FINAL]] == [("design", "case_report")]
     assert (p.judge / "judge-01.decisions.yaml").read_bytes() == before  # the judge's file stays
     data = _review(p)
@@ -477,7 +483,7 @@ def test_notation_fixes_every_finding_of_the_run_and_records_each_with_its_rule(
     _edit(_judge1(p), "      p: p.(Gly333Glu)\n", "      p: p.(Gly333ter)\n")
     code, out = _assemble(p, stub_atlas)
     assert code == 0, out
-    assert out.endswith("fixed 4 names by rule, marked 2 verified\n")
+    assert out.endswith("fixed 4 names by rule, marked 2 verified, 1 blind-only decided\n")
     record = load_assemble(p)
     assert record is not None
     assert [
@@ -718,7 +724,7 @@ def _judge_key_added_twice(p: RunPaths) -> None:
 
 def _stale_assemble(p: RunPaths) -> None:
     write_assemble(
-        p, AssembleRecord((), {ADDED: "CHDA:LIT:0009005"}, (), (), None, {}, {})
+        p, AssembleRecord((), {ADDED: "CHDA:LIT:0009005"}, (), (), None, {}, {}, {})
     )  # the file has no 0009005
 
 
@@ -768,6 +774,16 @@ def _excluded_by_someone_else(p: RunPaths) -> None:
 
 def _verify_files_gone(p: RunPaths) -> None:
     shutil.rmtree(p.verify)
+    doc = json.loads(p.comparison.read_text())
+    del doc["only_second"]  # else the blind-only finding's own lookup is the first refusal
+    p.comparison.write_text(json.dumps(doc))
+
+
+def _blind_only_finding_gone_from_the_verify_pass(p: RunPaths) -> None:
+    path = p.verify / "batch-01.findings.yaml"
+    data = YAML_SAFE.load(path.read_text())
+    data["findings"] = [f for f in data["findings"] if f["id"] != BLIND_ONLY]
+    path.write_text(json.dumps(data))
 
 
 def _verify_finding_without_a_name(p: RunPaths) -> None:
@@ -814,6 +830,10 @@ REFUSALS = {
         "CHDA:LIT:0009999: a judge finding replaces it, but",
     ),
     "verify-files-gone": (_verify_files_gone, "holds no finding to read the verifier's name from"),
+    "blind-only-finding-gone-from-the-verify-pass": (
+        _blind_only_finding_gone_from_the_verify_pass,
+        f"holds no finding {BLIND_ONLY}, which",
+    ),
     "verify-finding-without-a-name": (_verify_finding_without_a_name, "has no extracted_by"),
     "review-marks-not-in-differs": (_review_marks_not_in_differs, "the judge changed"),
     "stale-assemble-json": (_stale_assemble, "stopped part-way"),
@@ -1165,7 +1185,8 @@ def test_a_backfill_marks_agreement_with_the_named_verifier_and_needs_one(
     code, out = _assemble(p, stub_atlas, "--verifier", "agent:literature-verify/test-model")
     assert code == 0, out
     assert out == (
-        "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 1 verified\n"
+        "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 1 verified, "
+        "0 blind-only decided\n"
     )
     f = _findings(p)["CHDA:LIT:0009001"]
     assert f["verified_by"] == "agent:literature-verify/test-model"
@@ -1238,7 +1259,8 @@ def test_a_backfill_takes_only_the_declared_fields_from_a_judge_and_drops_verifi
     assert (f["approved_by"], f["approved_on"].isoformat()) == ("E.A.M", "2026-11-19")
     assert f["approved_digest"].startswith("sha256:da89e4f2")
     assert out.startswith(
-        "replaced 1 judged findings, added 0, fixed 0 names by rule, marked 0 verified"
+        "replaced 1 judged findings, added 0, fixed 0 names by rule, marked 0 verified, "
+        "0 blind-only decided"
     )
     # a judge that changed anything else in a backfill is refused (with no record of the first
     # round, the approved-finding refusal of a re-run does not apply)
@@ -1448,8 +1470,110 @@ def test_the_judge_fixture_is_the_one_the_literal_expects() -> None:
         ]
     ]
     assert ids == [JUDGED, ADDED]
-    assert assemble_module.summary(AssembleRecord((), {}, (), (), None, {}, {})) == (
-        "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 0 verified"
+    assert assemble_module.summary(AssembleRecord((), {}, (), (), None, {}, {}, {})) == (
+        "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 0 verified, "
+        "0 blind-only decided"
+    )
+
+
+def _decisions1(p: RunPaths) -> Path:
+    return p.judge / "judge-01.decisions.yaml"
+
+
+def _without_blind_only_entry(p: RunPaths) -> None:
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    del data[BLIND_ONLY]
+    _decisions1(p).write_text(json.dumps(data))
+
+
+def test_a_judge_decision_for_the_blind_only_finding_is_recorded_in_assemble_json(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(b): the fixture's blind-only 0801003 has a decision row `finding: second`
+    (adopted as the judge's 0701001); assemble.json records it and the summary counts it."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert out.endswith("marked 2 verified, 1 blind-only decided\n")
+    assert json.loads((p.dir / "assemble.json").read_text())["blind_only"] == {BLIND_ONLY: "second"}
+    record = load_assemble(p)
+    assert record is not None and record.blind_only == {BLIND_ONLY: "second"}
+
+
+def test_a_blind_only_finding_no_judge_decision_accounts_for_is_refused_with_nothing_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m2: the judge file held only 0009003, and assemble exited 0 with the blind reader's
+    finding vanished. It now names the id and writes nothing."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _without_blind_only_entry(p)
+    _expect_refused(p, stub_atlas, BLIND_ONLY_REFUSAL)
+
+
+def test_a_blind_only_entry_without_a_finding_row_does_not_account_for_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    data[BLIND_ONLY][0]["field"] = "design"
+    _decisions1(p).write_text(json.dumps(data))
+    _expect_refused(p, stub_atlas, BLIND_ONLY_REFUSAL)
+
+
+@pytest.mark.parametrize("decision", ["first", "neither"])
+def test_a_blind_only_finding_the_judge_did_not_add_is_recorded_with_its_decision(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: str,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    data = YAML_SAFE.load(_decisions1(p).read_text())
+    data[BLIND_ONLY][0]["decision"] = decision
+    _decisions1(p).write_text(json.dumps(data))
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    assert load_assemble(p).blind_only == {BLIND_ONLY: decision}  # type: ignore[union-attr]
+
+
+def test_a_backfill_has_no_blind_only_finding_so_the_rule_asks_nothing_of_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    """Measured for the report: compare pairs a backfill's blind fields by finding id, so its
+    `only_second` is empty and an assemble needs no `finding` entry."""
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [alpha]\n",
+        cohorts="[alpha]",
+    )
+    assert load_comparison(p).only_second == ()
+    code, out = _assemble(p, stub_atlas, "--verifier", "agent:literature-verify/test-model")
+    assert code == 0, out
+    assert out.endswith("marked 1 verified, 0 blind-only decided\n")
+    assert load_assemble(p).blind_only == {}  # type: ignore[union-attr]
+
+
+def test_a_blind_only_finding_reaches_the_review_data_and_its_quote_is_checked_against_its_paper(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before assemble the decision keyed by the blind reader's own id is no stray id; the quote
+    is checked against the blind finding's paper (PMID:91000002), found."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    data = _review(p)
+    assert [(b["id"], b["paper"]["pmid"]) for b in data["blind_only"]] == [
+        (BLIND_ONLY, "PMID:91000002")
+    ]
+    assert BLIND_ONLY not in [c["id"] for c in data["findings"]]
+    assert [(c.finding, c.origin, c.paper, c.checked, c.found) for c in check_quotes(p)][-1] == (
+        BLIND_ONLY,
+        "judge",
+        "PMID:91000002",
+        True,
+        True,
     )
 
 

@@ -19,8 +19,10 @@ root is written.
   (``accept_judged``, ``apply_judged``): a finding replaces the finding of its id, or is numbered
   when its local id is ``CHDA:LIT:07...``; an id an earlier ``assemble.json`` mapped is a
   replacement of the finding it was numbered as; a finding whose digest ``assemble.json`` records
-  unchanged is not applied again. Another batch's ``07NN...`` id in ``shares_probands_with`` is
-  dropped in the copy and reported as ``NOT CHECKED`` (assemble resolves it).
+  unchanged is not applied again. A finding only the blind reader reported, on a paper of the
+  batch, needs the judge's ``finding`` decision, as in ``assemble``. Another batch's ``07NN...``
+  id in ``shares_probands_with`` is dropped in the copy and reported as ``NOT CHECKED``
+  (assemble resolves it).
 * In a ``backfill`` run an extract or verify pass goes through merge's backfill (the same
   functions, so a field a finding already holds is refused), and a judge pass takes the declared
   fields of each judged finding by ``assemble``'s edit.
@@ -270,7 +272,8 @@ def _applied(
         else:
 
             def in_scope(fid: str) -> bool:
-                return str(c.findings.get(fid, {}).get("publication")) in batch.papers
+                pmid = c.findings.get(fid, {}).get("publication") or state.blind.get(fid)
+                return str(pmid) in batch.papers
 
         accepted = accept_judged(state, judged, digests, in_scope)
         applied = apply_judged(state, run, accepted)

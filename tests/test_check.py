@@ -29,6 +29,7 @@ from chd_curator.atlas import AtlasError
 from chd_curator.cli import app
 from run_fixture import RUN_FIXTURE, copy_judge_round
 from test_assemble import (
+    BLIND_ONLY_REFUSAL,
     JUDGED,
     JUDGED_BACKFILL,
     _approve_in_the_file,
@@ -41,6 +42,7 @@ from test_assemble import (
     _judge_on_the_excluded_paper,
     _ready,
     _review_marks_not_in_differs,
+    _without_blind_only_entry,
 )
 from test_compare import _compare
 from test_merge import _VARIANT, _backfill_run, _fresh, _merge, _pubmed
@@ -655,6 +657,21 @@ def test_a_judge_pass_after_the_owner_approved_a_judged_finding_answers_as_assem
     assert code == 2
     assert f"{JUDGED}: approved; a judge may not change an approved finding" in out
     assert _snapshot(p.root) == before
+
+
+def test_a_judge_pass_missing_the_blind_only_decision_exits_2_with_assembles_message(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(b): the judge's obligation to account for its batch's blind-only findings is
+    assemble's own rule, so check-batch refuses where assemble would, validating nothing."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _without_blind_only_entry(p)
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    before = _snapshot(p.root)
+    code, out = _check(p.root, cli, pass_="judge")
+    assert code == 2
+    assert BLIND_ONLY_REFUSAL in out
+    assert not (tmp_path / "seen").exists() and _snapshot(p.root) == before
 
 
 def test_another_batchs_judge_file_is_not_read(

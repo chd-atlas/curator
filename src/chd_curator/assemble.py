@@ -20,6 +20,12 @@ What is applied, in this order:
    judge, and every other field must equal the file's.
 2. The notation rules, on every finding of the run (a backfill: on the findings the comparison
    paired, when ``variants`` is a declared field).
+   Every finding only the blind reader reported (``comparison.json``'s ``only_second``) needs a
+   judge decision with a ``finding`` row, keyed by its own id in ``judge/judge-NN.decisions.yaml``
+   (``second``: the judge adopted it, as a finding of its own; ``first`` or ``neither``: not
+   added). A missing one is a refusal, and ``assemble.json`` records each decision (``blind_only``).
+   A backfill has none: ``compare`` pairs its blind fields by finding id, so its ``only_second``
+   is empty.
 3. ``verified_by`` on the findings the comparison lists as ``agreed`` or ``span_only``. A judged
    finding carries none. Before marking an id that an earlier assemble did not mark, the verdict
    is derived again by ``compare``'s own pair verdict on the file's finding as it stands and the
@@ -51,7 +57,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
@@ -80,13 +86,16 @@ from chd_curator.run import (
     AssembleRecord,
     BatchPlan,
     Comparison,
+    JudgeDecision,
     MergeRecord,
     RunFormatError,
     RunPaths,
     TriageChange,
     load_assemble,
     load_batches,
+    load_blind_only,
     load_comparison,
+    load_judge,
     load_merge,
     load_pass,
     write_assemble,
@@ -351,6 +360,8 @@ class RunState:
     curated: Curated
     schema: Any
     previous: AssembleRecord
+    decisions: Mapping[str, tuple[JudgeDecision, ...]] = field(default_factory=dict)
+    blind: Mapping[str, str] = field(default_factory=dict)
 
 
 def read_state(root: Path, run: RunPaths, approved: str) -> RunState:
@@ -372,14 +383,19 @@ def read_state(root: Path, run: RunPaths, approved: str) -> RunState:
         )
     comparison = load_comparison(run)
     c = read_curated(root, run, approved, refuse_merged=False)
-    previous = load_assemble(run) or AssembleRecord((), {}, (), (), None, {}, {})
+    previous = load_assemble(run) or AssembleRecord((), {}, (), (), None, {}, {}, {})
     for local, final in previous.added.items():
         if final not in c.findings:
             raise AssembleError(
                 f"{run.assemble}: maps {local} to {final}, which {c.lit_path} lacks. A previous "
                 "assemble stopped part-way: remove assemble.json and run it again"
             )
-    return RunState(merged, plan, comparison, c, c.lit_validator.schema, previous)
+    decisions: dict[str, tuple[JudgeDecision, ...]] = {}
+    blind: dict[str, str] = {}
+    if comparison.only_second:
+        decisions = load_judge(run)
+        blind = {fid: str(row["publication"]) for fid, row in load_blind_only(run).items()}
+    return RunState(merged, plan, comparison, c, c.lit_validator.schema, previous, decisions, blind)
 
 
 @dataclass(frozen=True)
@@ -399,6 +415,32 @@ class Accepted:
     unchanged: frozenset[str]
     digests: dict[str, str]
     addition_digests: dict[str, str]
+    blind_only: dict[str, str]
+
+
+def blind_only_decisions(
+    state: RunState, in_scope: Callable[[str], bool] = lambda _: True
+) -> dict[str, str]:
+    """The judge's decision, by id, for each finding only the blind reader reported (an
+    ``only_second`` id of `in_scope`): the ``decision`` of its ``finding`` row in the judge's
+    decisions file, the first when it has several. Every such id must have one, or the blind
+    reader's finding would vanish without a record; the refusal names all that do not."""
+    found: dict[str, str] = {}
+    missing: list[str] = []
+    for sid in sorted(state.comparison.only_second):
+        if not in_scope(sid):
+            continue
+        rows = [d for d in state.decisions.get(sid, ()) if d.field == "finding"]
+        if rows:
+            found[sid] = rows[0].decision
+        else:
+            missing.append(sid)
+    if missing:
+        raise AssembleError(
+            f"{', '.join(missing)}: reported only by the blind reader, but no judge decision "
+            "records whether it was added"
+        )
+    return found
 
 
 def accept_judged(
@@ -416,6 +458,9 @@ def accept_judged(
     judge changed only the fields a ``differs`` id names covers every ``differs`` id a judge
     finding replaces, in scope or not. `digests` maps each
     judge finding's id to ``judge_digest`` of the finding as read, before any caller edited it.
+
+    Every ``only_second`` id of `in_scope` needs a judge decision with a ``finding`` row
+    (``blind_only_decisions``); `in_scope` is applied to those ids too.
 
     A changed judge finding is refused (naming its id) only when the owner approved the file's
     finding after the assemble that applied it: an earlier assemble recorded the finding's digest
@@ -471,6 +516,7 @@ def accept_judged(
     for fid in sorted(needed):
         if fid not in decided:
             raise AssembleError(f"{fid}: differs, but no judge finding decides it")
+    blind_only = blind_only_decisions(state, in_scope)
     for fid in sorted(decided):
         if fid not in c.findings:
             raise AssembleError(f"{fid}: a judge finding replaces it, but {c.lit_path} lacks it")
@@ -531,6 +577,7 @@ def accept_judged(
         frozenset(unchanged),
         target_digests,
         addition_digests,
+        blind_only,
     )
 
 
@@ -665,7 +712,14 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
         for fid in judged_digests
     }
     record = AssembleRecord(
-        replaced, mapping, tuple(notation), tuple(to_mark), name, judged_digests, approvals
+        replaced,
+        mapping,
+        tuple(notation),
+        tuple(to_mark),
+        name,
+        judged_digests,
+        approvals,
+        accepted.blind_only,
     )
     registry = with_counter(c.reg, PREFIX, new_counter) if new_counter != counter else None
     return Assembled(c, record, literature, registry, new_ids)
@@ -733,5 +787,6 @@ def summary(record: AssembleRecord) -> str:
         added = f"added {len(ids)} ({ids[0]}..{ids[-1]})"
     return (
         f"replaced {len(record.replaced)} judged findings, {added}, "
-        f"fixed {len(record.notation)} names by rule, marked {len(record.verified)} verified"
+        f"fixed {len(record.notation)} names by rule, marked {len(record.verified)} verified, "
+        f"{len(record.blind_only)} blind-only decided"
     )

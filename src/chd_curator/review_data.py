@@ -22,6 +22,10 @@ judge files or the evidence files. Other findings of the literature file are out
 ``apply-review`` never touches them. A card's ``agreement`` comes from that comparison, not from
 the judge files: ``agreed`` (listed ``agreed`` or ``span_only``), ``judged`` (listed in
 ``differs``, which must then have judge decisions) or ``one_reader`` (covered, in no list).
+A finding only the blind reader reported (``comparison.json``'s ``only_second``) is in no
+literature file and has no card. It is listed apart as ``blind_only``, read-only, with its paper,
+the blind reader's summary and the judge's decision rows on it, and takes no decision, so a
+decisions file never names it. A judge key that is such an id is not an unknown finding.
 When the run holds ``normalise.json`` (written by ``chd-curator normalise --run``), a variant
 card carries that variant's ``reading`` (None when it has none); an entry naming a finding or
 variant the literature file does not hold is refused.
@@ -48,6 +52,7 @@ from chd_curator.run import (
     JudgeDecision,
     PaperText,
     RunPaths,
+    load_blind_only,
     load_comparison,
     load_evidence,
     load_judge,
@@ -659,16 +664,56 @@ def _covered(
     judge: Mapping[str, Sequence[JudgeDecision]],
     evidence: Mapping[str, Sequence[Any]],
 ) -> set[str]:
-    """The finding ids the run mentions anywhere; a set, only ever tested and sorted."""
+    """The finding ids of the literature file the run mentions anywhere; a set, only ever tested
+    and sorted. A judge key naming a finding only the blind reader reported is not one: that
+    finding is in no literature file (``_blind_only`` lists it)."""
     return {
         *comparison.pairs,
         *comparison.agreed,
         *comparison.span_only,
         *comparison.differs,
         *comparison.only_first,
-        *judge,
+        *(set(judge) - set(comparison.only_second)),
         *evidence,
     }
+
+
+def _blind_only(
+    comparison: Comparison,
+    blind: Mapping[str, Mapping[str, Any]],
+    judge: Mapping[str, Sequence[JudgeDecision]],
+    checks: Sequence[QuoteCheck],
+    paper: _Paper,
+) -> list[dict[str, Any]]:
+    """The findings only the blind reader reported, by id: the paper, the blind reader's summary
+    and each decision of the judge on it as a row shaped like a judged finding row, its quote
+    with the check ``chd-curator quotes`` made. Nothing here is a card: it has no digest and
+    takes no decision."""
+    out: list[dict[str, Any]] = []
+    for sid in sorted(comparison.only_second):
+        mine = {(c.field, c.quote, c.where): c for c in checks if c.finding == sid}
+        rows: list[dict[str, Any]] = []
+        for d in judge.get(sid, ()):
+            found = mine.get((d.field, d.quote, d.where)) if d.quote.strip() else None
+            rows.append(
+                {
+                    "name": d.field,
+                    "value": d.value,
+                    "first": d.first,
+                    "verify": d.second,
+                    "judge": f"{_chose(d)}. {d.rule}",
+                    "quotes": _quotes([found]) if found is not None else [],
+                }
+            )
+        out.append(
+            {
+                "id": sid,
+                "paper": paper.info(str(blind[sid]["publication"])),
+                "summary": str(blind[sid].get("summary", "")),
+                "rows": rows,
+            }
+        )
+    return out
 
 
 def build_review_data(
@@ -713,6 +758,7 @@ def build_review_data(
             f"{run.normalise}: names {unknown[0][0]} variant {unknown[0][1]}, which "
             f"{lit_path} does not hold (all such pairs: {unknown})"
         )
+    blind = load_blind_only(run)
     covered = _covered(comparison, judge, evidence)
     stray = sorted(covered - held)
     if stray:
@@ -798,6 +844,7 @@ def build_review_data(
         ],
         "triage": _triage(triage_entries, paper),
         "findings": cards,
+        "blind_only": _blind_only(comparison, blind, judge, checks, paper),
     }
     if reviewer.role == "owner":
         data["second_opinions"] = _second_opinions(

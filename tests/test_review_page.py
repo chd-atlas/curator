@@ -1249,6 +1249,43 @@ def test_a_placement_reading_is_rendered_in_its_variant_card_as_text(
     assert "CP-D8" not in card_html(dom, J)
 
 
+def blind_only_html(dom: str) -> str:
+    """The "Only the blind reader reported this" section's markup: from its heading to the next."""
+    shown = visible(dom)
+    start = shown.index("Only the blind reader reported this")
+    ends = [
+        i for i in (shown.find('<h2 class="section">', start), shown.find("<pre", start)) if i > 0
+    ]
+    return shown[start : min(ends)]
+
+
+def test_a_finding_only_the_blind_reader_reported_is_listed_read_only_and_never_downloaded(
+    root: Path, stub_atlas: Path
+) -> None:
+    """R-P2-66(b): the section shows the id, its paper, the blind reader's summary, the judge's
+    decision and the quote with its check, and has no decision control and no card; the
+    selftest's own download names no such id."""
+    code, out = build(root, stub_atlas)
+    assert code == 0, out
+    page = Path(out.strip().splitlines()[-1])
+    dom = dump_dom(page)
+    section = blind_only_html(dom)
+    text = plain(section)
+    assert text.startswith("Only the blind reader reported this")
+    assert "CHDA:LIT:0801004" in text
+    assert "A synthetic Holt-Oram family with a TBX5 frameshift." in text
+    assert "A sibling listed in the supplementary table carried the same heterozygous" in text
+    assert "finding" in text and "not added" in text and "chose neither reader" in text
+    assert "Family 1: father, atrial septal defect, c.1085delC" in text
+    assert "Supplementary table S1" in text
+    assert "not found in text" not in text
+    assert not re.search(r"<(button|textarea|input)\b", section)
+    assert 'data-id="CHDA:LIT:0801004"' not in visible(dom)
+    downloaded = selftest_output(dom)
+    assert "CHDA:LIT:0801004" not in json.dumps(downloaded)
+    assert [f["id"] for f in downloaded["findings"]] == [J, A]
+
+
 def test_review_page_builds_over_an_approval_void_on_a_card_and_says_so(
     root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

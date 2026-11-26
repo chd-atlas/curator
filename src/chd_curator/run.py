@@ -482,7 +482,13 @@ def load_judge(p: RunPaths) -> dict[str, tuple[JudgeDecision, ...]]:
     When the run has an ``assemble.json``, such a key is read under the id ``assemble`` gave the
     finding in the literature file, because the review page and the quote check look findings up
     there. A key ``assemble.json`` does not map stays as it is, so a run not yet assembled is
-    refused by naming that id; a mapped key that is already another key is refused."""
+    refused by naming that id; a mapped key that is already another key is refused.
+
+    A key may also be the id of a finding only the blind reader reported (an ``only_second`` id
+    of ``comparison.json``, ``CHDA:LIT:08...``): the judge's account of whether that finding was
+    added, a row with ``field`` ``finding`` whose ``decision`` is ``second`` when it was adopted.
+    ``assemble`` refuses an ``only_second`` id with no such row; the key is read as it is, since
+    no literature file holds that finding."""
     found: dict[str, tuple[JudgeDecision, ...]] = {}
     for path in _yaml_files(p.judge, ".decisions.yaml"):
         data = _read_yaml(path)
@@ -675,6 +681,28 @@ def load_pass(path: Path) -> list[dict[str, Any]]:
     return found
 
 
+def load_blind_only(p: RunPaths) -> dict[str, dict[str, Any]]:
+    """The findings only the blind reader reported: each id of ``comparison.json``'s
+    ``only_second`` with its finding, read from the verify pass's
+    ``batch-NN.findings.yaml`` files. An id no file holds is refused, naming it."""
+    wanted = load_comparison(p).only_second
+    if not wanted:
+        return {}
+    found: dict[str, dict[str, Any]] = {}
+    if p.verify.is_dir():
+        for path in sorted(p.verify.glob("batch-*.findings.yaml")):
+            for row in load_pass(path):
+                if row["id"] in wanted:
+                    found[str(row["id"])] = row
+    missing = [fid for fid in wanted if fid not in found]
+    if missing:
+        raise RunFormatError(
+            f"{p.verify}: holds no finding {missing[0]}, which {p.comparison} lists as reported "
+            f"only by the blind pass (all such ids: {missing})"
+        )
+    return {fid: found[fid] for fid in sorted(found)}
+
+
 def load_backfill_pass(path: Path) -> dict[str, dict[str, Any]]:
     """An agent's backfill file: ``findings:`` maps a final id to a non-empty mapping of the
     fields it fills."""
@@ -803,7 +831,9 @@ class AssembleRecord:
     replaced or an added finding) to the sha256 hex of that finding as the judge wrote it:
     its parsed mapping as sorted-key compact JSON, UTF-8. ``approvals`` maps the same ids to the
     ``approved_digest`` the file's finding carried just after that assemble wrote it (None when
-    it carried none)."""
+    it carried none). ``blind_only`` maps each finding only the blind reader reported (an id of
+    ``comparison.json``'s ``only_second``) to the decision of the judge's ``finding`` row for it:
+    ``second`` (adopted), ``first`` or ``neither`` (not added)."""
 
     replaced: tuple[str, ...]
     added: dict[str, str]
@@ -812,10 +842,21 @@ class AssembleRecord:
     verifier: str | None
     judged: dict[str, str]
     approvals: dict[str, str | None]
+    blind_only: dict[str, str]
 
 
 _ASSEMBLE_KEYS: Final = frozenset(
-    {"format", "replaced", "added", "notation", "verified", "verifier", "judged", "approvals"}
+    {
+        "format",
+        "replaced",
+        "added",
+        "notation",
+        "verified",
+        "verifier",
+        "judged",
+        "approvals",
+        "blind_only",
+    }
 )
 _SHA256_HEX: Final = re.compile(r"[0-9a-f]{64}")
 _NOTATION_KEYS: Final = frozenset({"finding", "variant", "field", "before", "after", "rules"})
@@ -851,6 +892,16 @@ def load_assemble(p: RunPaths) -> AssembleRecord | None:
         approvals[fid] = None if digest is None else _str(digest, path, f"approvals {fid}")
     if set(approvals) != set(judged):
         raise RunFormatError(f"{path}: 'approvals' and 'judged' do not name the same findings")
+    if not isinstance(data["blind_only"], dict):
+        raise RunFormatError(f"{path}: 'blind_only' is not an object")
+    blind_only: dict[str, str] = {}
+    for key, decision in data["blind_only"].items():
+        fid = _finding_id(key, path, "a 'blind_only' key")
+        if decision not in _DECISIONS:
+            raise RunFormatError(
+                f"{path}: 'blind_only' {fid} is {decision!r}; expected one of {_DECISIONS}"
+            )
+        blind_only[fid] = decision
     changes: list[NotationChange] = []
     for entry in _list(data["notation"], path, "notation"):
         row = _keys(entry, _NOTATION_KEYS, path, "a notation change")
@@ -873,6 +924,7 @@ def load_assemble(p: RunPaths) -> AssembleRecord | None:
         _str_or_null(data["verifier"], path, "verifier"),
         judged,
         approvals,
+        blind_only,
     )
 
 
@@ -898,5 +950,6 @@ def write_assemble(p: RunPaths, record: AssembleRecord) -> None:
             "verifier": record.verifier,
             "judged": record.judged,
             "approvals": record.approvals,
+            "blind_only": record.blind_only,
         },
     )

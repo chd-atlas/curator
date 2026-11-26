@@ -135,6 +135,7 @@ def test_the_judge_round_copies_into_a_run_and_loads_under_the_final_ids(tmp_pat
     assert {k: [d.decision for d in v] for k, v in load_judge(p).items()} == {
         "CHDA:LIT:0009003": ["second"],
         "CHDA:LIT:0701001": ["second"],
+        "CHDA:LIT:0801003": ["second"],
     }
     assert [f["id"] for f in load_pass(p.judging / "judge-01.findings.yaml")] == [
         "CHDA:LIT:0009003",
@@ -329,6 +330,7 @@ ASSEMBLE = AssembleRecord(
     "agent:literature-verify/claude-opus-5-5",
     {"CHDA:LIT:0009001": "a" * 64, "CHDA:LIT:0009003": "0123456789abcdef" * 4},
     {"CHDA:LIT:0009001": "sha256:" + "b" * 64, "CHDA:LIT:0009003": None},
+    {"CHDA:LIT:0801005": "neither"},
 )
 COMPARISON = Comparison(
     {"CHDA:LIT:0901001": "CHDA:LIT:0801001"},
@@ -358,7 +360,8 @@ def test_each_writer_round_trips_through_its_loader(tmp_path: Path) -> None:
         '{\n "added": {\n  "CHDA:LIT:0701001": "CHDA:LIT:0009003"\n },\n "approvals": {\n'
         '  "CHDA:LIT:0009001": "sha256:'
         + "b" * 64
-        + '",\n  "CHDA:LIT:0009003": null\n },\n "format": 1,'
+        + '",\n  "CHDA:LIT:0009003": null\n },\n "blind_only": {\n  "CHDA:LIT:0801005": "neither"\n'
+        + ' },\n "format": 1,'
     )
     assert '"after": "e"' in p.assemble.read_text(encoding="utf-8")
     assert '"before": "é"' in p.assemble.read_text(encoding="utf-8")
@@ -481,6 +484,7 @@ def _assemble_base() -> dict[str, Any]:
         "verifier": None,
         "judged": {"CHDA:LIT:0009003": "0" * 64},
         "approvals": {"CHDA:LIT:0009003": None},
+        "blind_only": {},
     }
 
 
@@ -506,6 +510,10 @@ def _assemble_base() -> dict[str, Any]:
         ("assemble", lambda d: d.pop("approvals"), r"missing \['approvals'\]"),
         ("assemble", lambda d: d.update(approvals=[]), "'approvals' is not an object"),
         ("assemble", lambda d: d.update(approvals={}), "do not name the same findings"),
+        ("assemble", lambda d: d.pop("blind_only"), r"missing \['blind_only'\]"),
+        ("assemble", lambda d: d.update(blind_only=[]), "'blind_only' is not an object"),
+        ("assemble", lambda d: d.update(blind_only={"x": "second"}), "'x'"),
+        ("assemble", lambda d: d.update(blind_only={"CHDA:LIT:0801005": "both"}), "'both'"),
         ("assemble", lambda d: d.update(approvals={"x": None}), "'x'"),
         ("assemble", lambda d: d.update(approvals={"CHDA:LIT:0009003": 7}), "7"),
         ("assemble", lambda d: d.update(judged={"x": "0" * 64}), "'x'"),
