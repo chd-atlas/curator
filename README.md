@@ -740,6 +740,22 @@ request has an answer, 1 when one has an `error` row (unless `--allow-errors`), 
 argument or an unqualified model. The summary line counts requests the model answered, requests answered from the cache, requests
 with an error row (with their keys) and the sum of the usage the backend reported. It writes no approval.
 
+### Writing the readers' and judge's requests
+
+```bash
+chd-curator read-requests TBX5 --run r1 --role extract|blind-read|judge --root /path/to/atlas \
+    --out req.jsonl
+```
+
+Writes the rows `ask --validate check-batch` takes, from the run folder: for `extract` and
+`blind-read` one row per batch of `batches.json` (the two roles get identical rows), for `judge`
+one per `judging/judge-NN.md`. `inputs.manifest` is the manifest's text; `inputs.texts` is every
+file the manifest names (`- text path:`, `- abstract path:`, `- supplement:`), once each, in order,
+each under `--- file: <path as the manifest names it> ---`. `gene` is the symbol as typed (it names
+the run directory) and `mode` is the run's, `new` for a `reread` run. Exit 1, nothing written, for
+a named file that is missing, outside the root, not a `.txt` or not UTF-8; exit 2 for a bad argument
+or a run with no `batches.json`. It writes no approval.
+
 ## Develop
 
 curator's tests run against a real atlas checkout and stop if any of these is unset:

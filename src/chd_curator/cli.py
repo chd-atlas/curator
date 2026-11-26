@@ -27,7 +27,7 @@ import urllib.error
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import typer
 from ruamel.yaml import YAML
@@ -44,6 +44,7 @@ from chd_curator import compare as compare_module
 from chd_curator import merge as merge_module
 from chd_curator import redact as redact_mod
 from chd_curator import register as register_mod
+from chd_curator import requests as requests_module
 from chd_curator import texts as texts_module
 from chd_curator.atlas import (
     AtlasError,
@@ -1713,6 +1714,38 @@ def check_site(
             typer.echo(f"error: {line}")
         raise typer.Exit(code=2)
     typer.echo(f"site ok: {len(loaded.roles)} role(s) configured, {len(shadow_role)} in shadow")
+
+
+@app.command("read-requests")
+def read_requests_command(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    role: str = typer.Option(..., "--role", help="extract, blind-read or judge."),
+    out: Path = typer.Option(..., "--out", help="The requests JSONL to write."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Write a run's batch (or judge) manifests, with the texts they name, as `ask` requests.
+
+    One row `{key, gene, batch, mode, inputs: {manifest, texts}}` per batch of batches.json
+    (extract and blind-read, identical rows) or per judging/judge-NN.md (judge); each text is
+    under a `--- file: <path as the manifest names it> ---` marker. Exit 1, nothing written, for
+    a named file that is missing, outside the root, not a .txt or not UTF-8; exit 2 for a bad
+    argument, a symbol the atlas refuses or a run with no batches.json. Writes no approval.
+    """
+    _require_root(root)
+    if role not in ("extract", "blind-read", "judge"):
+        raise _fail(f"--role {role!r} is not extract, blind-read or judge", 2)
+    try:
+        target(root, symbol, _atlas_cli(root, atlas_cli))
+        count = requests_module.read_requests(
+            root, symbol, run, cast(requests_module.Role, role), out
+        )
+    except (AtlasError, RunFormatError) as exc:
+        raise _fail(str(exc), 2) from None
+    except (requests_module.RequestsError, OSError) as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"wrote {count} request(s) for {role} to {out}")
 
 
 @app.command("ask")
