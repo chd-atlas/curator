@@ -386,7 +386,7 @@ def test_the_cli_prints_one_summary_line_and_records_shadow(tmp_path: Path) -> N
         ],  # fmt: skip
     )
     assert out.exit_code == 0
-    assert out.output == "asked 1, cached 0, failed 0, tokens 0, shadow: true, run: r1\n"
+    assert out.output == "answered 1, from cache 0, failed 0, tokens 0, shadow: true, run: r1\n"
 
 
 # ---- check-batch -------------------------------------------------------------------------------
@@ -538,3 +538,168 @@ def test_a_backfill_answer_is_written_as_the_backfill_pass_file(
     assert sorted(f.name for f in p.extract.glob("batch-01.*")) == [
         "batch-01.evidence.yaml", "batch-01.findings.yaml", "batch-01.report.md"
     ]  # fmt: skip
+
+
+# ---- fix round 1 -------------------------------------------------------------------------------
+
+
+def _two_batch_requests(tmp_path: Path) -> Path:
+    path = tmp_path / "two.jsonl"
+    rows = [
+        {"key": f"TBX5:{n}", "inputs": {"manifest": "m", "texts": "t"}, "gene": "TBX5", "batch": n}
+        for n in ("01", "02")
+    ]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return path
+
+
+def _batch_answer(root: Path, n: str, **over: Any) -> dict[str, Any]:
+    run = root / "local/literature/runs/TBX5/r1/extract"
+    return {
+        "findings": YAML_SAFE.load((run / f"batch-{n}.findings.yaml").read_text())["findings"],
+        "evidence": YAML_SAFE.load((run / f"batch-{n}.evidence.yaml").read_text()),
+        "papers": json.loads((run / f"batch-{n}.papers.json").read_text()),
+        "report": (run / f"batch-{n}.report.md").read_text(),
+        **over,
+    }
+
+
+def test_a_contract_write_that_fails_costs_one_row_and_restores_its_files(
+    tmp_path: Path, atlas_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _reader_root(tmp_path, atlas_root)
+    run = root / "local/literature/runs/TBX5/r1/extract"
+    before = {p.name: p.read_bytes() for p in run.glob("batch-02.*")}
+    answers = {
+        "TBX5:01": [json.dumps(_batch_answer(root, "01"))],
+        "TBX5:02": [json.dumps(_batch_answer(root, "02", report="a changed report"))],
+    }
+    b = BackendSpec("t", "fake", "m", {"answers": answers}, 10_000_000, 1, None)
+    real, fired = ask_module.write_bytes_atomically, []
+
+    def failing(path: Path, payload: bytes) -> None:
+        if path.name == "batch-02.papers.json" and not fired:
+            fired.append(path)
+            raise OSError("disk full")
+        real(path, payload)
+
+    monkeypatch.setattr(ask_module, "write_bytes_atomically", failing)
+    out = tmp_path / "two-answers.jsonl"
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    requests = _two_batch_requests(tmp_path)
+    summary = ask("extract", requests, out, site_of(b, "extract"), [], root, None, "check-batch",
+                  "r1", False, atlas_cli=cli, make=lambda _s: Fake(b))  # fmt: skip
+    rows = [json.loads(x) for x in out.read_text().splitlines()]
+    assert [r["key"] for r in rows] == ["TBX5:01", "TBX5:02"] and "parsed" in rows[0]
+    assert "OSError" in rows[1]["error"] and "disk full" in rows[1]["error"]
+    assert summary.failed == ["TBX5:02"]
+    assert {p.name: p.read_bytes() for p in run.glob("batch-02.*")} == before
+
+
+def test_a_cache_write_that_fails_costs_one_row_and_the_run_still_writes_its_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keys = ["PMID:1", "PMID:2", "PMID:3"]
+    real = ask_module.write_bytes_atomically
+
+    def failing(path: Path, payload: bytes) -> None:
+        if path.parent.name == "triage-screen" and b"PMID:2" in payload:
+            raise OSError("read-only cache")
+        real(path, payload)
+
+    monkeypatch.setattr(ask_module, "write_bytes_atomically", failing)
+    summary, rows, _ = run_ask(tmp_path, spec({k: [triage(k)] for k in keys}), keys,
+                               cache=tmp_path / "cache")  # fmt: skip
+    assert [("parsed" in r) for r in rows] == [True, False, True]
+    assert "OSError: read-only cache" in rows[1]["error"] and summary.failed == ["PMID:2"]
+
+
+def test_a_retry_that_succeeds_replaces_the_file_and_nothing_of_the_first_attempt_survives(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    root = _reader_root(tmp_path, atlas_root)
+    run = root / "local/literature/runs/TBX5/r1"
+    good = _batch_answer(root, "01")
+    bad = json.loads(json.dumps(good))
+    bad["findings"][0]["screened"] = "FIRST-ATTEMPT-MARK"
+    good["findings"][0]["summary"] = "The second attempt's own summary of the case."
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    summary, rows, _ = _ask_batch(tmp_path, root, cli, [json.dumps(bad), json.dumps(good)])
+    assert summary.failed == [] and rows[0]["attempts"] == 2
+    kept = YAML_SAFE.load((run / "extract/batch-01.findings.yaml").read_text())["findings"]
+    assert kept == good["findings"]
+    assert not list(run.rglob("*.tmp"))
+    assert not [
+        p for p in run.rglob("*") if p.is_file() and b"FIRST-ATTEMPT-MARK" in p.read_bytes()
+    ]
+
+
+def test_a_cache_hit_rewrites_the_contract_files_that_were_removed(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    root = _reader_root(tmp_path, atlas_root)
+    run = root / "local/literature/runs/TBX5/r1/extract"
+    cache = tmp_path / "cache"
+    answer = json.dumps(_batch_answer(root, "01"))
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    spec_ = BackendSpec("t", "fake", "m", {"answers": {"TBX5:01": [answer]}}, 10_000_000, 1, None)
+
+    def once() -> tuple[AskSummary, Fake]:
+        fake = Fake(spec_)
+        summary = ask("extract", _reader_request(tmp_path), tmp_path / "c.jsonl",
+                      site_of(spec_, "extract"), [], root, cache, "check-batch", "r1", False,
+                      atlas_cli=cli, make=lambda _s: fake)  # fmt: skip
+        return summary, fake
+
+    once()
+    names = sorted(p.name for p in run.glob("batch-01.*"))
+    for p in run.glob("batch-01.*"):
+        p.unlink()
+    summary, fake = once()
+    row = json.loads((tmp_path / "c.jsonl").read_text())
+    assert fake.requests == [] and row["attempts"] == 0 and summary.cached == 1
+    assert sorted(p.name for p in run.glob("batch-01.*")) == names
+
+
+def test_a_judge_answer_lands_where_check_and_compare_read_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # like test_check.py's judge cases this uses the stub atlas CLI, not the real validator
+    from chd_curator.run import RunPaths, load_judge
+    from test_assemble import _ready
+
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    shutil.copytree(RULES_ROOT / "curator", p.root / "curator")
+    findings = p.judging / "judge-01.findings.yaml"
+    decisions = p.judge / "judge-01.decisions.yaml"
+    answer = json.dumps(
+        {
+            "findings": YAML_SAFE.load(findings.read_text())["findings"],
+            "decisions": YAML_SAFE.load(decisions.read_text()),
+        }
+    )
+    expected = load_judge(RunPaths(p.root, "TBX5", "r1"), only="01")
+    findings_before, decisions_before = YAML_SAFE.load(findings.read_text()), None
+    decisions_before = YAML_SAFE.load(decisions.read_text())
+    findings.unlink()
+    decisions.unlink()
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    summary, rows, _ = _ask_batch(tmp_path, p.root, cli, [answer], "judge")
+    assert summary.failed == [] and rows[0]["attempts"] == 1
+    assert YAML_SAFE.load(findings.read_text())["findings"] == findings_before["findings"]
+    assert YAML_SAFE.load(decisions.read_text()) == decisions_before
+    assert load_judge(RunPaths(p.root, "TBX5", "r1"), only="01") == expected
+    assert findings.is_file() and decisions.is_file()
+
+
+def test_the_context_boundary_passes_at_equality_and_refuses_one_token_over(
+    tmp_path: Path,
+) -> None:
+    inputs = {"gene": "TBX5", "hit": f"{PMID}\nA title"}
+    ri = ask_module.assemble("triage-screen", RULES_ROOT, inputs)
+    exact = ask_module._estimate(ri.system, ri.user) + 100
+    ok = spec({PMID: [triage()]}, context=exact, max_tokens=100)
+    assert run_ask(tmp_path, ok, [PMID])[0].failed == []
+    over = spec({PMID: [triage()]}, context=exact - 1, max_tokens=100)
+    summary, rows, fake = run_ask(tmp_path, over, [PMID])
+    assert summary.failed == [PMID] and fake.requests == []

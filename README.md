@@ -729,14 +729,16 @@ chd-curator ask --role extract --requests req.jsonl --answers ans.jsonl \
 ```
 
 One request per line, `{"key": ..., "inputs": {...}}` (a `check-batch` request also carries `gene`
-and `batch`, and `mode` when it is `backfill`). Each request is answered from the cache, or by the
+and `batch`, and `mode` when it is `backfill`; a `reread` run's requests use mode `new`). Each request is answered from the cache, or by the
 role's backend, parsed as one JSON object, validated against the role's answer schema (readers and
 the judge with `--validate check-batch` through the batch check, which writes the answer as the
-batch's contract files under the run directory and removes them again if it refuses), and retried
+batch's contract files under the run directory and, if it refuses, puts every path back as it was: the
+previous bytes, or no file), and retried
 at most twice with the errors appended. A model the register does not qualify, a repeated key and
 an input that does not fit the backend's context are refused, never truncated. Exit 0 when every
 request has an answer, 1 when one has an `error` row (unless `--allow-errors`), 2 for a bad
-argument or an unqualified model. It writes no approval.
+argument or an unqualified model. The summary line counts requests the model answered, requests answered from the cache, requests
+with an error row (with their keys) and the sum of the usage the backend reported. It writes no approval.
 
 ## Develop
 

@@ -85,6 +85,9 @@ class AskUsageError(Exception):
 
 @dataclass(frozen=True)
 class AskSummary:
+    """``asked``: requests the backend answered at least once; ``cached``: answered from the
+    cache; ``failed``: keys with an error row; ``usage``: the sum of reported usage."""
+
     asked: int
     cached: int
     failed: list[str]
@@ -350,6 +353,16 @@ def _problems(
 
 
 def _ask_one(c: _Ctx, r: _Req, ri: RoleInput) -> Row:
+    """One request's row. Whatever goes wrong inside it (a file that cannot be written, a check
+    that crashes) is this request's error row, naming the exception, and the run goes on."""
+    progress = [0]
+    try:
+        return _run_one(c, r, ri, progress)
+    except Exception as exc:
+        return {"key": r.key, "error": f"{type(exc).__name__}: {exc}", "attempts": progress[0]}
+
+
+def _run_one(c: _Ctx, r: _Req, ri: RoleInput, progress: list[int]) -> Row:
     path = _cache_path(c, ri)
     hit = _read_cache(path)
     if hit is not None and not _problems(c, r, ri, hit, [], ri.user):
@@ -380,6 +393,7 @@ def _ask_one(c: _Ctx, r: _Req, ri: RoleInput) -> Row:
         except BackendError as exc:
             return {"key": r.key, "error": str(exc), "attempts": attempts}
         attempts += 1
+        progress[0] = attempts
         seconds += answer.seconds
         for name, count in answer.usage.items():
             usage[name] = usage.get(name, 0) + count
@@ -474,7 +488,7 @@ def ask(
         for name, count in row.get("usage", {}).items():
             total[name] = total.get(name, 0) + count
     return AskSummary(
-        asked=sum(1 for row in rows if "parsed" not in row or row["attempts"] > 0),
+        asked=sum(1 for row in rows if row["attempts"] > 0),
         cached=sum(1 for row in rows if "parsed" in row and row["attempts"] == 0),
         failed=[row["key"] for row in rows if "error" in row],
         usage=total,

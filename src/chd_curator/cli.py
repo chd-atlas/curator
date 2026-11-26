@@ -1735,7 +1735,9 @@ def ask_command(
 
     Writes one answer row per request, in the requests' order, to `--answers`: `{key, parsed,
     attempts, usage, seconds, model_key, input_digest, rules_digest}` or `{key, error,
-    attempts}`. Prints one summary line. Exit 0 when every request has an answer (or with
+    attempts}`. Prints one summary line: requests the model answered, requests answered from
+    the cache, requests with an error row (their keys), and the sum of the usage counts the
+    backends reported. Exit 0 when every request has an answer (or with
     `--allow-errors`); 1 when a request has an error row; 2 for a bad argument, request, site,
     run or a model the register does not qualify for the role (unless `--shadow`), before any
     call. Writes no approval: it writes answers, and with `--validate check-batch` the batch's
@@ -1768,7 +1770,8 @@ def ask_command(
     failed = f"{len(summary.failed)} ({', '.join(summary.failed)})" if summary.failed else "0"
     extra = (", shadow: true" if shadow else "") + (f", run: {run}" if run else "")
     typer.echo(
-        f"asked {summary.asked}, cached {summary.cached}, failed {failed}, tokens {tokens}{extra}"
+        f"answered {summary.asked}, from cache {summary.cached}, failed {failed}, "
+        f"tokens {tokens}{extra}"
     )
     if summary.failed and not allow_errors:
         raise typer.Exit(code=1)
