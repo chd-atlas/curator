@@ -16,11 +16,11 @@ integers in the finding's own ``carriers`` mapping (shown only when the record s
 ``checked`` and ``found`` are those of :func:`chd_curator.quotes.check_quotes` (R-P1-26), and a
 quote over 30 words reaches the data only as its first 30 words (R-P1-5).
 
-The page covers the RUN (R-P1-38): a card is shown for each finding the run mentions, that is
-each id in ``comparison.json`` (``pairs``, ``agreed``, ``span_only``, ``differs``), the judge
-files or the evidence files. Other findings of the literature file are outside this run and
-``apply-review`` never touches them. A card's ``agreement`` comes from that comparison, not
-from the judge files: ``agreed`` (listed ``agreed`` or ``span_only``), ``judged`` (listed in
+The page covers the RUN (R-P1-38): a card is shown for each finding the run mentions, that is each
+id in ``comparison.json`` (``pairs``, ``agreed``, ``span_only``, ``differs``, ``only_first``), the
+judge files or the evidence files. Other findings of the literature file are outside this run and
+``apply-review`` never touches them. A card's ``agreement`` comes from that comparison, not from
+the judge files: ``agreed`` (listed ``agreed`` or ``span_only``), ``judged`` (listed in
 ``differs``, which must then have judge decisions) or ``one_reader`` (covered, in no list).
 When the run holds ``normalise.json`` (written by ``chd-curator normalise --run``), a variant
 card carries that variant's ``reading`` (None when it has none); an entry naming a finding or
@@ -665,6 +665,7 @@ def _covered(
         *comparison.agreed,
         *comparison.span_only,
         *comparison.differs,
+        *comparison.only_first,
         *judge,
         *evidence,
     }

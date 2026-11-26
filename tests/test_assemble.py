@@ -40,6 +40,7 @@ from chd_curator.run import (
     RunPaths,
     TriageChange,
     load_assemble,
+    load_comparison,
     load_judge,
     write_assemble,
 )
@@ -1449,4 +1450,33 @@ def test_the_judge_fixture_is_the_one_the_literal_expects() -> None:
     assert ids == [JUDGED, ADDED]
     assert assemble_module.summary(AssembleRecord((), {}, (), (), None, {}, {})) == (
         "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 0 verified"
+    )
+
+
+def test_a_first_pass_only_finding_the_judge_left_alone_and_with_no_quotes_gets_a_card(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m3 (I4): 0009002 is read by the first pass only, and nothing else in the run names it
+    (no judge finding, decision or quote). After assemble it is on the page, as one reader's."""
+    p = _only_first_run(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    copy_judge_round(p)
+    decisions = p.judge / "judge-01.decisions.yaml"
+    data = YAML_SAFE.load(decisions.read_text())
+    # the blind reader's 0801003 is gone from this run, so no decision may key it
+    data.pop("CHDA:LIT:0801003", None)
+    decisions.write_text(json.dumps(data))
+    for evidence in p.evidence.iterdir():
+        text = YAML_SAFE.load(evidence.read_text())
+        text.pop("CHDA:LIT:0009002", None)
+        evidence.write_text(json.dumps(text))
+    assert load_comparison(p).only_first == ("CHDA:LIT:0009002",)
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    cards = {c["id"]: c for c in _review(p)["findings"]}
+    first = cards["CHDA:LIT:0009002"]
+    assert (first["agreement"], first["group"], first["approval"], first["verified"]) == (
+        "one_reader",
+        "one_reader",
+        "unapproved",
+        False,
     )

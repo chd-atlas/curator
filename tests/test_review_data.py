@@ -1009,3 +1009,19 @@ def test_a_reading_for_an_unknown_variant_is_refused(
     with pytest.raises(ReviewDataError, match="normalise.json") as raised:
         build(run, stub_atlas)
     assert entry[0] in str(raised.value)
+
+
+def test_a_first_pass_only_finding_with_no_judge_or_quote_still_has_a_card(
+    run: RunPaths, stub_atlas: Path
+) -> None:
+    """I4: `only_first` names the finding, so it is covered although nothing else does."""
+    doc = json.loads(run.comparison.read_text())
+    del doc["pairs"][G]
+    doc["agreed"] = []
+    doc["only_first"] = [G]
+    run.comparison.write_text(json.dumps(doc))
+    ev = run.evidence / "batch-01.yaml"
+    text = ev.read_text()
+    ev.write_text(text[text.index(J) :])  # G's quotes are the file's first block
+    c = card(build(run, stub_atlas), G)
+    assert (c["agreement"], c["group"], c["n_judged"]) == ("one_reader", "one_reader", 0)
