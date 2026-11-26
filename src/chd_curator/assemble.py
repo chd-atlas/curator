@@ -21,7 +21,10 @@ What is applied, in this order:
 2. The notation rules, on every finding of the run (a backfill: on the findings the comparison
    paired, when ``variants`` is a declared field).
 3. ``verified_by`` on the findings the comparison lists as ``agreed`` or ``span_only``. A judged
-   finding carries none.
+   finding carries none. Before marking an id that an earlier assemble did not mark, the verdict
+   is derived again by ``compare``'s own pair verdict on the file's finding as it stands and the
+   blind finding ``comparison.json`` paired it with; an id no longer agreed or span only is
+   refused, because "two blind readers agreed" must be true of the finding as it is.
 
 ``assemble.json`` records, for each final id a judge's finding decides, the sha256 of that
 finding as read (``judge_digest``). On a re-run a finding whose digest is unchanged is not
@@ -49,7 +52,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from chd_curator.compare import differing_fields
+from chd_curator.compare import CompareError, differing_fields, read_second, stale_agreements
 from chd_curator.diff import DiffError, parse_findings_file
 from chd_curator.merge import (
     PREFIX,
@@ -609,6 +612,9 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
     # Blind agreement.
     to_mark = sorted({*comparison.agreed, *comparison.span_only})
     name = _verifier(run, plan, verifier, bool(to_mark))
+    _check_agreement_still_holds(
+        run, state, [fid for fid in to_mark if fid not in previous.verified]
+    )
     if to_mark and name is not None:
         literature = with_verified(literature, to_mark, name)
 
@@ -638,6 +644,27 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
     )
     registry = with_counter(c.reg, PREFIX, new_counter) if new_counter != counter else None
     return Assembled(c, record, literature, registry, new_ids)
+
+
+def _check_agreement_still_holds(run: RunPaths, state: RunState, ids: Sequence[str]) -> None:
+    """Refuse an id about to be marked ``verified_by`` that ``compare`` would no longer call agreed
+    or span only, judged by ``compare``'s own verdict on the file's finding as it stands and the
+    blind finding `comparison.json` paired it with. An id an earlier assemble marked is not
+    re-derived: ``normalise`` rewrites variants after it."""
+    if not ids:
+        return
+    try:
+        second = read_second(run, state.plan, state.schema)
+        stale = stale_agreements(
+            state.curated.findings, state.plan, state.comparison, second, state.schema, ids
+        )
+    except CompareError as exc:
+        raise AssembleError(str(exc)) from None
+    for fid, sid in stale:
+        raise AssembleError(
+            f"{fid}: no longer agrees with the blind pass's {sid} (it was edited after "
+            "compare); compare must be re-run"
+        )
 
 
 def _allow(allowed: Mapping[str, frozenset[str]], fid: str, key: str) -> frozenset[str]:

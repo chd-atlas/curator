@@ -272,7 +272,12 @@ schema and carry no approval field or `verified_by`). The steps, in this order:
    and only to the findings `comparison.json` paired, because elsewhere they would rewrite the
    variants of an approved finding. Each change is recorded in `assemble.json` with its rules.
 4. **Blind agreement.** `verified_by` goes on every finding listed as agreed or span only. A
-   judged or added finding carries none. In a `new` run the name is the verify
+   judged or added finding carries none. Before marking an id an earlier assemble did not mark,
+   the command derives its verdict again with `compare`'s own pair verdict, on the file's finding
+   as it stands and the blind finding `comparison.json` paired it with; a finding edited since
+   `compare` and no longer agreed exits 2 naming the id and saying compare must be re-run (an
+   already marked id is not re-derived, because `normalise` rewrites variants after the first
+   assemble). In a `new` run the name is the verify
    findings' `extracted_by` (one value across `verify/`, else exit 2; `--verifier` is refused); a
    backfill's blind pass records no `extracted_by`, so `--verifier NAME` is required there.
 
@@ -309,7 +314,7 @@ unchanged, for every refusal: no `merge.json` or `comparison.json`; modes in `ba
 finding with an approval field or `verified_by`, citing a paper outside its batch, repeating an
 id, or with an id that is neither a `differs` id, a first-pass-only id, an id of an earlier assemble
 nor `CHDA:LIT:07...`; a `differs` id with no judge finding, or one `comparison.json` also lists as
-agreed; a changed judge finding for a finding that carries `approved_by`; a field changed that
+agreed; a finding to be marked `verified_by` that no longer agrees with its blind finding; a changed judge finding for a finding that carries `approved_by`; a field changed that
 no decision names; a paper with no Publication; a triage entry
 someone else excluded; an `assemble.json` naming ids the file lacks; a blind pass with more than
 one `extracted_by`; a file any write would refuse (the atlas's schema, an anchor, an approval

@@ -246,6 +246,47 @@ def test_the_digest_of_a_judge_finding_is_the_sha256_of_its_canonical_json(
     assert record is not None and record.judged == expected
 
 
+def _edit_in_block(p: RunPaths, fid: str, old: str, new: str) -> None:
+    """Replace `old` by `new` once, inside the literature file's block for `fid`."""
+    text = _lit(p).read_text()
+    start = text.index(f"  - id: {fid}\n")
+    end = text.find("\n  - id: ", start + 1)
+    end = len(text) if end == -1 else end
+    block = text[start:end]
+    assert block.count(old) == 1, (fid, old)
+    _lit(p).write_text(text[:start] + block.replace(old, new) + text[end:])
+
+
+def test_a_finding_edited_after_compare_is_not_marked_verified_and_nothing_is_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(c), measured as m8: 0009002 agreed with the blind reader's 0801001 (screened 1);
+    a hand edit to screened 7 would have gone out as "two blind readers agreed"."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit_in_block(p, "CHDA:LIT:0009002", "screened: 1", "screened: 7")
+    _expect_refused(
+        p,
+        stub_atlas,
+        "CHDA:LIT:0009002: no longer agrees with the blind pass's CHDA:LIT:0801001 "
+        "(it was edited after compare); compare must be re-run",
+    )
+
+
+def test_a_finding_assemble_already_marked_may_change_afterwards_and_a_rerun_goes_through(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """normalise rewrites a marked finding's variants after the first assemble, so a re-run does
+    not re-derive the verdict of an id it marked before."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    _edit_in_block(p, "CHDA:LIT:0009002", "p: p.(Arg34Ter)}", "p: p.(Arg34*)}")
+    code, out = _assemble(p, stub_atlas)
+    assert code == 0, out
+    found = _findings(p)["CHDA:LIT:0009002"]
+    assert found["verified_by"] == VERIFIER
+    assert found["variants"][0]["reported"]["p"] == "p.(Arg34*)"
+
+
 def test_a_fix_round_replaces_the_added_finding_under_its_final_id(
     tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1031,6 +1072,27 @@ def test_a_backfill_marks_agreement_with_the_named_verifier_and_needs_one(
     assert f["approved_by"] == "E.A.M"  # an approval is never touched
     record = load_assemble(p)
     assert record is not None and record.verifier == "agent:literature-verify/test-model"
+
+
+def test_a_backfilled_field_edited_after_compare_is_not_marked_verified(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [alpha]\n",
+        cohorts="[alpha]",
+    )
+    _edit_in_block(p, "CHDA:LIT:0009001", "cohorts: [alpha]", "cohorts: [beta]")
+    _expect_refused(
+        p,
+        stub_atlas,
+        "CHDA:LIT:0009001: no longer agrees with the blind pass's CHDA:LIT:0009001 "
+        "(it was edited after compare); compare must be re-run",
+        "--verifier",
+        "agent:literature-verify/test-model",
+    )
 
 
 def test_a_backfill_that_marks_nothing_records_no_verifier_and_a_judge_may_empty_a_field(

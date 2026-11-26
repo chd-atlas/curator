@@ -176,6 +176,24 @@ def _without_approval(finding: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in finding.items() if k not in APPROVAL_FIELDS}
 
 
+def _pair_verdict(
+    first: Mapping[str, Any], second: Mapping[str, Any], schema: Mapping[str, Any]
+) -> _Verdict:
+    """The verdict ``compare`` reaches on two copies of one finding paired by id."""
+    ruled_a, ruled_b = _ruled(first), _ruled(second)
+    diffed = diff_findings([ruled_a], [ruled_b], schema, by_id=True)
+    if str(first["id"]) not in diffed.pairs:
+        raise CompareError(f"{first['id']}: the two copies do not pair by id")
+    defs = schema["$defs"]
+    return _verdict(
+        ruled_a,
+        ruled_b,
+        diffed.fields.get(str(first["id"]), ()),
+        variant_schema(defs),
+        defs,
+    )
+
+
 def differing_fields(
     first: Mapping[str, Any], second: Mapping[str, Any], schema: Mapping[str, Any]
 ) -> tuple[str, ...]:
@@ -185,19 +203,41 @@ def differing_fields(
 
     Fields ``diff`` does not compare (``summary``, ``locators``, ``review_note``,
     ``shares_probands_with``, the bookkeeping) are not read."""
-    ruled_a, ruled_b = _ruled(first), _ruled(second)
-    diffed = diff_findings([ruled_a], [ruled_b], schema, by_id=True)
-    if str(first["id"]) not in diffed.pairs:
-        raise CompareError(f"{first['id']}: the two copies do not pair by id")
-    defs = schema["$defs"]
-    found = _verdict(
-        ruled_a,
-        ruled_b,
-        diffed.fields.get(str(first["id"]), ()),
-        variant_schema(defs),
-        defs,
+    return tuple(name for name, _, _ in _pair_verdict(first, second, schema).fields)
+
+
+def stale_agreements(
+    findings: Mapping[str, Mapping[str, Any]],
+    plan: BatchPlan,
+    comparison: Comparison,
+    second: Sequence[Mapping[str, Any]] | Mapping[str, Mapping[str, Any]],
+    schema: Mapping[str, Any],
+    ids: Sequence[str],
+) -> list[tuple[str, str]]:
+    """Each of `ids` (findings `comparison` pairs) that ``compare`` would no longer call agreed
+    or span only, as ``(id, the blind pass's id)``: `findings` is the literature file's findings
+    by id as they stand now, `second` the blind pass as ``prepare`` reads it. The blind finding
+    is the one `comparison` paired the id with (a backfill's is the file's finding with its
+    declared fields taken from the blind pass); one the blind pass no longer holds counts as no
+    longer agreeing."""
+    by_id: Mapping[str, Mapping[str, Any]] = (
+        second if isinstance(second, Mapping) else {str(s["id"]): s for s in second}
     )
-    return tuple(name for name, _, _ in found.fields)
+    stale: list[tuple[str, str]] = []
+    for fid in ids:
+        sid = comparison.pairs[fid]
+        given = by_id.get(sid) if plan.mode != "backfill" else by_id.get(fid, {})
+        if given is None:
+            stale.append((fid, sid))
+            continue
+        blind = (
+            _blind_copy(findings[fid], given, plan.fields)
+            if plan.mode == "backfill"
+            else {**given, "id": fid}  # ``_pair_verdict`` pairs copies by id
+        )
+        if _pair_verdict(findings[fid], blind, schema).kind not in ("agreed", "span_only"):
+            stale.append((fid, sid))
+    return stale
 
 
 def _judged_pair(
@@ -342,6 +382,20 @@ def _by_batch(
     return grouped
 
 
+def _blind_copy(
+    current: Mapping[str, Any], given: Mapping[str, Any], declared: Sequence[str]
+) -> dict[str, Any]:
+    """A backfill's blind finding: the file's finding with each declared field taken from the
+    blind pass (and removed when the pass does not give it)."""
+    copied = copy.deepcopy(dict(current))
+    for name in declared:
+        if name in given:
+            copied[name] = copy.deepcopy(given[name])
+        else:
+            copied.pop(name, None)
+    return copied
+
+
 def _analyse_new(
     literature: Mapping[str, Any],
     plan: BatchPlan,
@@ -431,12 +485,7 @@ def _analyse_backfill(
         given = second.get(fid, {})
         if all(is_empty(current.get(n)) and is_empty(given.get(n)) for n in declared):
             continue  # neither reader filled it: nothing changed and nothing is verified
-        copied = copy.deepcopy(dict(current))
-        for name in declared:
-            if name in given:
-                copied[name] = copy.deepcopy(given[name])
-            else:
-                copied.pop(name, None)
+        copied = _blind_copy(current, given, declared)
         lines = schema_error_lines({"findings": [copied]}, validator)
         if lines:
             raise CompareError(
@@ -600,9 +649,12 @@ def render_manifests(
     return out
 
 
-def _read_second(
+def read_second(
     run: RunPaths, plan: BatchPlan, schema: Mapping[str, Any]
 ) -> list[dict[str, Any]] | dict[str, dict[str, Any]]:
+    """The blind pass of every batch: a list of findings (new or reread) or, for a backfill, its
+    fields by finding id. Raises :class:`CompareError` for a file that is missing, misplaced or
+    inconsistent."""
     known = {b.id for b in plan.batches}
     if run.verify.is_dir():
         for path in sorted(run.verify.iterdir()):
@@ -676,7 +728,7 @@ def prepare(run: RunPaths, approved: str) -> Prepared:
         schema: Any = schema_validator(run.root, "gene_literature_file").schema
     except AtlasError as exc:
         raise CompareError(str(exc)) from None
-    second = _read_second(run, plan, schema)
+    second = read_second(run, plan, schema)
     analysis = analyse(literature, plan, merged, second, schema)
     return Prepared(analysis.comparison, render_manifests(run, plan, analysis, texts))
 
