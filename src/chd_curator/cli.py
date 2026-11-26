@@ -46,6 +46,7 @@ from chd_curator import redact as redact_mod
 from chd_curator import register as register_mod
 from chd_curator import requests as requests_module
 from chd_curator import texts as texts_module
+from chd_curator import triage as triage_module
 from chd_curator.atlas import (
     AtlasError,
     Frame,
@@ -211,13 +212,7 @@ def abstracts(
         found = titles.get(pmid)
         paper = meta.get(pmid)
         year = str(paper.year) if paper else "year unknown"
-        if found is None:
-            typer.echo(f"PMID:{pmid} · {year} · (PubMed returned no record for this PMID)")
-        else:
-            title, abstract, types = found
-            typer.echo(f"PMID:{pmid} · {year} · {title}")
-            typer.echo(f"Publication types: {'; '.join(types) or '(none in PubMed)'}")
-            typer.echo(abstract or "(no abstract in PubMed)")
+        typer.echo(triage_module.hit_block(pmid, year, found))
         typer.echo("")
 
 
@@ -1746,6 +1741,98 @@ def read_requests_command(
     except (requests_module.RequestsError, OSError) as exc:
         raise _fail(str(exc), 1) from None
     typer.echo(f"wrote {count} request(s) for {role} to {out}")
+
+
+@app.command("triage-requests")
+def triage_requests_command(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    out: Path = typer.Option(..., "--out", help="The requests JSONL to write."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Write one `ask` request per pending triage entry: `{key: PMID:n, inputs: {gene, hit}}`.
+
+    `hit` is the block `abstracts` prints for that PMID, fetched from PubMed (network). Exit 1
+    for PubMed failing or a missing literature file, 2 for a bad argument or a symbol the atlas
+    refuses. Writes no approval.
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    key = _api_key()
+    try:
+        count = triage_module.triage_requests(root, approved, out, fetch=_fetch, api_key=key)
+    except (triage_module.TriageError, OSError) as exc:
+        raise _fail(_redact(str(exc), key), 1) from None
+    typer.echo(f"wrote {count} triage request(s) for {approved} to {out}")
+
+
+@app.command("triage-combine")
+def triage_combine_command(
+    requests: Path = typer.Option(..., "--requests", help="The screen's requests JSONL."),
+    screen: Path = typer.Option(..., "--screen", help="The screen's answers JSONL."),
+    check: list[Path] = typer.Option([], "--check", help="A check answers JSONL; repeatable."),
+    run: str = typer.Option(..., "--run", help="The run id (seeds the audit)."),
+    out: Path = typer.Option(..., "--out", help="The decisions JSON to write."),
+    out_requests: Path | None = typer.Option(
+        None, "--out-requests", help="Write the check requests still owed here."
+    ),
+    shadow: bool = typer.Option(
+        False, "--shadow", help="The check decides every hit; the hybrid is recorded beside it."
+    ),
+) -> None:
+    """Combine the screen's and the check's answers into one decision per hit.
+
+    A hit goes to the check when the screen excluded it in a risky class (not_chd,
+    no_finding_in_gene), when it is in the audit sample (10% of each other class, at least 5,
+    seeded by `--run`) or when the screen's answer is missing, an error or unparseable. An audit
+    miss escalates its class. Hits the check still owes are listed under `awaiting_check` and
+    written to `--out-requests`. Exit 2 for a key not in the requests or repeated in one answers
+    file. Writes no approval.
+    """
+    try:
+        document, owed = triage_module.combine_run(requests, screen, check, run, shadow=shadow)
+        triage_module.write_json(out, document)
+        if out_requests is not None:
+            triage_module.write_requests(out_requests, owed)
+    except triage_module.TriageUsageError as exc:
+        raise _fail(str(exc), 2) from None
+    except (triage_module.TriageError, OSError) as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(
+        f"{len(document['decisions'])} decision(s), {len(owed)} awaiting the check, "
+        f"{len(document['escalated'])} class(es) escalated; wrote {out}"
+    )
+
+
+@app.command("triage-apply")
+def triage_apply_command(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    decisions: Path = typer.Option(..., "--decisions", help="The `triage-combine` output."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Write the decisions into the gene's pending triage entries.
+
+    Changes `decision`, and for an exclusion `reason` (and `note`, the answer's `why`, for
+    `other`); never `pmid` or `search`; refuses a decisions file with any hit awaiting the check
+    (exit 1), a key that is not a pending entry (exit 1) and a file changed since it was read
+    (exit 2). Writes no approval.
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        loaded = triage_module.load_decisions(decisions)
+        count = triage_module.apply_decisions(root, approved, loaded)
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    except triage_module.TriageUsageError as exc:
+        raise _fail(str(exc), 2) from None
+    except (triage_module.TriageError, OSError) as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"applied {count} decision(s) to {literature_path(root, approved)}")
 
 
 @app.command("ask")

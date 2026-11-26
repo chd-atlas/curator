@@ -284,6 +284,9 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "check-site",
         "ask",
         "read-requests",
+        "triage-requests",
+        "triage-combine",
+        "triage-apply",
     }
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS

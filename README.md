@@ -756,6 +756,34 @@ the run directory) and `mode` is the run's, `new` for a `reread` run. Exit 1, no
 a named file that is missing, outside the root, not a `.txt` or not UTF-8; exit 2 for a bad argument
 or a run with no `batches.json`. It writes no approval.
 
+### Triaging a gene's hits with a screen and a check
+
+```bash
+chd-curator triage-requests TBX5 --root /path/to/atlas --out screen-req.jsonl
+chd-curator ask --role triage-screen --allow-errors ... --requests screen-req.jsonl --answers screen-ans.jsonl
+chd-curator triage-combine --requests screen-req.jsonl --screen screen-ans.jsonl --run r1 \
+    --out decisions.json --out-requests check-req.jsonl
+chd-curator ask --role triage-check ... --requests check-req.jsonl --answers check-ans.jsonl
+chd-curator triage-combine --requests screen-req.jsonl --screen screen-ans.jsonl \
+    --check check-ans.jsonl --run r1 --out decisions.json --out-requests check-req.jsonl
+chd-curator triage-apply TBX5 --decisions decisions.json --root /path/to/atlas
+```
+
+`triage-requests` writes one request per pending hit (`inputs.gene`, and `inputs.hit`, the block
+`abstracts` prints; it asks PubMed). `triage-combine` sends to the check every screen exclusion
+in a risky class (`not_chd`, `no_finding_in_gene`), an audit sample of every other class (10%,
+at least 5, all when fewer, seeded by `--run`) and every hit the screen did not answer (no row,
+an error row or an unparseable answer: never read as an exclusion). A hit either tier includes
+is included; when both exclude, the check's reason stands. One audited exclusion the check
+includes escalates its class for the run: its remaining exclusions go to the check too
+(escalated, awaiting_check, and the rows still owed in `--out-requests`); run the check on
+them and combine again, passing every `--check` file. `--shadow` makes the check's decision the
+decision for every hit and records the hybrid beside it (hybrid). A key that was not requested,
+or is answered twice in one file, exits 2 naming it. `triage-apply` writes `decision`, and for
+an exclusion `reason` (and `note`, the answer's `why`, for `other`) into the entries still
+`pending`; it refuses (exit 1) a decisions file with any awaiting_check or a key that is not a
+pending entry, and (exit 2) a file changed since it was read. None of the three writes an approval.
+
 ## Develop
 
 curator's tests run against a real atlas checkout and stop if any of these is unset:
