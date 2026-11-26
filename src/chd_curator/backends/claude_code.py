@@ -1,7 +1,7 @@
-"""Claude Code in headless print mode, given the role's input and nothing else.
+"""Claude Code in headless print mode, with no tools, no MCP and no settings of any checkout.
 
-Pinned against Claude Code 2.1.332 (``claude --version`` on the workstation). Each flag below is
-one that version's ``--help`` lists; none was run against a model while writing this module.
+Pinned against Claude Code 2.1.332 (``claude --version`` on the workstation). Flags, each listed
+by that version's ``--help`` unless noted:
 
 * ``-p``: print the answer and exit (non-interactive).
 * ``--output-format json``: one result object carrying the text, usage and the model used.
@@ -11,9 +11,21 @@ one that version's ``--help`` lists; none was run against a model while writing 
   while the login still works (``--bare`` would not do: it reads no OAuth login).
 * ``--setting-sources ""``: no user, project or local settings file is read.
 * ``--disable-slash-commands``, ``--no-session-persistence``, ``--permission-prompts none``.
-* ``--system-prompt``: a fixed neutral line, not the role's system text. This version lists no
-  system-prompt *file* flag, so the role's system text and user text both travel on stdin under
-  markers, never in argv.
+* ``--system-prompt-file <path>``: ``--help`` omits it, but ``--bare``'s help names it
+  ("--system-prompt[-file]") and the controller measured it working on 2026-11-27 (a secret word
+  in the file was answered). The role's system text goes there, in a private temporary file
+  outside the working directory, removed after the call; only the user text is on stdin. Neither
+  is ever in argv.
+
+What the model receives is NOT only that input. The controller measured (2026-11-27, three real
+calls, 2.1.332) that Claude Code adds to a custom system prompt an ``# Environment`` section (the
+temporary working directory's name, platform, shell, OS version), a model-identity line and
+today's date, and puts a ``<system-reminder>`` with account context, including the logged-in
+account's email address, before the user text. No flag in this version removes them:
+``--exclude-dynamic-system-prompt-sections`` is ignored with a custom system prompt and ``--bare``
+never reads the OAuth login. So a ``claude_code`` call is not byte-identical across runs, nor to
+an API provider's input; ``meta`` says so (``adds_context``). The guard against the account context
+reaching an answer is Task A6's refusal of any answer containing an email address its input lacks.
 
 Claude Code cannot set a temperature or a token cap, so ``meta`` records ``temperature: null``.
 The call runs in a fresh empty directory, removed afterwards, so no checkout's CLAUDE.md or
@@ -44,7 +56,6 @@ from chd_curator.site import BackendSpec
 
 DEFAULT_TIMEOUT: Final = 900.0
 REFUSAL: Final = "refusing to run Claude Code on a cluster node (SLURM_JOB_ID is set)"
-NEUTRAL_SYSTEM: Final = "Follow the SYSTEM section of the input. Answer only what it asks."
 FLAGS: Final = (
     "-p",
     "--output-format",
@@ -59,9 +70,8 @@ FLAGS: Final = (
     "--no-session-persistence",
     "--permission-prompts",
     "none",
-    "--system-prompt",
-    NEUTRAL_SYSTEM,
 )
+SYSTEM_FILE_FLAG: Final = "--system-prompt-file"
 USAGE_NAMES: Final = (
     "input_tokens",
     "output_tokens",
@@ -70,27 +80,54 @@ USAGE_NAMES: Final = (
 )
 
 
-def stdin_text(req: Request) -> str:
-    return f"=== SYSTEM ===\n{req.system}\n=== USER ===\n{req.user}\n"
-
-
 class ClaudeCode:
     def __init__(self, spec: BackendSpec, _post: Post = urllib_post, clock: Clock = now) -> None:
+        # `_post` is accepted only so make_backend can build every kind the same way.
         self.spec = spec
         self._clock = clock
         self._timeout = timeout_of(spec) if "timeout_seconds" in spec.settings else DEFAULT_TIMEOUT
+        self._version: str | None = None
+
+    def version(self) -> str:
+        """``claude --version``, run once per instance, on first use."""
+        if self._version is None:
+            try:
+                proc = subprocess.run(
+                    ["claude", "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+            except FileNotFoundError:
+                raise BackendError(f"{self.spec.id}: the claude executable was not found") from None
+            except subprocess.TimeoutExpired:
+                raise TransientError(f"{self.spec.id}: claude --version timed out") from None
+            out = proc.stdout.strip()
+            if proc.returncode != 0 or not out:
+                raise BackendError(f"{self.spec.id}: claude --version failed")
+            self._version = out
+        return self._version
 
     def ask(self, req: Request) -> Answer:
         who = self.spec.id
         if os.environ.get("SLURM_JOB_ID"):
             raise BackendError(f"{who}: {REFUSAL}")
-        argv = ["claude", *FLAGS, "--model", self.spec.model]
+        version = self.version()
         t0 = self._clock()
-        with tempfile.TemporaryDirectory(prefix="chd-curator-claude-") as cwd:
+        with (
+            tempfile.TemporaryDirectory(prefix="chd-curator-claude-") as cwd,
+            tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", prefix="chd-curator-system-", suffix=".txt"
+            ) as sysfile,
+        ):
+            sysfile.write(req.system)
+            sysfile.flush()
+            argv = ["claude", *FLAGS, SYSTEM_FILE_FLAG, sysfile.name, "--model", self.spec.model]
             try:
                 proc = subprocess.run(
                     argv,
-                    input=stdin_text(req),
+                    input=req.user,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -119,7 +156,11 @@ class ClaudeCode:
             raise BackendError(f"{who}: claude reported an error: {detail[:300]}")
         if not isinstance(text, str):
             raise BackendError(f"{who}: the claude output has no result text")
-        meta: dict[str, Any] = {"temperature": None}
+        meta: dict[str, Any] = {
+            "temperature": None,
+            "claude_code_version": version,
+            "adds_context": True,
+        }
         used = data.get("modelUsage")
         if isinstance(used, dict) and used:
             meta["model"] = sorted(used)[0]

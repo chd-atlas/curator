@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from chd_curator.backends import BackendError, Request, TransientError, make_backend
-from chd_curator.backends.claude_code import FLAGS, REFUSAL
+from chd_curator.backends.claude_code import REFUSAL
 from chd_curator.site import BackendSpec
 
 FAKES = Path(__file__).parent / "fakes"
@@ -59,12 +59,33 @@ def test_flags_and_input(stub: Path) -> None:
     ans = ask()
     log = json.loads(stub.read_text())
     argv = log["argv"]
-    assert argv == [*FLAGS, "--model", "opus-x"]
-    assert argv[argv.index("--tools") : argv.index("--tools") + 2] == ["--tools", ""]
-    assert "--strict-mcp-config" in argv and "--safe-mode" in argv and "-p" in argv
+    # a literal, never FLAGS: removing a flag from the module must fail this test
+    assert argv == [
+        "-p",
+        "--output-format",
+        "json",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--safe-mode",
+        "--setting-sources",
+        "",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--permission-prompts",
+        "none",
+        "--system-prompt-file",
+        log["system_path"],
+        "--model",
+        "opus-x",
+    ]
+    assert argv[argv.index("--model") + 1] == "opus-x"
+    assert log["system_path"].startswith("/") and log["system_mode"] == "0o600"
     assert not any(SYSTEM in a or USER in a for a in argv)
-    assert SYSTEM in log["stdin"] and USER in log["stdin"]
-    assert log["stdin"].index(SYSTEM) < log["stdin"].index(USER)
+    assert log["system"] == SYSTEM
+    assert log["stdin"] == USER
+    assert not Path(log["system_path"]).exists()
+    assert not Path(log["system_path"]).is_relative_to(Path(log["cwd"]))
     assert ans.text == "the answer" and ans.key == "k:1" and ans.seconds == 2.5
     assert ans.usage == {
         "input_tokens": 11,
@@ -72,9 +93,21 @@ def test_flags_and_input(stub: Path) -> None:
         "cache_creation_input_tokens": 2,
         "cache_read_input_tokens": 3,
     }
-    assert ans.meta["model"] == "claude-test-1"
-    assert ans.meta["temperature"] is None
-    assert ans.meta["claude_duration_ms"] == 1234
+    assert ans.meta == {
+        "temperature": None,
+        "claude_code_version": "9.9.9 (Claude Code)",
+        "adds_context": True,
+        "model": "claude-test-1",
+        "claude_duration_ms": 1234,
+    }
+
+
+def test_the_version_is_asked_once_per_backend(stub: Path) -> None:
+    ticks = iter(range(100))
+    b = make_backend(spec(), clock=lambda: float(next(ticks)))
+    r = Request("k:1", SYSTEM, USER, None, 500)
+    assert b.ask(r).meta["claude_code_version"] == b.ask(r).meta["claude_code_version"]
+    assert Path(f"{stub}.version").read_text() == "x"
 
 
 def test_runs_in_a_fresh_empty_directory_that_is_removed(stub: Path, tmp_path: Path) -> None:
