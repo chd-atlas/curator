@@ -661,6 +661,62 @@ owner sends and receives; a session never contacts a clinician.
   republishing your claude.ai copies and unpublishing the clinician's own page follow the steps it
   prints, on your word.
 
+## Site config
+
+Each model role (`triage-screen`, `triage-check`, `extract`, `blind-read`, `judge`) is filled at a
+site by a backend that a site YAML names. Keep it outside every repository, never commit it, and
+put no key in it: a key arrives in the environment and the config names the variable in its key_env field. An unknown
+key, a string under a key named like a secret, and a value starting `sk-` are all refused.
+
+```yaml site-config
+roles:
+  triage-screen:
+    id: screen-local
+    kind: openai_compat
+    model: MODEL-FILE-NAME
+    settings: {temperature: 0, seed: 0, max_tokens: 256, base_url: "http://example.invalid:8080"}
+    context_tokens: 8192
+    concurrency: 4
+  triage-check:
+    id: check
+    kind: claude_code
+    model: claude-haiku-5-5
+    context_tokens: 200000
+    concurrency: 2
+  extract:
+    id: reader-a
+    kind: anthropic
+    model: claude-sonnet-5-5
+    key_env: ANTHROPIC_API_KEY
+    context_tokens: 200000
+    concurrency: 2
+  blind-read:
+    id: reader-b
+    kind: claude_code
+    model: claude-opus-5-5
+    context_tokens: 200000
+    concurrency: 2
+  judge:
+    id: judge
+    kind: claude_code
+    model: claude-opus-5-5
+    context_tokens: 200000
+    concurrency: 1
+```
+
+A model may fill a role only if `src/chd_curator/workflow/qualification.yaml` records it as `pass`
+or `reference` for that role; `fail` and absent are refused. The key is the kind, the model and a
+hash of every setting that is not transport (base_url, timeout_seconds, dir), so a changed
+temperature is a different, unqualified model. `extract` and `blind-read` must be different models.
+`replay` and `fake` backends answer from recorded files and need no entry.
+
+```bash
+chd-curator check-site --site /path/to/site.yaml [--shadow-role triage-screen]
+```
+
+Exit 0 when every role is configured and allowed (or shadowed); exit 2, one line per role, when not.
+Only the two triage roles may be shadowed.
+
 ## Develop
 
 curator's tests run against a real atlas checkout and stop if any of these is unset:

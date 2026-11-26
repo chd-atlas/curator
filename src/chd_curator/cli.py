@@ -42,6 +42,7 @@ from chd_curator import check as check_module
 from chd_curator import compare as compare_module
 from chd_curator import merge as merge_module
 from chd_curator import redact as redact_mod
+from chd_curator import register as register_mod
 from chd_curator import texts as texts_module
 from chd_curator.atlas import (
     AtlasError,
@@ -73,7 +74,9 @@ from chd_curator.records import (
     with_verified,
 )
 from chd_curator.review_data import ReviewDataError, Reviewer, build_review_data
+from chd_curator.roles import ROLES
 from chd_curator.run import RUN_FORMAT, RunFormatError, RunPaths, load_batches
+from chd_curator.site import SiteError, load_site, model_key
 from chd_curator.write import (
     WriteRefused,
     refuse_anchors,
@@ -1666,3 +1669,46 @@ def agreement_command(
         return
     for line in agreement_mod.report(tallies, names):
         typer.echo(line)
+
+
+_SHADOWABLE = ("triage-screen", "triage-check")
+
+
+@app.command("check-site")
+def check_site(
+    site: Path = typer.Option(..., "--site", help="The site config YAML."),
+    shadow_role: list[str] = typer.Option(
+        [],
+        "--shadow-role",
+        help="A triage role that runs in shadow, so its model needs no qualification. Repeatable.",
+    ),
+) -> None:
+    """Check that every role maps to a backend the register allows.
+
+    Exit 0 when each of the five roles is configured and allowed (or shadowed); exit 2, one line
+    per failing role, when not. A site config that does not load exits 2 with the reason. Reads
+    only; the pipeline's start-up check calls it.
+    """
+    for role in shadow_role:
+        if role not in _SHADOWABLE:
+            raise _fail(
+                f"--shadow-role {role!r}: only {', '.join(_SHADOWABLE)} may run in shadow", 2
+            )
+    try:
+        loaded = load_site(site)
+        entries = register_mod.load_register()
+    except (SiteError, register_mod.RegisterError) as exc:
+        raise _fail(str(exc), 2) from None
+    problems: list[str] = []
+    for role in ROLES:
+        backend = loaded.roles.get(role)
+        if backend is None:
+            if role not in shadow_role:
+                problems.append(f"{role}: not configured in the site config")
+        elif role not in shadow_role and register_mod.allowed(role, backend, entries) is None:
+            problems.append(f"{role}: {model_key(backend)} is not qualified for this role")
+    if problems:
+        for line in problems:
+            typer.echo(f"error: {line}")
+        raise typer.Exit(code=2)
+    typer.echo(f"site ok: {len(loaded.roles)} role(s) configured, {len(shadow_role)} in shadow")
