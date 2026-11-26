@@ -31,7 +31,7 @@ from ruamel.yaml.error import YAMLError
 
 from chd_curator import pubmed
 from chd_curator.atlas import AtlasError, plain, schema_validator
-from chd_curator.batch import backfill_field_problem
+from chd_curator.batch import backfill_field_problem, declaration_refusal
 from chd_curator.diff import DiffError, parse_findings_file
 from chd_curator.records import (
     RecordError,
@@ -569,15 +569,8 @@ def check_backfill_declaration(plan: BatchPlan, schema: Mapping[str, Any]) -> fr
         raise MergeError("batches.json declares no fields to backfill")
     for name in sorted(declared):
         problem = backfill_field_problem(name, schema)
-        if problem == "forbidden":
-            raise MergeError(f"batches.json declares {name!r}, which a backfill may not set")
-        if problem == "unknown":
-            raise MergeError(f"batches.json declares {name!r}, which is not a Finding field")
-        if problem == "uncompared":
-            raise MergeError(
-                f"batches.json declares {name!r}, which a comparison never reads: every "
-                "difference in it would pass as agreement"
-            )
+        if problem is not None:
+            raise MergeError(declaration_refusal(name, problem))
     if COMMON_VARIANT_DESIGN not in _enum(
         schema, "FindingDesign"
     ) or COMMON_VARIANT_CLASS not in _enum(schema, "FindingVariantClass"):

@@ -1042,8 +1042,8 @@ def test_a_backfill_that_moved_anything_but_the_declared_fields_is_refused(
         *[
             pytest.param(
                 (name,),
-                f"declares '{name}', which a comparison never reads",
-                id=f"{name}, which compare never reads",
+                f"declares '{name}', which compare does not compare as a field of its own",
+                id=f"{name}, which compare does not compare as a field",
             )
             for name in ("summary", "locators", "review_status", "review_settled_by")
         ],

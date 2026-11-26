@@ -19,8 +19,9 @@ import pytest
 from ruamel.yaml import YAML
 from typer.testing import CliRunner
 
+from chd_curator.batch import backfill_field_problem
 from chd_curator.cli import app
-from chd_curator.compare import CompareError, compare_run
+from chd_curator.compare import CompareError, compare_run, differing_fields
 from chd_curator.run import (
     Batch,
     BatchPlan,
@@ -97,9 +98,16 @@ def test_compare_on_the_merged_fixture_gives_the_literal_comparison_and_one_mani
     assert text.startswith("# Judging batch 01 of run r1 (gene TBX5)\n")
     assert "compared after the notation rules" in text
     # what the sentence says is settled is what notation.py rewrites, no more (measured: a base's
-    # case and an uppercase TER are not rewritten)
-    assert "any other difference in a variant name, a base's case included, is listed" in text
-    assert "spacing and case" not in text
+    # case, an uppercase TER and the spaces inside `p.Arg 279Ter` are not rewritten)
+    assert (
+        "which settle the spacing after 'c.' or 'p.', around '>' and '+' and between a digit and "
+        "a base before '>', the star character," in text
+    )
+    assert (
+        "any other difference in a variant name, a base's case or spacing elsewhere in it "
+        "included, is listed" in text
+    )
+    assert "are already settled" not in text and "spacing and case" not in text
     root = str(p.root.resolve())
     assert f"- text path: {root}/local/literature/texts/91000002/fulltext.txt\n" in text
     assert f"- abstract path: {root}/local/literature/texts/91000002/abstract.txt\n" in text
@@ -387,7 +395,9 @@ def test_backfill_refuses_a_second_copy_the_schema_rejects_and_a_field_never_com
     a = "CHDA:LIT:0009001"
     with pytest.raises(CompareError, match=f"{a}: the blind pass's fields do not satisfy"):
         _backfill(schema, base, {a: None}, {a: {"screened": "many"}}, fields=("screened",))
-    with pytest.raises(CompareError, match="'summary', which a comparison never reads"):
+    with pytest.raises(
+        CompareError, match="'summary', which compare does not compare as a field of its own"
+    ):
         _backfill(schema, base, {a: None}, {a: {"summary": "s"}}, fields=("summary",))
     with pytest.raises(CompareError, match=f"{a}: the blind pass sets 'screened'"):
         _backfill(schema, base, {a: None}, {a: {"screened": 2}})
@@ -790,3 +800,39 @@ def test_a_backfills_judged_items_follow_the_batch_order(
         {"findings": findings}, plan, MergeRecord("backfill", {}, (), (), ()), given, schema
     )
     assert [(j.batch, j.first_id) for j in result.judged] == [("01", high), ("02", low)]
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("summary", "another summary"),
+        ("locators", ["Table 2"]),
+        ("shares_probands_with", ["CHDA:LIT:0009001"]),
+        ("review_note", "a note"),
+        ("review_status", "pending_review"),
+        ("review_settled_by", "agent:x/y"),
+    ],
+)
+def test_the_six_fields_a_backfill_may_not_declare_are_never_listed_under_their_own_name(
+    schema: dict[str, Any], base: dict[str, Any], name: str, value: Any
+) -> None:
+    """The reason batch, merge and compare give for refusing them ("compare does not compare it
+    as a field of its own"), measured on a pair differing in that field alone: the two review
+    fields surface only as the pseudo-field "review marks" (R-P2-17)."""
+    assert backfill_field_problem(name, schema) == "uncompared"
+    other = {**base, name: value}
+    fields = differing_fields(base, other, schema)
+    assert name not in fields
+    assert fields == (("review marks",) if name.startswith("review_s") else ())
+
+
+def test_compare_refuses_a_declared_field_by_the_rule_batch_and_merge_share(
+    schema: dict[str, Any], base: dict[str, Any]
+) -> None:
+    """N4: compare called a rule of its own; a forbidden or unknown declared field is now
+    refused by the shared one, each with its own reason."""
+    a = "CHDA:LIT:0009001"
+    with pytest.raises(CompareError, match="'approved_by', which a backfill may not set"):
+        _backfill(schema, base, {a: None}, {a: {}}, fields=("approved_by",))
+    with pytest.raises(CompareError, match="'nonesuch', which is not a Finding field"):
+        _backfill(schema, base, {a: None}, {a: {}}, fields=("nonesuch",))

@@ -30,6 +30,9 @@ P_CASES = [
     ("p.(Gly84Arg)", "p.(Gly84Arg)", ()),
     ("p.Arg100 C", "p.Arg100 C", ()),
     ("p.Arg279TER", "p.Arg279TER", ()),  # only a lowercase ter becomes Ter
+    # spacing is settled after `p.`, not inside the name (compare's manifest says so)
+    ("p. Arg 279 Ter", "p.Arg 279 Ter", ("R-F8 spaces",)),
+    ("p.Arg 279Ter", "p.Arg 279Ter", ()),
 ]
 
 

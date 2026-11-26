@@ -3,10 +3,11 @@
 The first pass is what ``merge`` wrote into the gene's literature file (or, for a backfill, the
 declared fields of the findings as merged); the second pass is the blind reader's ``verify/``
 files. Both go through the notation rules (``notation.py``) before they are compared, so a
-difference those rules rewrite never reaches a judge: spacing around ``>`` and ``+`` and after
-``c.`` or ``p.``, the ``∗`` character, "greater than", an allele slash, the legacy ``c.C835T``
-order, and a lowercase ``ter`` after a digit or ``fs``. Other differences are listed as written,
-a base's case (``c.835c>t``) and an uppercase ``TER`` included.
+difference those rules rewrite never reaches a judge: spacing around ``>`` and ``+``, after
+``c.`` or ``p.`` and between a digit and a base before ``>``, the ``∗`` character, "greater
+than", an allele slash, the legacy ``c.C835T`` order, and a lowercase ``ter`` after a digit or
+``fs``. Other differences are listed as written, a base's case (``c.835c>t``), an uppercase
+``TER`` and spacing inside a name (``p.Arg 279Ter``) included.
 
 Three things are settled here by rule and are not listed as a difference (spec section 7.5,
 R-F5, R-P2-62): a variant's ``as_reported`` span (the first pass's span stays), the order of a
@@ -38,11 +39,10 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from chd_curator.atlas import AtlasError, plain, schema_validator
-from chd_curator.batch import _dump_yaml
+from chd_curator.batch import _dump_yaml, backfill_field_problem, declaration_refusal
 from chd_curator.diff import (
     DiffError,
     FindingDiff,
-    compared_fields,
     diff_findings,
     finding_schema,
     normalise_variant,
@@ -461,13 +461,10 @@ def _analyse_backfill(
     declared = plan.fields
     if not declared:
         raise CompareError("batches.json declares no fields to backfill")
-    compared = set(compared_fields(schema))
     for name in declared:
-        if name not in compared:
-            raise CompareError(
-                f"batches.json declares {name!r}, which a comparison never reads: every "
-                "difference in it would pass as agreement"
-            )
+        problem = backfill_field_problem(name, schema)
+        if problem is not None:
+            raise CompareError(declaration_refusal(name, problem))
     planned = {fid: b.id for b in plan.batches for fid in b.findings}
     for fid, given in second.items():
         if fid not in planned:
@@ -605,10 +602,12 @@ def _manifest(
     lines = [
         f"# Judging batch {batch.id} of run {run.run_id} (gene {run.symbol})",
         "",
-        "Field values below are compared after the notation rules: spacing, the star character, "
-        "'greater than', an allele slash, the legacy c.C835T order and a lowercase 'ter' after "
-        "a digit or 'fs' are already settled; any other difference in a variant name, a base's "
-        "case included, is listed. The YAML blocks show each finding as written.",
+        "Field values below are compared after the notation rules, which settle the spacing after "
+        "'c.' or 'p.', around '>' and '+' and between a digit and a base before '>', the star "
+        "character, 'greater than', an allele slash, the legacy c.C835T order and a lowercase "
+        "'ter' after a digit or 'fs'; any other difference in a variant name, a base's case or "
+        "spacing elsewhere in it included, is listed. The YAML blocks show each finding as "
+        "written.",
         "",
     ]
     for item in items:

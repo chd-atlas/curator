@@ -133,9 +133,11 @@ def _publications(root: Path) -> dict[str, dict[str, Any]]:
 
 def backfill_field_problem(name: str, schema: Mapping[str, Any]) -> str | None:
     """Why a backfill may not declare `name`, or None: ``forbidden`` (``FORBIDDEN_FIELDS``),
-    ``unknown`` (not a Finding property of `schema`) or ``uncompared`` (a field ``compare`` never
-    reads, so every difference in it would pass as agreement). The one rule ``batch``, ``merge``
-    and ``compare`` share."""
+    ``unknown`` (not a Finding property of `schema`) or ``uncompared`` (not in
+    ``compared_fields``: ``compare`` lists no difference in it under its own name; of the six such
+    fields, four it ignores and ``review_status`` and ``review_settled_by`` it reports only as
+    ``review marks``). The one rule ``batch``, ``merge`` and ``compare`` apply, each through this
+    function."""
     if name in FORBIDDEN_FIELDS:
         return "forbidden"
     if name not in finding_schema(schema)["properties"]:
@@ -143,6 +145,16 @@ def backfill_field_problem(name: str, schema: Mapping[str, Any]) -> str | None:
     if name not in compared_fields(schema):
         return "uncompared"
     return None
+
+
+def declaration_refusal(name: str, problem: str) -> str:
+    """The message ``merge`` and ``compare`` give for a declared field `name` that
+    :func:`backfill_field_problem` refused for `problem`."""
+    if problem == "forbidden":
+        return f"batches.json declares {name!r}, which a backfill may not set"
+    if problem == "unknown":
+        return f"batches.json declares {name!r}, which is not a Finding field"
+    return f"batches.json declares {name!r}, which compare does not compare as a field of its own"
 
 
 def _check_fields(root: Path, fields: Sequence[str]) -> None:
@@ -159,8 +171,7 @@ def _check_fields(root: Path, fields: Sequence[str]) -> None:
             raise BatchError(f"--fields {name!r}: not a Finding property of the exported schema")
         if problem == "uncompared":
             raise BatchError(
-                f"--fields {name!r}: compare never reads it, so every difference in it would "
-                "pass as agreement"
+                f"--fields {name!r}: compare does not compare it as a field of its own"
             )
 
 

@@ -330,7 +330,7 @@ REFUSALS = [
         (
             lambda p, name=name: None,
             ["--mode", "backfill", "--fields", name],
-            f"--fields '{name}': compare never reads it",
+            f"--fields '{name}': compare does not compare it as a field of its own",
         )
         for name in ("summary", "locators", "shares_probands_with", "review_status", "review_note")
     ],

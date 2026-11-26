@@ -1272,6 +1272,10 @@ def test_a_finding_only_the_blind_reader_reported_is_listed_read_only_and_never_
     section = blind_only_html(dom)
     text = plain(section)
     assert text.startswith("Only the blind reader reported this")
+    # N2: only_second means compare paired the finding with none, not that the first reader
+    # never reported that study (m14)
+    assert "compare paired these with no finding of the first reader" in text
+    assert "did not report these findings" not in text
     assert "CHDA:LIT:0801004" in text
     assert "A synthetic Holt-Oram family with a TBX5 frameshift." in text
     assert "A sibling listed in the supplementary table carried the same heterozygous" in text
