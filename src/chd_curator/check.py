@@ -32,17 +32,12 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from chd_curator.assemble import (
-    LOCAL_ID,
-    add_judged,
-    judge_findings,
-    replace_judged,
-)
+from chd_curator.assemble import accept_judged, apply_judged, judge_findings, read_state
 from chd_curator.atlas import AtlasError, run_validate
 from chd_curator.diff import DiffError, parse_findings_file
 from chd_curator.merge import (
@@ -58,11 +53,9 @@ from chd_curator.merge import (
 )
 from chd_curator.records import read_counter, with_counter
 from chd_curator.run import (
-    AssembleRecord,
     Batch,
     BatchPlan,
     RunPaths,
-    load_assemble,
     load_batches,
 )
 
@@ -145,68 +138,80 @@ def _read_findings(path: Path, schema: Mapping[str, Any]) -> list[dict[str, Any]
         raise CheckError(f"{path}: {exc}") from None
 
 
-def _route(
-    judged: list[dict[str, Any]], c: Curated, previous: AssembleRecord, backfill: bool
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    """A judge's findings as (added ones, replacements by the final id they replace)."""
-    additions: list[dict[str, Any]] = []
-    replacements: dict[str, dict[str, Any]] = {}
-    for finding in judged:
-        jid = str(finding["id"])
-        if not backfill and jid in previous.added:
-            target = previous.added[jid]
-        elif jid in c.findings:
-            target = jid
-        elif not backfill and LOCAL_ID.fullmatch(jid):
-            additions.append(finding)
-            continue
-        else:
-            raise CheckError(
-                f"judging: {jid} is neither a finding of {c.lit_path} nor an added finding "
-                "(CHDA:LIT:07...)" + ("; a backfill adds no finding" if backfill else "")
-            )
-        if target in replacements:
-            raise CheckError(f"judging: more than one judge finding replaces {target}")
-        replacements[target] = {**finding, "id": target}
-    return additions, replacements
+_LOCAL_ID: Final = re.compile(r"CHDA:LIT:0[789]([0-9]{2})[0-9]{3}")
+
+
+def _defer_other_batches(
+    findings: Sequence[Mapping[str, Any]], plan: BatchPlan, batch: Batch
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """`findings` without the ``shares_probands_with`` entries that name a local id of another
+    batch of `plan` (merge numbers every batch together and resolves them; this check applies
+    one batch alone), and a ``NOT CHECKED`` line for each one dropped."""
+    others = {b.id for b in plan.batches} - {batch.id}
+    out: list[dict[str, Any]] = []
+    notes: list[str] = []
+    for finding in findings:
+        row = dict(finding)
+        shared = row.get("shares_probands_with")
+        if isinstance(shared, list):
+            kept = []
+            for ref in shared:
+                found = _LOCAL_ID.fullmatch(ref) if isinstance(ref, str) else None
+                if found is not None and found.group(1) in others:
+                    notes.append(
+                        f"NOT CHECKED: {row['id']} shares_probands_with {ref} "
+                        f"(batch {found.group(1)}; merge resolves it)"
+                    )
+                else:
+                    kept.append(ref)
+            row["shares_probands_with"] = kept
+        out.append(row)
+    return out, notes
 
 
 def _applied(
     root: Path, run: RunPaths, plan: BatchPlan, batch: Batch, which: str, approved: str
-) -> tuple[Curated, bytes, bytes | None]:
-    """The literature file after the batch's pass, and the registry when its counter moved."""
-    c = read_curated(root, run, approved, refuse_merged=False)
-    schema: Any = c.lit_validator.schema
+) -> tuple[Curated, bytes, bytes | None, list[str]]:
+    """The literature file after the batch's pass, the registry when its counter moved, and the
+    ``NOT CHECKED`` lines."""
     path = _pass_file(run, batch, which)
     if not path.is_file():
         raise CheckError(f"{path}: the batch has no such file")
-    backfill = plan.mode == "backfill"
-    counter = read_counter(c.reg, PREFIX)
-    new_counter = counter
     if which == "judge":
-        previous = load_assemble(run) or AssembleRecord((), {}, (), (), None)
-        additions, replacements = _route(
-            judge_findings(run, plan, schema, only=batch.id), c, previous, backfill
+        state = read_state(root, run, approved)
+        c = state.curated
+        judged, notes = _defer_other_batches(
+            judge_findings(run, plan, state.schema, only=batch.id), plan, batch
         )
-        literature = c.lit
-        new_map: dict[str, str] = {}
-        if additions:
-            literature, new_map, new_counter = add_judged(
-                c, run, previous.added, additions, counter
-            )
-        mapping = {**previous.added, **new_map}
-        held = frozenset(c.findings) | frozenset(new_map.values())
-        literature = replace_judged(literature, replacements, mapping, held)
-    elif backfill:
-        declared = check_backfill_declaration(plan, schema)
-        literature = apply_backfill(c, backfill_fields(path, batch, c, declared))
+        if plan.mode == "backfill":
+
+            def in_scope(fid: str) -> bool:
+                return fid in batch.findings
+
+        else:
+
+            def in_scope(fid: str) -> bool:
+                return str(c.findings.get(fid, {}).get("publication")) in batch.papers
+
+        accepted = accept_judged(state, judged, in_scope)
+        applied = apply_judged(state, run, accepted)
+        counter = read_counter(c.reg, PREFIX)
+        literature, new_counter = applied.literature, applied.new_counter
     else:
-        found = _read_findings(path, schema)
-        check_new_findings(found, batch, c, {})
-        years = paper_years(c, run, sorted({str(f["publication"]) for f in found}))
-        literature, _, new_counter = append_numbered(c.lit, found, years, counter)
+        c = read_curated(root, run, approved, refuse_merged=False)
+        schema: Any = c.lit_validator.schema
+        notes = []
+        counter = new_counter = read_counter(c.reg, PREFIX)
+        if plan.mode == "backfill":
+            declared = check_backfill_declaration(plan, schema)
+            literature = apply_backfill(c, backfill_fields(path, batch, c, declared))
+        else:
+            found, notes = _defer_other_batches(_read_findings(path, schema), plan, batch)
+            check_new_findings(found, batch, c, {})
+            years = paper_years(c, run, sorted({str(f["publication"]) for f in found}))
+            literature, _, new_counter = append_numbered(c.lit, found, years, counter)
     registry = with_counter(c.reg, PREFIX, new_counter) if new_counter != counter else None
-    return c, literature, registry
+    return c, literature, registry, notes
 
 
 def _build_scratch(
@@ -240,10 +245,11 @@ def check_batch(
     if batch is None:
         raise CheckError(f"batch {batch_id} is not in batches.json ({run.batches_json})")
     with tempfile.TemporaryDirectory(prefix="chd-curator-check-") as scratch:
-        c, literature, registry = _applied(root, run, plan, batch, which, approved)
+        c, literature, registry, notes = _applied(root, run, plan, batch, which, approved)
         _build_scratch(root, Path(scratch), c, literature, registry)
         try:
             code, stdout, stderr = run_validate(Path(scratch), atlas_cli)
         except AtlasError as exc:
-            return Checked(1, ("UNEXPECTED ERRORS:", str(exc)))
-    return report(code, stdout, stderr)
+            return Checked(1, (*notes, "UNEXPECTED ERRORS:", str(exc)))
+    done = report(code, stdout, stderr)
+    return Checked(done.code, (*notes, *done.lines))

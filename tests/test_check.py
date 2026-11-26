@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -26,7 +28,18 @@ from chd_curator import check as check_module
 from chd_curator.atlas import AtlasError
 from chd_curator.cli import app
 from run_fixture import RUN_FIXTURE
-from test_assemble import _assemble, _edit, _judge1, _ready
+from test_assemble import (
+    JUDGED_BACKFILL,
+    _assemble,
+    _backfill_ready,
+    _drop_the_judged_finding,
+    _edit,
+    _id_not_a_judge_id,
+    _judge1,
+    _judge_on_the_excluded_paper,
+    _ready,
+    _review_marks_not_in_differs,
+)
 from test_merge import _VARIANT, _backfill_run, _fresh, _merge, _pubmed
 
 runner = CliRunner()
@@ -143,9 +156,17 @@ def _ids(path: Path) -> list[str]:
 # ---- the brief's end-to-end cases: the real atlas CLI ------------------------------------------
 
 
-def _real_root(tmp_path: Path, atlas_root: Path) -> Path:
+def _real_root(tmp_path: Path, atlas_root: Path) -> tuple[Path, int]:
     """The atlas's own curation (copied), its mirrors, ontologies and schemas (symlinked), and
-    the fixture run, with the three papers of the run's batches included in TBX5's triage."""
+    the fixture run, with the three papers of the run's batches included in TBX5's triage.
+    Returns the root and the LIT counter of the copy.
+
+    Nothing here pins the atlas's live curation: TBX5's last search totals are read from the copy
+    and raised by the three papers, and the counter is read from the copy's registry. What the
+    tests still read from the atlas is its validator and its rules (the 16 expected errors the
+    batch's two mane findings draw), its schemas and mirrors, and that TBX5.yaml keeps
+    ``hits:`` and ``new_hits:`` on adjacent lines in each search and one ``findings:`` key.
+    """
     root = tmp_path / "real"
     root.mkdir()
     shutil.copytree(atlas_root / "curation", root / "curation")
@@ -158,22 +179,44 @@ def _real_root(tmp_path: Path, atlas_root: Path) -> Path:
         f"  - pmid: PMID:{n}\n    search: 1\n    decision: included\n"
         for n in (91000002, 91000003, 91000004)
     )
-    searched = "    hits: 400\n    new_hits: 400\n"
-    assert text.count("\nfindings:\n") == 1 and text.count(searched) == 1
-    text = text.replace("\nfindings:\n", "\n" + entries + "findings:\n")
-    lit.write_text(text.replace(searched, "    hits: 403\n    new_hits: 403\n"))
+    searches = list(re.finditer(r"^    hits: (\d+)\n    new_hits: (\d+)\n", text, re.MULTILINE))
+    assert text.count("\nfindings:\n") == 1 and searches
+    last = searches[-1]
+    raised = f"    hits: {int(last.group(1)) + 3}\n    new_hits: {int(last.group(2)) + 3}\n"
+    text = text[: last.start()] + raised + text[last.end() :]
+    lit.write_text(text.replace("\nfindings:\n", "\n" + entries + "findings:\n"))
     batch = root / "local/literature/runs/TBX5/r1/extract/batch-01.findings.yaml"
     batch.write_text(batch.read_text().replace("placement: unplaced", "placement: mane"))
-    return root
+    counter = int(re.search(r"LIT: (\d+)", (root / "curation/.id_registry.yaml").read_text())[1])  # type: ignore[index]
+    return root, counter
+
+
+def _baseline(tmp_path: Path, atlas_root: Path, atlas_cli: Path) -> tuple[int, int]:
+    """The atlas's own validate summary on a plain copy of its curation: (errors, warnings)."""
+    root = tmp_path / "baseline"
+    root.mkdir()
+    shutil.copytree(atlas_root / "curation", root / "curation")
+    for name in ("mirrors", "ontologies", "schemas"):
+        (root / name).symlink_to(atlas_root / name)
+    done = subprocess.run(
+        [str(atlas_cli), "validate", "--root", str(root)], capture_output=True, text=True
+    )
+    last = [line for line in done.stdout.splitlines() if line.strip()][-1]
+    found = re.fullmatch(r"(\d+) error\(s\), (\d+) warning\(s\)", last)
+    assert found, done.stdout[-300:]
+    return int(found[1]), int(found[2])
 
 
 def test_a_clean_batch_passes_on_the_real_validator_and_touches_nothing(
     tmp_path: Path, atlas_root: Path, atlas_cli: Path, scratch_parent: Path
 ) -> None:
-    root = _real_root(tmp_path, atlas_root)
+    errors, warnings = _baseline(tmp_path, atlas_root, atlas_cli)
+    root, _ = _real_root(tmp_path, atlas_root)
     before = _snapshot(root)
     code, out = _check(root, atlas_cli)
-    assert (code, out) == (0, "16 error(s), 3 warning(s)\n" + OK_LINE)
+    # the batch draws 16 expected errors (2 LIT011, 9 LIT022, 3 LIT025, 2 LIT003) on top of
+    # whatever the atlas's own curation already reports
+    assert (code, out) == (0, f"{errors + 16} error(s), {warnings} warning(s)\n" + OK_LINE)
     assert _snapshot(root) == before
     assert list(scratch_parent.iterdir()) == []
 
@@ -181,7 +224,8 @@ def test_a_clean_batch_passes_on_the_real_validator_and_touches_nothing(
 def test_a_variant_whose_phenotypes_are_not_the_findings_is_reported_and_nothing_else(
     tmp_path: Path, atlas_root: Path, atlas_cli: Path, scratch_parent: Path
 ) -> None:
-    root = _real_root(tmp_path, atlas_root)
+    errors, warnings = _baseline(tmp_path, atlas_root, atlas_cli)
+    root, counter = _real_root(tmp_path, atlas_root)
     batch = root / "local/literature/runs/TBX5/r1/extract/batch-01.findings.yaml"
     _edit(
         batch,
@@ -192,8 +236,8 @@ def test_a_variant_whose_phenotypes_are_not_the_findings_is_reported_and_nothing
     code, out = _check(root, atlas_cli)
     assert code == 1
     assert out == (
-        "17 error(s), 3 warning(s)\nUNEXPECTED ERRORS:\n"
-        f"ERROR [LIT024] {_FILE}:finding CHDA:LIT:0000118:variant 1: "
+        f"{errors + 17} error(s), {warnings} warning(s)\nUNEXPECTED ERRORS:\n"
+        f"ERROR [LIT024] {_FILE}:finding CHDA:LIT:{counter + 2:07d}:variant 1: "
         "phenotype HP:0001629 is not among the finding's phenotypes\n"
     )
     assert _snapshot(root) == before
@@ -526,17 +570,187 @@ def test_a_backfill_pass_that_fills_a_filled_field_is_refused(
     assert not _seen(tmp_path).exists() and list(scratch_parent.iterdir()) == []
 
 
-def test_a_backfill_judge_pass_replaces_the_finding_by_id(tmp_path: Path, atlas_root: Path) -> None:
-    p = _backfill_run(tmp_path, atlas_root, _BACKFILL_PASS)
-    lit = YAML_SAFE.load((p.root / "curation/literature/TBX5.yaml").read_text())
-    whole = {k: v for k, v in lit["findings"][1].items() if k != "verified_by"}
-    assert whole["id"] == "CHDA:LIT:0009010"
-    whole["variants"] = [_VARIANT]
-    p.judging.mkdir()
-    (p.judging / "judge-01.findings.yaml").write_text(json.dumps({"findings": [whole]}))
+# ---- the judge pass is checked by assemble's own rules ----------------------------------------
+
+
+def _judge_refused(
+    p: Any, cli: Path, message: str, scratch_parent: Path, batch: str = "01"
+) -> None:
+    before = _snapshot(p.root)
+    code, out = _check(p.root, cli, pass_="judge", batch=batch)
+    assert code == 2 and out.startswith("error: ") and message in out, out
+    assert not _seen(p.root.parent).exists()
+    assert _snapshot(p.root) == before
+    assert list(scratch_parent.iterdir()) == []
+
+
+def test_a_judge_that_changes_a_field_no_decision_names_is_refused_by_assembles_rule(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scratch_parent: Path,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _review_marks_not_in_differs(p)
+    cli = _fake(tmp_path, _stdout())
+    _judge_refused(
+        p,
+        cli,
+        "CHDA:LIT:0009003: the judge changed ['review marks'], which no decision covers",
+        scratch_parent,
+    )
+
+
+def test_a_judge_id_outside_the_comparison_is_refused(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scratch_parent: Path,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _id_not_a_judge_id(p)
+    _judge_refused(
+        p,
+        _fake(tmp_path, _stdout()),
+        "judging: CHDA:LIT:0009004 is neither a finding that differs",
+        scratch_parent,
+    )
+
+
+def test_a_judge_pass_needs_the_runs_comparison_and_the_decided_differences(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scratch_parent: Path,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _drop_the_judged_finding(p)
+    cli = _fake(tmp_path, _stdout())
+    _judge_refused(
+        p, cli, "CHDA:LIT:0009003: differs, but no judge finding decides it", scratch_parent
+    )
+    p.comparison.unlink()
+    _judge_refused(p, cli, "the run has no comparison.json", scratch_parent)
+
+
+def test_a_judge_added_finding_on_a_paper_without_a_publication_is_refused(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scratch_parent: Path,
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _judge_on_the_excluded_paper(p, register=False)
+    _judge_refused(
+        p,
+        _fake(tmp_path, _stdout()),
+        "chd-curator add-publication PMID:91000004",
+        scratch_parent,
+        batch="02",
+    )
+
+
+def test_a_judge_added_finding_on_a_paper_merge_excluded_goes_back_to_included_in_the_copy(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _judge_on_the_excluded_paper(p, register=True)
     cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    assert _check(p.root, cli, pass_="judge", batch="02")[0] == 0
+    text = (_seen(tmp_path) / "curation/literature/TBX5.yaml").read_text()
+    assert "  - pmid: PMID:91000004\n    search: 1\n    decision: included\nfindings:\n" in text
+    assert "decision: excluded" not in text.split("findings:")[0]
+
+
+def test_a_backfill_judge_pass_takes_the_declared_fields_by_assembles_edit(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, scratch_parent: Path
+) -> None:
+    p = _backfill_ready(
+        tmp_path,
+        atlas_root,
+        stub_atlas,
+        "findings:\n  CHDA:LIT:0009001:\n    cohorts: [somewhere]\n",
+    )
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(JUDGED_BACKFILL)
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    before = _snapshot(p.root)
     assert _check(p.root, cli, pass_="judge")[0] == 0
+    assert _snapshot(p.root) == before
+    found = YAML_SAFE.load((_seen(tmp_path) / "curation/literature/TBX5.yaml").read_text())
+    f = {x["id"]: x for x in found["findings"]}["CHDA:LIT:0009001"]
+    assert f["cohorts"] == ["elsewhere"] and "verified_by" not in f
+    assert f["approved_by"] == "E.A.M"  # the edit keeps what a judge may not touch
+    _edit(p.judging / "judge-01.findings.yaml", "screened: 1", "screened: 3")
+    shutil.rmtree(_seen(tmp_path))
+    _judge_refused(
+        p, cli, "the judge changed fields the run did not declare: ['screened']", scratch_parent
+    )
+
+
+# ---- a ref to another batch's local id is deferred to merge ------------------------------------
+
+_NOT_CHECKED = (
+    "NOT CHECKED: CHDA:LIT:0902001 shares_probands_with CHDA:LIT:0901001 "
+    "(batch 01; merge resolves it)\n"
+)
+
+
+def _share(p: Any, ref: str) -> None:
+    path = p.extract / "batch-02.findings.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "shares_probands_with: unknown", f"shares_probands_with: [{ref}]", 1
+        )
+    )
+
+
+def test_a_ref_to_another_batchs_local_id_is_dropped_in_the_copy_and_reported_as_not_checked(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    _share(p, "CHDA:LIT:0901001")
+    before = _snapshot(p.root)
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    code, out = _check(p.root, cli, batch="02")
+    assert (code, out) == (0, _NOT_CHECKED + "0 error(s), 3 warning(s)\n" + OK_LINE)
+    assert _snapshot(p.root) == before
     seen = YAML_SAFE.load((_seen(tmp_path) / "curation/literature/TBX5.yaml").read_text())
-    assert seen["findings"][1]["variants"][0]["reported"] == {"c": "c.1A>T"}
-    assert "verified_by" not in seen["findings"][1]
-    assert seen["findings"][2] == lit["findings"][2]
+    shared = {f["id"]: f["shares_probands_with"] for f in seen["findings"]}
+    assert shared["CHDA:LIT:0009002"] == []
+
+
+def test_a_ref_to_an_id_of_no_batch_exits_2_saying_what_it_is(
+    tmp_path: Path, atlas_root: Path, scratch_parent: Path
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    _share(p, "CHDA:LIT:0999999")
+    code, out = _check(p.root, _fake(tmp_path, _stdout()), batch="02")
+    assert (code, out) == (
+        2,
+        "error: CHDA:LIT:0009002: shares_probands_with names CHDA:LIT:0999999, which is neither "
+        "a finding of this run nor one in the file\n",
+    )
+    assert list(scratch_parent.iterdir()) == []
+
+
+def test_a_judge_ref_to_another_batchs_local_id_is_deferred_too(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit(
+        _judge1(p),
+        "shares_probands_with: unknown\n  summary: One family",
+        "shares_probands_with: [CHDA:LIT:0902001]\n  summary: One family",
+    )
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    code, out = _check(p.root, cli, pass_="judge")
+    assert (code, out) == (
+        0,
+        "NOT CHECKED: CHDA:LIT:0009003 shares_probands_with CHDA:LIT:0902001 "
+        "(batch 02; merge resolves it)\n0 error(s), 3 warning(s)\n" + OK_LINE,
+    )

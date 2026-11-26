@@ -316,15 +316,20 @@ How the pass is applied, by the run's mode in `batches.json`:
 - `new` or `reread`, `--pass extract` or `verify`: the findings of `extract/batch-NN.findings.yaml`
   (or `verify/`) are appended as `merge` would number them, from the `LIT` counter (raised in the
   copy, so `ID002` is not among the expected errors). No Publication is added and no triage
-  entry changes. A `shares_probands_with` naming a local id of another batch is refused (exit 2),
-  because the batch is applied alone.
-- `new` or `reread`, `--pass judge`: the findings of `judging/judge-NN.findings.yaml` (the other
-  batches' judge files are not read). A finding whose id the file holds replaces it; a local id
-  `CHDA:LIT:07...` is added and numbered; an id an earlier `assemble.json` mapped replaces the
-  finding it was numbered as. It does not need `comparison.json`.
+  entry changes. A `shares_probands_with` entry naming a local id of another batch of
+  `batches.json` is dropped in the copy only, and the command prints `NOT CHECKED: <finding>
+  shares_probands_with <local id> (batch NN; merge resolves it)` before the summary line; any other
+  entry that names no finding of the pass or of the file exits 2.
+- `--pass judge`: the findings of `judging/judge-NN.findings.yaml` (the other batches' judge
+  files are not read) go through `assemble`'s own acceptance and application functions, for this
+  batch: the same id classes, the same limits on what a judge may change (the fields
+  `comparison.json` lists for a `differs` id in a `new` or `reread` run; the declared fields in a
+  backfill), the same Publication and triage rules for an added finding. It needs `merge.json` and
+  `comparison.json` and exits 2 with `assemble`'s message where `assemble` would refuse. It does
+  not run the notation rules or write `verified_by`.
 - `backfill`, `--pass extract` or `verify`: the declared fields are filled by `merge`'s own
   backfill functions, so a field a finding already holds is refused (exit 2). Check a backfill
-  pass before `merge`; after it the fields are filled. `--pass judge` replaces findings by id.
+  pass before `merge`; after it the fields are filled.
 
 It prints the validator's summary line, then either `OK: only the errors expected before merge and
 normalise` (exit 0) or `UNEXPECTED ERRORS:` and each error line the validator printed that is not

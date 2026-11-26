@@ -35,7 +35,7 @@ Exit codes (see the CLI): 2 is every refusal, 1 an ``OSError``.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -64,6 +64,7 @@ from chd_curator.records import (
 from chd_curator.run import (
     AssembleRecord,
     BatchPlan,
+    Comparison,
     MergeRecord,
     RunFormatError,
     RunPaths,
@@ -315,10 +316,21 @@ def _check_nothing_else_moved(
             raise AssembleError(f"{fid}: verified_by is {is_.get('verified_by')!r}, not {verifier}")
 
 
-def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None) -> Assembled:
-    """Build the assembled literature file and ``assemble.json`` for a run; see the module
-    docstring. Reads only. Raises :class:`AssembleError` (or ``MergeError``, ``RunFormatError``,
-    ``DiffError``, ``RecordError``) for every refusal."""
+@dataclass(frozen=True)
+class RunState:
+    """What ``assemble`` and ``check-batch`` read before they look at the judges' findings."""
+
+    merged: MergeRecord
+    plan: BatchPlan
+    comparison: Comparison
+    curated: Curated
+    schema: Any
+    previous: AssembleRecord
+
+
+def read_state(root: Path, run: RunPaths, approved: str) -> RunState:
+    """The run's merge record, plan, comparison, curated files and previous assemble record
+    (empty when there is none), refused unless they agree. Reads only."""
     merged = load_merge(run)
     if merged is None:
         raise AssembleError(
@@ -335,7 +347,6 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
         )
     comparison = load_comparison(run)
     c = read_curated(root, run, approved, refuse_merged=False)
-    schema: Any = c.lit_validator.schema
     previous = load_assemble(run) or AssembleRecord((), {}, (), (), None)
     for local, final in previous.added.items():
         if final not in c.findings:
@@ -343,10 +354,34 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
                 f"{run.assemble}: maps {local} to {final}, which {c.lit_path} lacks. A previous "
                 "assemble stopped part-way: remove assemble.json and run it again"
             )
-    judged = judge_findings(run, plan, schema)
-    backfill = plan.mode == "backfill"
-    declared = frozenset(plan.fields)
+    return RunState(merged, plan, comparison, c, c.lit_validator.schema, previous)
 
+
+@dataclass(frozen=True)
+class Accepted:
+    """The judges' findings sorted into the file's findings they replace (by final id) and the
+    ones added, and the triage changes the added findings' papers need."""
+
+    replacements: dict[str, dict[str, Any]]
+    additions: list[dict[str, Any]]
+    triage: list[TriageChange]
+    prior_final: frozenset[str]
+
+
+def accept_judged(
+    state: RunState,
+    judged: Sequence[dict[str, Any]],
+    in_scope: Callable[[str], bool] = lambda _: True,
+) -> Accepted:
+    """Apply assemble's acceptance rules to the judges' findings, refusing with
+    :class:`AssembleError` what assemble refuses: an id of no known kind, a finding the file
+    lacks, one comparison.json also lists as agreed, a ``differs`` id left undecided or changed
+    in a field its decisions do not name (new and reread runs), and a paper with no Publication
+    or whose triage someone else set. `in_scope` limits which ``differs`` ids must be decided
+    (the default is all, as assemble does; check-batch passes its batch's)."""
+    merged, plan, comparison = state.merged, state.plan, state.comparison
+    c, schema, previous = state.curated, state.schema, state.previous
+    backfill = plan.mode == "backfill"
     differs, only_first = set(comparison.differs), set(comparison.only_first)
     prior_final = set(previous.added.values())
     replacements: dict[str, dict[str, Any]] = {}  # file id -> the judge's finding
@@ -371,7 +406,8 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
         if target in replacements:
             raise AssembleError(f"judging: more than one judge finding replaces {target}")
         replacements[target] = {**finding, "id": target}
-    for fid in sorted(differs):
+    needed = {fid for fid in differs if in_scope(fid)}
+    for fid in sorted(needed):
         if fid not in replacements:
             raise AssembleError(f"{fid}: differs, but no judge finding decides it")
     for fid in sorted(replacements):
@@ -381,7 +417,7 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
         raise AssembleError(f"{fid}: comparison.json lists it as agreed and as judged")
 
     if not backfill:
-        for fid in sorted(differs):
+        for fid in sorted(needed):
             stray = sorted(
                 set(differing_fields(c.findings[fid], replacements[fid], schema))
                 - set(comparison.differs[fid])
@@ -426,7 +462,30 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
             "which merge did not set: someone else decided it"
         )
 
-    # Build the literature file in memory.
+    return Accepted(replacements, additions, triage, frozenset(prior_final))
+
+
+@dataclass(frozen=True)
+class AppliedJudged:
+    """The literature file with the judges' findings applied, and what that numbered."""
+
+    literature: bytes
+    new_map: dict[str, str]
+    new_counter: int
+    mapping: dict[str, str]
+    held: frozenset[str]
+    new_ids: frozenset[str]
+    backfill_allowed: dict[str, frozenset[str]]
+
+
+def apply_judged(state: RunState, run: RunPaths, accepted: Accepted) -> AppliedJudged:
+    """`accepted` applied to the curated file: added findings numbered from the counter, then
+    each replacement, whole in a new or reread run and by the declared fields only in a
+    backfill (``_declared_edit``), then the triage changes. Pure."""
+    c, plan, previous = state.curated, state.plan, state.previous
+    backfill = plan.mode == "backfill"
+    declared = frozenset(plan.fields)
+    additions, replacements, triage = accepted.additions, accepted.replacements, accepted.triage
     literature = c.lit
     counter = read_counter(c.reg, PREFIX)
     new_map: dict[str, str] = {}
@@ -447,6 +506,26 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
         literature = replace_judged(literature, replacements, mapping, held)
     if triage:
         literature = with_triage(literature, triage)
+    return AppliedJudged(literature, new_map, new_counter, mapping, held, new_ids, backfill_allowed)
+
+
+def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None) -> Assembled:
+    """Build the assembled literature file and ``assemble.json`` for a run; see the module
+    docstring. Reads only. Raises :class:`AssembleError` (or ``MergeError``, ``RunFormatError``,
+    ``DiffError``, ``RecordError``) for every refusal."""
+    state = read_state(root, run, approved)
+    merged, plan, comparison, c = state.merged, state.plan, state.comparison, state.curated
+    schema, previous = state.schema, state.previous
+    judged = judge_findings(run, plan, schema)
+    backfill = plan.mode == "backfill"
+    declared = frozenset(plan.fields)
+    accepted = accept_judged(state, judged)
+    replacements, triage = accepted.replacements, accepted.triage
+    prior_final = accepted.prior_final
+    counter = read_counter(c.reg, PREFIX)
+    applied = apply_judged(state, run, accepted)
+    literature, new_counter, mapping = applied.literature, applied.new_counter, applied.mapping
+    new_ids, backfill_allowed = applied.new_ids, applied.backfill_allowed
 
     # The notation rules.
     if backfill:
