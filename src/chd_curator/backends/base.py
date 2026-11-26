@@ -8,6 +8,7 @@ sent back, because some servers echo the credential they refused.
 
 from __future__ import annotations
 
+import http.client
 import json
 import time
 from collections.abc import Callable, Mapping
@@ -57,13 +58,23 @@ class Backend(Protocol):
     def ask(self, req: Request) -> Answer: ...
 
 
+class NoRedirect(request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib would copy the credential headers to the new host."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER: Final = request.build_opener(NoRedirect)
+
+
 def urllib_post(
     url: str, headers: Mapping[str, str], body: bytes, timeout: float
 ) -> tuple[int, Mapping[str, str], bytes]:
     """The default transport. An HTTP error status is returned, not raised."""
     req = request.Request(url, data=body, headers=dict(headers), method="POST")
     try:
-        with request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        with _OPENER.open(req, timeout=timeout) as resp:
             return resp.status, dict(resp.headers), resp.read()
     except error.HTTPError as exc:
         return exc.code, dict(exc.headers), exc.read()
@@ -74,6 +85,16 @@ def timeout_of(spec: BackendSpec) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise BackendError(f"{spec.id}: settings.timeout_seconds must be a positive number")
     return float(value)
+
+
+def capped(spec: BackendSpec, requested: int) -> int:
+    """The request's ``max_tokens``, lowered to ``settings.max_tokens`` when that is set."""
+    cap = spec.settings.get("max_tokens")
+    if cap is None:
+        return requested
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+        raise BackendError(f"{spec.id}: settings.max_tokens must be an integer of at least 1")
+    return min(requested, cap)
 
 
 def scrub(text: str, secret: str | None) -> str:
@@ -95,11 +116,11 @@ def call(
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     try:
         status, _headers, raw = post(url, headers, payload, timeout)
-    except (OSError, TimeoutError) as exc:  # URLError, socket.timeout and ConnectionError
+    except (OSError, TimeoutError, http.client.HTTPException) as exc:
         raise TransientError(f"{who}: {type(exc).__name__} reaching the server") from None
     if status == 429 or status >= 500:
         raise TransientError(f"{who}: HTTP {status}")
-    if status >= 400 or status < 200:
+    if status >= 300 or status < 200:
         raise BackendError(f"{who}: HTTP {status}: {_message(raw, secret)}")
     try:
         parsed = json.loads(raw)

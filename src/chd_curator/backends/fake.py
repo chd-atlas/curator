@@ -19,6 +19,9 @@ class Fake:
         answers = spec.settings.get("answers", {})
         if not isinstance(answers, dict):
             raise BackendError(f"{spec.id}: settings.answers must be a mapping")
+        for k, v in answers.items():
+            if not isinstance(v, list):
+                raise BackendError(f"{spec.id}: the script for {k!r} must be a list")
         self._script: dict[str, list[Any]] = {k: list(v) for k, v in answers.items()}
         self._delay = float(spec.settings.get("delay", 0))
         self._lock = threading.Lock()
@@ -42,6 +45,7 @@ class Fake:
         if outcome is None:
             raise BackendError(f"{self.spec.id}: no scripted answer left for key {req.key!r}")
         if isinstance(outcome, str):
+            # seconds is the configured delay, not a measured time
             return Answer(req.key, outcome, {}, self._delay, {})
         if isinstance(outcome, dict) and outcome.get("transient"):
             raise TransientError(f"{self.spec.id}: scripted transient error")

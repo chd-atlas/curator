@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 from pathlib import Path
@@ -62,7 +63,9 @@ def test_openai_sends_the_literal_body_and_reads_the_reply(monkeypatch: pytest.M
     assert url == "http://h:8000/v1/chat/completions"
     assert headers["authorization"] == f"Bearer {KEY}"
     assert timeout == 600.0
-    assert json.loads(body) == {
+    sent = json.loads(body)
+    assert type(sent["temperature"]) is int and type(sent["seed"]) is int
+    assert sent == {
         "model": "model-x",
         "messages": [{"role": "system", "content": "SYS"}, {"role": "user", "content": "USER"}],
         "temperature": 0,
@@ -118,7 +121,9 @@ def test_anthropic_sends_the_literal_request(monkeypatch: pytest.MonkeyPatch) ->
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
-    assert json.loads(body) == {
+    sent = json.loads(body)
+    assert type(sent["temperature"]) is int
+    assert sent == {
         "model": "model-x",
         "max_tokens": 500,
         "system": "SYS",
@@ -240,3 +245,101 @@ def test_fake_records_the_peak_of_concurrent_calls() -> None:
 def test_claude_code_waits_for_a_later_task() -> None:
     with pytest.raises(BackendError, match="later task"):
         make_backend(spec("claude_code"))
+
+
+# ---- fix round 1 ----
+
+HTTP_KINDS = [("openai_compat", {"base_url": "http://h/v1"}), ("anthropic", {})]
+
+
+@pytest.mark.parametrize(("kind", "settings"), HTTP_KINDS)
+@pytest.mark.parametrize(
+    "raw",
+    [b"not json", b"[1, 2]", b"{}"],
+)
+def test_a_malformed_200_is_a_backend_error(
+    monkeypatch: pytest.MonkeyPatch, kind: str, settings: dict[str, Any], raw: bytes
+) -> None:
+    monkeypatch.setenv("K", KEY)
+    b = make_backend(spec(kind, settings, "K"), post=FakePost((200, {}, raw)))
+    with pytest.raises(BackendError, match="m1"):
+        b.ask(req())
+
+
+@pytest.mark.parametrize("raw", [{"choices": []}, {"choices": [{"message": {"content": None}}]}])
+def test_an_openai_reply_without_text_is_a_backend_error(raw: dict[str, Any]) -> None:
+    b = make_backend(spec("openai_compat", {"base_url": "http://h"}), post=FakePost(ok(raw)))
+    with pytest.raises(BackendError, match="m1"):
+        b.ask(req())
+
+
+@pytest.mark.parametrize(
+    "content",
+    [[], [{"type": "tool_use", "id": "x"}], [{"type": "thinking", "thinking": "hm"}]],
+)
+def test_an_anthropic_reply_without_a_text_block_is_a_backend_error(
+    monkeypatch: pytest.MonkeyPatch, content: list[Any]
+) -> None:
+    monkeypatch.setenv("K", KEY)
+    b = make_backend(spec("anthropic", key_env="K"), post=FakePost(ok({"content": content})))
+    with pytest.raises(BackendError, match="m1.*no text block"):
+        b.ask(req())
+
+
+@pytest.mark.parametrize(("kind", "settings"), HTTP_KINDS)
+def test_a_redirect_is_a_backend_error_and_is_not_followed(
+    monkeypatch: pytest.MonkeyPatch, kind: str, settings: dict[str, Any]
+) -> None:
+    monkeypatch.setenv("K", KEY)
+    post = FakePost(
+        (302, {"Location": "http://elsewhere/"}, b'{"choices": []}'),
+        pytest.fail,  # type: ignore[arg-type]
+    )
+    with pytest.raises(BackendError, match="HTTP 302") as info:
+        make_backend(spec(kind, settings, "K"), post=post).ask(req())
+    assert len(post.calls) == 1 and KEY not in str(info.value)
+
+
+def test_the_default_transport_refuses_to_follow_a_redirect() -> None:
+    from urllib import request
+
+    from chd_curator.backends.base import NoRedirect
+
+    r = request.Request("http://a/", headers={"x-api-key": KEY})
+    assert NoRedirect().redirect_request(r, None, 302, "Found", {}, "http://b/") is None  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("exc", [http.client.IncompleteRead(b"x"), http.client.BadStatusLine("x")])
+def test_http_client_failures_are_transient(exc: Exception) -> None:
+    b = make_backend(spec("openai_compat", {"base_url": "http://h"}), post=FakePost(exc))
+    with pytest.raises(TransientError):
+        b.ask(req())
+
+
+@pytest.mark.parametrize("usage", [5, "x", ["a"], {"a": "1"}, {"a": True}])
+def test_replay_refuses_a_usage_that_is_not_a_str_to_int_mapping(
+    tmp_path: Path, usage: Any
+) -> None:
+    (tmp_path / "k.json").write_text(json.dumps({"text": "T", "usage": usage}), encoding="utf-8")
+    b = make_backend(spec("replay", {"dir": str(tmp_path)}))
+    with pytest.raises(BackendError, match=r"k\.json"):
+        b.ask(Request("k", "s", "u", None, 1))
+
+
+@pytest.mark.parametrize("kind", ["openai_compat", "anthropic"])
+@pytest.mark.parametrize("cap", [True, 0, -5, "9"])
+def test_a_bad_max_tokens_setting_is_a_backend_error(
+    monkeypatch: pytest.MonkeyPatch, kind: str, cap: Any
+) -> None:
+    monkeypatch.setenv("K", KEY)
+    post = FakePost()
+    b = make_backend(spec(kind, {"base_url": "http://h", "max_tokens": cap}, "K"), post=post)
+    with pytest.raises(BackendError, match="max_tokens"):
+        b.ask(req())
+    assert post.calls == []
+
+
+@pytest.mark.parametrize("script", ["abc", 5, {"a": 1}])
+def test_fake_refuses_a_script_that_is_not_a_list(script: Any) -> None:
+    with pytest.raises(BackendError, match="list"):
+        make_backend(spec("fake", {"answers": {"k": script}}))

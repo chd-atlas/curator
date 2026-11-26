@@ -12,6 +12,7 @@ from chd_curator.backends.base import (
     Post,
     Request,
     call,
+    capped,
     int_usage,
     now,
     timeout_of,
@@ -40,8 +41,7 @@ class AnthropicAPI:
         return value
 
     def body(self, req: Request) -> dict[str, Any]:
-        cap = self.spec.settings.get("max_tokens")
-        limit = min(req.max_tokens, cap) if isinstance(cap, int) else req.max_tokens
+        limit = capped(self.spec, req.max_tokens)
         return {
             "model": self.spec.model,
             "max_tokens": limit,
@@ -68,6 +68,11 @@ class AnthropicAPI:
             for b in blocks
             if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
         )
+        if not any(
+            isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+            for b in blocks
+        ):
+            raise BackendError(f"{self.spec.id}: the reply has no text block")
         meta = {"stop_reason": data["stop_reason"]} if data.get("stop_reason") is not None else {}
         usage = int_usage(data.get("usage"), ("input_tokens", "output_tokens"))
         return Answer(req.key, text, usage, seconds, meta)

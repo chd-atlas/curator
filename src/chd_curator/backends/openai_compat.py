@@ -17,6 +17,7 @@ from chd_curator.backends.base import (
     Post,
     Request,
     call,
+    capped,
     int_usage,
     now,
     timeout_of,
@@ -46,8 +47,7 @@ class OpenAICompat:
         return value
 
     def body(self, req: Request) -> dict[str, Any]:
-        cap = self.spec.settings.get("max_tokens")
-        limit = min(req.max_tokens, cap) if isinstance(cap, int) else req.max_tokens
+        limit = capped(self.spec, req.max_tokens)
         body: dict[str, Any] = {
             "model": self.spec.model,
             "messages": [

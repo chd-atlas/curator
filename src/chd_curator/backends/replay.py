@@ -10,7 +10,7 @@ import json
 import re
 from pathlib import Path
 
-from chd_curator.backends.base import Answer, BackendError, Request, int_usage
+from chd_curator.backends.base import Answer, BackendError, Request
 from chd_curator.site import BackendSpec
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -47,11 +47,17 @@ class Replay:
             raise BackendError(f"{self.spec.id}: cannot read {path}: {exc}") from None
         if not isinstance(data, dict) or not isinstance(data.get("text"), str):
             raise BackendError(f"{self.spec.id}: {path} has no text")
+        usage = data.get("usage", {})
+        if not isinstance(usage, dict) or not all(
+            isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+            for k, v in usage.items()
+        ):
+            raise BackendError(f"{self.spec.id}: {path}: usage must map names to integers")
         meta = data.get("meta")
         return Answer(
             req.key,
             data["text"],
-            int_usage(data.get("usage"), tuple(data.get("usage") or ())),
+            dict(usage),
             0.0,
             meta if isinstance(meta, dict) else {},
         )
