@@ -35,6 +35,7 @@ from chd_curator.records import (
     with_triage,
 )
 from chd_curator.run import RunPaths, TriageChange
+from chd_curator.write import WriteRefused
 from fake_pubmed import FakePubMed
 from run_fixture import copy_run_fixture
 
@@ -458,7 +459,8 @@ REFUSALS: list[tuple[str, Callable[[RunPaths], None], tuple[str, ...], str]] = [
         "shares_probands_with naming an unknown finding",
         _shares_unknown_id,
         (),
-        "shares_probands_with names CHDA:LIT:0999999",
+        # the agent's own local id, which is what the batch file holds (0009004 is merge's number)
+        "CHDA:LIT:0902001: shares_probands_with names CHDA:LIT:0999999",
     ),
     ("a paper with no year", _no_year, (), "PMID:91000002: has no year"),
     (
@@ -590,6 +592,30 @@ def test_every_refusal_exits_2_and_leaves_all_curated_files_and_the_run_as_they_
     assert not p.merge.exists() and not p.evidence.exists()
     if "anchor" not in message:  # that one is found by the write's own check, after the fetch
         assert fake.urls == []
+
+
+def test_a_write_refused_after_merge_json_says_what_was_already_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m6: the literature file's write is refused last, after the evidence files, merge.json and
+    the registry are on disk, so "nothing was written" would be false."""
+    p = _fresh(tmp_path, atlas_root)
+    _pubmed(monkeypatch)
+    lit = _literature(p).read_bytes()
+
+    def refuse(path: Path, *args: Any, **kwargs: Any) -> None:
+        raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
+
+    monkeypatch.setattr(merge_module, "write_literature", refuse)
+    code, out = _merge(p, stub_atlas)
+    assert code == 2
+    assert out == (
+        f"error: {_literature(p)}: the file changed since it was read; this command had already "
+        f"written {p.evidence / 'batch-01.yaml'}, {p.evidence / 'batch-02.yaml'}, {p.merge}, "
+        f"{p.root / 'curation/.id_registry.yaml'}, {p.root / 'curation/publications.yaml'}, "
+        "which stay as written\n"
+    )
+    assert p.merge.exists() and _literature(p).read_bytes() == lit
 
 
 def test_a_paper_already_registered_gets_no_second_record_and_its_year_orders_the_ids(
@@ -810,7 +836,8 @@ def test_merge_backfill_changes_only_the_declared_fields(
     before = _load(_literature(p))
     code, out = _merge(p, stub_atlas)
     assert code == 0, out
-    assert out == "backfilled 4 findings (variants) from 1 batch; LIT counter 9001\n"
+    # four entries, of which one (an empty variants list) changes nothing: the line counts entries
+    assert out == "backfill pass files name 4 findings (variants) in 1 batch; LIT counter 9001\n"
     assert fake.urls == []
     assert (p.root / "curation/.id_registry.yaml").read_bytes() == registry
     assert (p.root / "curation/publications.yaml").read_bytes() == publications
@@ -1012,6 +1039,14 @@ def test_a_backfill_that_moved_anything_but_the_declared_fields_is_refused(
             "declares 'approved_by', which a backfill may not set",
             id="a forbidden field",
         ),
+        *[
+            pytest.param(
+                (name,),
+                f"declares '{name}', which a comparison never reads",
+                id=f"{name}, which compare never reads",
+            )
+            for name in ("summary", "locators", "review_status", "review_settled_by")
+        ],
         pytest.param(
             ("variants", "bogus"),
             "declares 'bogus', which is not a Finding field",

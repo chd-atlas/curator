@@ -96,6 +96,10 @@ def test_compare_on_the_merged_fixture_gives_the_literal_comparison_and_one_mani
     text = (p.judging / "judge-01.md").read_text()
     assert text.startswith("# Judging batch 01 of run r1 (gene TBX5)\n")
     assert "compared after the notation rules" in text
+    # what the sentence says is settled is what notation.py rewrites, no more (measured: a base's
+    # case and an uppercase TER are not rewritten)
+    assert "any other difference in a variant name, a base's case included, is listed" in text
+    assert "spacing and case" not in text
     root = str(p.root.resolve())
     assert f"- text path: {root}/local/literature/texts/91000002/fulltext.txt\n" in text
     assert f"- abstract path: {root}/local/literature/texts/91000002/abstract.txt\n" in text

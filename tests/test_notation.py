@@ -20,6 +20,7 @@ C_CASES = [
     ("c.1A>G", "c.1A>G", ()),
     ("c.123 T", "c.123 T", ()),
     ("c.100 + 5 G > A", "c.100+5G>A", ("R-F8 spaces",)),
+    ("c.835c>t", "c.835c>t", ()),  # a base's case is not rewritten (compare's manifest says so)
 ]
 P_CASES = [
     ("p. K342fs", "p.K342fs", ("R-F8 spaces",)),
@@ -28,6 +29,7 @@ P_CASES = [
     ("p.Arg100ter", "p.Arg100Ter", ("R-F4 Ter",)),
     ("p.(Gly84Arg)", "p.(Gly84Arg)", ()),
     ("p.Arg100 C", "p.Arg100 C", ()),
+    ("p.Arg279TER", "p.Arg279TER", ()),  # only a lowercase ter becomes Ter
 ]
 
 

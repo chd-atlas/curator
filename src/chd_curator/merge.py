@@ -31,8 +31,8 @@ from ruamel.yaml.error import YAMLError
 
 from chd_curator import pubmed
 from chd_curator.atlas import AtlasError, plain, schema_validator
-from chd_curator.batch import FORBIDDEN_FIELDS
-from chd_curator.diff import DiffError, finding_schema, parse_findings_file
+from chd_curator.batch import backfill_field_problem
+from chd_curator.diff import DiffError, parse_findings_file
 from chd_curator.records import (
     RecordError,
     is_empty,
@@ -61,9 +61,11 @@ from chd_curator.run import (
 )
 from chd_curator.write import (
     APPROVAL_FIELDS,
+    WriteRefused,
     check_literature,
     check_publications,
     check_registry,
+    refused_after_writes,
     write_literature,
     write_publications,
     write_registry,
@@ -122,7 +124,8 @@ def append_numbered(
     numbered: list[dict[str, Any]] = []
     for i in order:
         finding = dict(findings[i])
-        finding["id"] = mapping[str(finding["id"])]
+        local = str(finding["id"])
+        finding["id"] = mapping[local]
         shared = finding.get("shares_probands_with")
         if isinstance(shared, list):
             rewritten = []
@@ -133,7 +136,7 @@ def append_numbered(
                     rewritten.append(ref)
                 else:
                     raise RecordError(
-                        f"{finding['id']}: shares_probands_with names {ref}, which is neither a "
+                        f"{local}: shares_probands_with names {ref}, which is neither a "
                         "finding of this run nor one in the file"
                     )
             finding["shares_probands_with"] = rewritten
@@ -261,14 +264,22 @@ def _commit(root: Path, run: RunPaths, c: Curated, w: _Writes) -> None:
         check_publications(c.pub_path, w.publications, c.pub_validator, expected=c.pubs)
     if w.registry is not None:
         check_registry(c.reg_path, w.registry, expected=c.reg)
-    for batch_id, quotes in w.evidence.items():
-        write_evidence(run, batch_id, quotes)
-    write_merge(run, w.record)
-    if w.registry is not None:
-        write_registry(c.reg_path, w.registry, expected=c.reg)
-    if w.publications is not None:
-        write_publications(c.pub_path, w.publications, c.pub_validator, expected=c.pubs)
-    write_literature(c.lit_path, w.literature, c.lit_validator, expected=c.lit, added=w.added)
+    written: list[Path] = []
+    try:
+        for batch_id, quotes in w.evidence.items():
+            write_evidence(run, batch_id, quotes)
+            written.append(run.evidence / f"batch-{batch_id}.yaml")
+        write_merge(run, w.record)
+        written.append(run.merge)
+        if w.registry is not None:
+            write_registry(c.reg_path, w.registry, expected=c.reg)
+            written.append(c.reg_path)
+        if w.publications is not None:
+            write_publications(c.pub_path, w.publications, c.pub_validator, expected=c.pubs)
+            written.append(c.pub_path)
+        write_literature(c.lit_path, w.literature, c.lit_validator, expected=c.lit, added=w.added)
+    except WriteRefused as exc:
+        raise refused_after_writes(exc, written) from None
 
 
 def merge_run(
@@ -556,11 +567,17 @@ def check_backfill_declaration(plan: BatchPlan, schema: Mapping[str, Any]) -> fr
     declared = set(plan.fields)
     if not declared:
         raise MergeError("batches.json declares no fields to backfill")
-    for name in sorted(declared & set(FORBIDDEN_FIELDS)):
-        raise MergeError(f"batches.json declares {name!r}, which a backfill may not set")
-    known = set(finding_schema(schema)["properties"])
-    for name in sorted(declared - known):
-        raise MergeError(f"batches.json declares {name!r}, which is not a Finding field")
+    for name in sorted(declared):
+        problem = backfill_field_problem(name, schema)
+        if problem == "forbidden":
+            raise MergeError(f"batches.json declares {name!r}, which a backfill may not set")
+        if problem == "unknown":
+            raise MergeError(f"batches.json declares {name!r}, which is not a Finding field")
+        if problem == "uncompared":
+            raise MergeError(
+                f"batches.json declares {name!r}, which a comparison never reads: every "
+                "difference in it would pass as agreement"
+            )
     if COMMON_VARIANT_DESIGN not in _enum(
         schema, "FindingDesign"
     ) or COMMON_VARIANT_CLASS not in _enum(schema, "FindingVariantClass"):
@@ -670,13 +687,15 @@ def _only_declared_changes(c: Curated, after: bytes, allowed: Mapping[str, set[s
 
 
 def summary(root: Path, plan: BatchPlan, record: MergeRecord, run: RunPaths) -> str:
-    """The line ``merge`` prints."""
+    """The line ``merge`` prints. A backfill's count is the findings its pass files name, not the
+    findings that changed: an entry whose value the finding already holds, or an empty one for a
+    key it lacks, changes nothing."""
     counter = read_counter((root / "curation" / ".id_registry.yaml").read_bytes(), PREFIX)
     batches = f"{len(plan.batches)} batch{'' if len(plan.batches) == 1 else 'es'}"
     if record.mode == "backfill":
         count = sum(len(load_backfill_pass(_pass_paths(run, b)[0])) for b in plan.batches)
         return (
-            f"backfilled {count} findings ({', '.join(plan.fields)}) from {batches}; "
+            f"backfill pass files name {count} findings ({', '.join(plan.fields)}) in {batches}; "
             f"{PREFIX} counter {counter}"
         )
     ids = list(record.ids.values())

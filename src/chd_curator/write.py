@@ -24,6 +24,7 @@ write leaves the file's bytes as they were. These are refused:
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -187,6 +188,19 @@ def refuse_approval_change(
     for name, was, now in zip(APPROVAL_FIELDS, synthesis_was, synthesis_now, strict=True):
         if was != now:
             raise WriteRefused(f"synthesis: {name} may not change ({was!r} -> {now!r})")
+
+
+def refused_after_writes(exc: WriteRefused, written: Sequence[Path]) -> WriteRefused:
+    """`exc`, a refusal raised by a write that came after others in one command, worded for that
+    case: its own "; nothing was written" is true of its own file only, so the files the command
+    had already written are named. With none written, `exc` itself."""
+    if not written:
+        return exc
+    names = ", ".join(str(path) for path in written)
+    return WriteRefused(
+        f"{str(exc).removesuffix('; nothing was written')}; this command had already written "
+        f"{names}, which {'stays' if len(written) == 1 else 'stay'} as written"
+    )
 
 
 def _refuse_constructs(path: Path, content: bytes) -> None:

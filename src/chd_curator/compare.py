@@ -2,8 +2,11 @@
 
 The first pass is what ``merge`` wrote into the gene's literature file (or, for a backfill, the
 declared fields of the findings as merged); the second pass is the blind reader's ``verify/``
-files. Both go through the notation rules before they are compared, so a spacing or case
-difference in a variant name never reaches a judge.
+files. Both go through the notation rules (``notation.py``) before they are compared, so a
+difference those rules rewrite never reaches a judge: spacing around ``>`` and ``+`` and after
+``c.`` or ``p.``, the ``∗`` character, "greater than", an allele slash, the legacy ``c.C835T``
+order, and a lowercase ``ter`` after a digit or ``fs``. Other differences are listed as written,
+a base's case (``c.835c>t``) and an uppercase ``TER`` included.
 
 Three things are settled here by rule and are not listed as a difference (spec section 7.5,
 R-F5, R-P2-62): a variant's ``as_reported`` span (the first pass's span stays), the order of a
@@ -602,9 +605,10 @@ def _manifest(
     lines = [
         f"# Judging batch {batch.id} of run {run.run_id} (gene {run.symbol})",
         "",
-        "Field values below are compared after the notation rules: spacing, case and the "
-        "star and Ter spellings of a variant name are already settled. The YAML blocks show "
-        "each finding as written.",
+        "Field values below are compared after the notation rules: spacing, the star character, "
+        "'greater than', an allele slash, the legacy c.C835T order and a lowercase 'ter' after "
+        "a digit or 'fs' are already settled; any other difference in a variant name, a base's "
+        "case included, is listed. The YAML blocks show each finding as written.",
         "",
     ]
     for item in items:

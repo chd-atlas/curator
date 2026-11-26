@@ -147,12 +147,16 @@ they are the papers of `--findings` (default every finding whose declared fields
 absent, null, `[]` or `{}`), `--fields` is required, a backfill fills fields a finding lacks and
 never rewrites a filled one,
 and each name must be a `Finding` property of the exported schema other than `id`, `publication`,
-`approved_by`, `approved_on`, `approved_digest`, `extracted_by` and `verified_by`; the manifest then
+`approved_by`, `approved_on`, `approved_digest`, `extracted_by` and `verified_by`, and not a field `compare` never reads
+(`summary`, `locators`, `shares_probands_with`, `review_status`, `review_note` and
+`review_settled_by`, because a difference in it would pass as agreement); the manifest then
 lists the fields and each paper's findings as curated, with `approved_by`, `approved_on` and
 `approved_digest` left out because a reader needs none of them. A manifest gives absolute paths to
 each paper's text, abstract and supplements (with sizes) and names no other file of the run.
-Example output: `planned 2 batches for 3 papers (budget 170,000 bytes): 01 1 paper 283 bytes; 02 2
-papers 354 bytes`. It writes the manifests first and `batches.json` last, and exits 2 with nothing
+Example output: `planned 1 batch for 3 papers (budget 170,000 bytes): 01 3 papers 637 bytes`; a
+backfill's default selection appends `; skipped N findings already holding a declared field` when
+it left any out. `<SYMBOL>` may be an alias or a previous symbol (the run directory is named as
+typed, the literature file by the approved symbol, as for `merge`). It writes the manifests first and `batches.json` last, and exits 2 with nothing
 written when `batches.json` exists or `batches/` holds a file, `texts.json` is missing, a selected
 paper is not in it or has neither text nor abstract or has no year, nothing is selected, a field
 is unknown or forbidden, or an explicit `--findings` id already holds a declared field.
@@ -180,7 +184,11 @@ rewrites a filled one, the findings file is
 batch, each field one the run declared, and only the declared fields change, plus two things
 that follow from them: a finding whose declared fields changed loses `verified_by`, and a
 common-variant finding that gains its first variant gets `variant_classes: [snv_indel]`. A
-backfill reads no `papers.json`, and its evidence file is copied to `evidence/` unchanged.
+backfill reads no `papers.json`, and its evidence file is copied to `evidence/` unchanged. A
+backfill that changes the declared fields of an approved finding leaves its `approved_by`,
+`approved_on` and `approved_digest` as they are, so the finding no longer matches its approval and
+the atlas reports `LIT015` (approval void) until it is approved again; the summary line counts the
+findings the pass files name, not the findings that changed.
 
 Example output: `merged 3 findings (CHDA:LIT:0009002..CHDA:LIT:0009004) from 2 batches; 2
 publications added; 1 papers excluded; LIT counter 9004`. It exits 2, with every curated file and
@@ -197,7 +205,11 @@ of the run nor one in the file; any file a write of it would refuse (the atlas's
 anchor, an approval changed); or a run that already has `merge.json`; a curated file that is missing, malformed or not UTF-8; or a
 backfill value for a declared field the finding already holds, equal or not. Exit 2 is every
 refusal. It exits 1, also with nothing written, when PubMed fails or answers no record for a PMID,
-or an OS error occurs while a file is read or written.
+or an OS error occurs while a file is read or written. Exit 2 is "nothing written" for every
+refusal above, which are all found before the first write, except one: if a
+curated file changes between the merge reading it and writing it, the write is refused (exit 2)
+and the message names the files this merge had already written (evidence, `merge.json`, the
+registry, `publications.yaml`), which stay as written.
 The files are written in this order: `evidence/` and `merge.json`; the id registry;
 `publications.yaml`; the literature file. A crash part-way leaves `merge.json` in place, so a
 re-run is refused until the curator removes it.
@@ -263,7 +275,8 @@ schema and carry no approval field or `verified_by`). The steps, in this order:
    path is untested) a judge's finding for a `differs` id may
    differ from the file's finding (both after the notation rules, a variant's `as_reported` span
    ignored) only in the compared fields `comparison.json` lists for it; `review marks` lists the
-   marks. `summary`, `locators`, `review_note` and `shares_probands_with` are not compared and are
+   marks. `summary`, `extracted_by`, `locators`, `review_note` and `shares_probands_with` are not
+   compared and are
    free. A first-pass-only finding may change in any field. In a `backfill` run only the declared
    fields are taken from a judge's finding, and every other field of it must equal the file's;
    a backfill adds no finding.
@@ -290,7 +303,9 @@ added); the literature file. `assemble.json` goes first on purpose: it maps each
 to the final id, and written last, a crash between it and the literature file would let a re-run
 number the same added finding again. A crash after it leaves a map naming ids the file lacks, and
 a re-run then exits 2 saying a previous assemble stopped part-way; the curator removes
-`assemble.json` and runs again. After a complete assemble a re-run changes no byte. After a fix
+`assemble.json` and runs again. The registry is written before the literature file, so a crash
+between them has already raised the `LIT` counter: the re-run numbers the added finding from the
+raised counter, and the number the crashed run would have used is never used. After a complete assemble a re-run changes no byte. After a fix
 round (the judge edited a finding, an added one still under its local id) a re-run replaces the
 findings it numbered before under their final ids, numbers only local ids it has not seen, and
 keeps every earlier mapping and notation record in `assemble.json`.
@@ -309,7 +324,9 @@ Example output: `replaced 1 judged findings, added 1 (CHDA:LIT:0009005), fixed 0
 marked 2 verified`. The line states the totals `assemble.json` records: `replaced` counts the
 judged findings that replaced a merged one (a fix round's second replacement of an added finding
 is not counted again), `added` every finding numbered, across rounds. It exits 2, with every file
-unchanged, for every refusal: no `merge.json` or `comparison.json`; modes in `batches.json` and
+unchanged, for every refusal found before the first write (and a write refused after earlier ones
+exits 2 naming the files already written, `assemble.json` first; they stay as written): no
+`merge.json` or `comparison.json`; modes in `batches.json` and
 `merge.json` that disagree; a judge file that is misnamed or for a batch the plan lacks; a judge
 finding with an approval field or `verified_by`, citing a paper outside its batch, repeating an
 id, or with an id that is neither a `differs` id, a first-pass-only id, an id of an earlier assemble

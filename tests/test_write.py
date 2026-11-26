@@ -26,6 +26,7 @@ from chd_curator.write import (
     check_registry,
     refuse_anchors,
     refuse_approval_change,
+    refused_after_writes,
     write_literature,
     write_publications,
     write_registry,
@@ -616,3 +617,15 @@ def test_check_registry_alone_refuses_a_file_that_is_not_the_bytes_read(tmp_path
     path.write_bytes(b"prefixes:\n  AST: 2\n  LIT: 9500\n")
     with pytest.raises(WriteRefused, match="the file changed since it was read"):
         check_registry(path, b"prefixes:\n  AST: 2\n  LIT: 9600\n", expected=REGISTRY)
+
+
+def test_a_refusal_after_other_writes_names_them_instead_of_claiming_nothing_was_written() -> None:
+    first = WriteRefused("/r/lit.yaml: the file changed since it was read; nothing was written")
+    assert refused_after_writes(first, []) is first
+    one = refused_after_writes(first, [Path("/r/assemble.json")])
+    assert str(one) == (
+        "/r/lit.yaml: the file changed since it was read; this command had already written "
+        "/r/assemble.json, which stays as written"
+    )
+    two = refused_after_writes(first, [Path("/r/a"), Path("/r/b")])
+    assert str(two).endswith("had already written /r/a, /r/b, which stay as written")

@@ -1,10 +1,11 @@
 """``chd-curator batch``: split a run's papers into reading batches under a text budget.
 
-Pure planning (:func:`plan_batches`) is kept apart from the selection of papers and the
-manifests (:func:`prepare_batches`, :func:`write_plan`). Every refusal is a
-:class:`BatchError`, raised before anything is written, so a refused run leaves every file as it
-was. A manifest is what both blind readers open: it names the paper's texts and, for a backfill,
-the findings as curated, and names no other file of the run.
+Planning (:func:`plan_batches`, which reads only the sizes of the papers' files) is kept apart
+from the selection of papers and the manifests (:func:`prepare_batches`, :func:`write_plan`). Every
+refusal is a :class:`BatchError`, or a ``RunFormatError`` for a ``texts.json`` that is malformed,
+raised before anything is written, so a refused run leaves every file as it was. A manifest is
+what both blind readers open: it names the paper's texts and, for a backfill, the findings as
+curated, and names no other file of the run.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from chd_curator.atlas import plain
-from chd_curator.diff import DiffError, finding_schema
+from chd_curator.diff import DiffError, compared_fields, finding_schema
 from chd_curator.fs import write_bytes_atomically
 from chd_curator.records import is_empty, literature_path, pmid_key
 from chd_curator.run import (
@@ -56,6 +57,7 @@ class BatchError(Exception):
 class Prepared:
     plan: BatchPlan
     manifests: dict[str, str]  # batch id -> manifest text
+    skipped: int = 0  # a backfill's default selection: findings left out for holding a field
 
 
 def _size(path: Path) -> int:
@@ -129,18 +131,37 @@ def _publications(root: Path) -> dict[str, dict[str, Any]]:
     return {str(r["id"]): r for r in rows if isinstance(r, dict) and "id" in r}
 
 
+def backfill_field_problem(name: str, schema: Mapping[str, Any]) -> str | None:
+    """Why a backfill may not declare `name`, or None: ``forbidden`` (``FORBIDDEN_FIELDS``),
+    ``unknown`` (not a Finding property of `schema`) or ``uncompared`` (a field ``compare`` never
+    reads, so every difference in it would pass as agreement). The one rule ``batch``, ``merge``
+    and ``compare`` share."""
+    if name in FORBIDDEN_FIELDS:
+        return "forbidden"
+    if name not in finding_schema(schema)["properties"]:
+        return "unknown"
+    if name not in compared_fields(schema):
+        return "uncompared"
+    return None
+
+
 def _check_fields(root: Path, fields: Sequence[str]) -> None:
     path = root / "schemas" / "gene_literature_file.schema.json"
     try:
         schema = json.loads(path.read_text(encoding="utf-8"))
-        known = set(finding_schema(schema)["properties"])
+        problems = {name: backfill_field_problem(name, schema) for name in fields}
     except (OSError, ValueError, DiffError) as exc:
         raise BatchError(f"cannot read the atlas's exported schema {path}: {exc}") from exc
-    for name in fields:
-        if name in FORBIDDEN_FIELDS:
+    for name, problem in problems.items():
+        if problem == "forbidden":
             raise BatchError(f"--fields {name!r}: a backfill may not re-read it")
-        if name not in known:
+        if problem == "unknown":
             raise BatchError(f"--fields {name!r}: not a Finding property of the exported schema")
+        if problem == "uncompared":
+            raise BatchError(
+                f"--fields {name!r}: compare never reads it, so every difference in it would "
+                "pass as agreement"
+            )
 
 
 def _manifest(
@@ -181,8 +202,11 @@ def prepare_batches(
     fields: Sequence[str],
     finding_ids: Sequence[str],
     budget_bytes: int,
+    approved: str | None = None,
 ) -> Prepared:
-    """Select the papers, plan the batches and render the manifests. Reads only."""
+    """Select the papers, plan the batches and render the manifests. Reads only. `approved` is
+    the gene's approved symbol, which names its literature file (default: the run's own symbol,
+    which names only the run's directory)."""
     if mode not in ("new", "backfill"):
         raise BatchError(f"--mode {mode!r} is not planned by this command; use new or backfill")
     if mode == "new" and (fields or finding_ids):
@@ -197,9 +221,9 @@ def prepare_batches(
     if mode == "backfill":
         _check_fields(p.root, fields)
     texts = {t.pmid: t for t in load_texts(p)}
-    path = literature_path(p.root, p.symbol)
+    path = literature_path(p.root, approved or p.symbol)
     if not path.is_file():
-        raise BatchError(f"{path}: no literature file for {p.symbol}")
+        raise BatchError(f"{path}: no literature file for {approved or p.symbol}")
     literature = plain(_load_yaml(path))
     if not isinstance(literature, dict):
         raise BatchError(f"{path}: is not a mapping")
@@ -213,6 +237,7 @@ def prepare_batches(
             if t.get("decision") == "included" and t["pmid"] not in cited
         ]
         chosen: list[str] = []
+        skipped = 0
     else:
         unknown = [f for f in finding_ids if f not in findings]
         if unknown:
@@ -229,6 +254,7 @@ def prepare_batches(
         chosen = list(finding_ids) or [
             f for f in ordered_ids if all(is_empty(findings[f].get(n)) for n in fields)
         ]
+        skipped = 0 if finding_ids else len(ordered_ids) - len(chosen)
         wanted = set(chosen)
         chosen = [f for f in ordered_ids if f in wanted]
         selected = sorted({str(findings[f]["publication"]) for f in chosen})
@@ -260,7 +286,7 @@ def prepare_batches(
     }
     plan = BatchPlan(mode, tuple(fields), budget_bytes, batches)
     manifests = {b.id: _manifest(p, b, texts, info, mode, fields, shown) for b in batches}
-    return Prepared(plan, manifests)
+    return Prepared(plan, manifests, skipped)
 
 
 def write_plan(p: RunPaths, prepared: Prepared) -> None:
@@ -271,14 +297,20 @@ def write_plan(p: RunPaths, prepared: Prepared) -> None:
     write_batches(p, prepared.plan)
 
 
-def summary(plan: BatchPlan) -> str:
+def summary(plan: BatchPlan, skipped: int = 0) -> str:
+    """The line ``batch`` prints. `skipped` is a backfill's default selection's count of
+    findings left out because one of the declared fields is already filled."""
     count = len(plan.batches)
     papers = sum(len(b.papers) for b in plan.batches)
     parts = "; ".join(
         f"{b.id} {len(b.papers)} paper{'' if len(b.papers) == 1 else 's'} {b.text_bytes} bytes"
         for b in plan.batches
     )
-    return (
+    line = (
         f"planned {count} batch{'' if count == 1 else 'es'} for {papers} "
         f"paper{'' if papers == 1 else 's'} (budget {plan.budget_bytes:,} bytes): {parts}"
     )
+    if skipped:
+        what = "finding" if skipped == 1 else "findings"
+        line += f"; skipped {skipped} {what} already holding a declared field"
+    return line

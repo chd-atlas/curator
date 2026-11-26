@@ -90,8 +90,10 @@ from chd_curator.run import (
 )
 from chd_curator.write import (
     APPROVAL_FIELDS,
+    WriteRefused,
     check_literature,
     check_registry,
+    refused_after_writes,
     write_literature,
     write_registry,
 )
@@ -685,11 +687,16 @@ def commit(run: RunPaths, built: Assembled) -> None:
     if built.registry is not None:
         check_registry(c.reg_path, built.registry, expected=c.reg)
     write_assemble(run, built.record)
-    if built.registry is not None:
-        write_registry(c.reg_path, built.registry, expected=c.reg)
-    write_literature(
-        c.lit_path, built.literature, c.lit_validator, expected=c.lit, added=built.added
-    )
+    written = [run.assemble]
+    try:
+        if built.registry is not None:
+            write_registry(c.reg_path, built.registry, expected=c.reg)
+            written.append(c.reg_path)
+        write_literature(
+            c.lit_path, built.literature, c.lit_validator, expected=c.lit, added=built.added
+        )
+    except WriteRefused as exc:
+        raise refused_after_writes(exc, written) from None
 
 
 def summary(record: AssembleRecord) -> str:

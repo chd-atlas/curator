@@ -1018,16 +1018,23 @@ def batch(
     mode: str = typer.Option(..., "--mode", help="new or backfill."),
     fields: str = typer.Option("", "--fields", help="Backfill: comma-separated Finding fields."),
     findings: list[str] = typer.Option(
-        [], "--findings", help="Backfill: finding ids to re-read (default every finding)."
+        [],
+        "--findings",
+        help="Backfill: finding ids to re-read (default every finding whose declared fields "
+        "are all empty).",
     ),
     budget_kb: int = typer.Option(170, "--budget-kb", min=1, help="Text budget per batch."),
     root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
     """Plan a run's reading batches under a text budget; write batches.json and the manifests.
 
-    The budget is budget-kb x 1,000 bytes of main text per batch. Exit 2, nothing written, when
-    the run is already batched, has no texts.json, a selected paper has no text or year, or a
-    field is unknown or forbidden.
+    SYMBOL may be an alias or a previous symbol: the run directory is named as typed and the
+    literature file by the approved symbol. The budget is budget-kb x 1,000 bytes of main text per
+    batch. A backfill's summary line says how many findings its default selection left out for
+    holding a declared field. Exit 2, nothing written, when the run is already batched, has no
+    texts.json, a selected paper has no text or year, or a field is unknown, forbidden or one
+    that compare never reads.
     """
     _require_root(root)
     if mode not in ("new", "backfill"):
@@ -1035,20 +1042,22 @@ def batch(
     paths = RunPaths(root, symbol, run)
     names = tuple(n.strip() for n in fields.split(",") if n.strip())
     try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
         prepared = batch_module.prepare_batches(
             paths,
             "new" if mode == "new" else "backfill",
             names,
             tuple(findings),
             budget_kb * 1000,
+            approved,
         )
-    except (batch_module.BatchError, RunFormatError) as exc:
+    except (AtlasError, batch_module.BatchError, RunFormatError) as exc:
         raise _fail(str(exc), 2) from None
     try:
         batch_module.write_plan(paths, prepared)
     except OSError as exc:
         raise _fail(f"{paths.dir}: cannot be written: {exc}", 1) from None
-    typer.echo(batch_module.summary(prepared.plan))
+    typer.echo(batch_module.summary(prepared.plan, prepared.skipped))
 
 
 @app.command("merge")
@@ -1068,9 +1077,11 @@ def merge(
     New findings get final ids from the LIT counter; a paper newly cited gets a Publication; an
     excluded paper's triage entry is set to excluded. A backfill run fills the declared fields of
     existing findings that lack them, and never rewrites a filled field. Exit 2, nothing
-    written, for every refusal: an inconsistent batch, an already merged run, a curated file that
-    is missing, malformed or not UTF-8. Exit 1 when PubMed fails or an OS error occurs while
-    reading or writing a file.
+    written, for every refusal found before the first write: an inconsistent batch, an already
+    merged run, a curated file that is missing, malformed or not UTF-8. Exit 1 when PubMed fails
+    or an OS error occurs while reading or writing a file. A curated file that changes between
+    the merge reading and writing it is refused at the write (exit 2), naming the files already
+    written, which stay.
     """
     _require_root(root)
     given: dict[str, str] = {}
@@ -1150,7 +1161,8 @@ def assemble(
     gains `verified_by`. Writes assemble.json, the id registry (when findings were added) and the
     literature file, in that order. A re-run replaces the findings it already numbered, skips
     each judge finding whose digest assemble.json records unchanged, and changes no byte when
-    nothing was edited. Exit 2, nothing written, for every refusal: no merge.json or
+    nothing was edited. Exit 2, nothing written, for every refusal found before the first write
+    (a write refused after earlier ones exits 2 naming the files already written): no merge.json or
     comparison.json, a judge finding no decision covers, a changed judge finding for an approved
     finding, a finding edited after compare that no longer agrees with its blind finding, a field
     changed that no decision names, a judged paper with no Publication, an

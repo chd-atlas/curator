@@ -21,7 +21,7 @@ from ruamel.yaml import YAML
 from typer.testing import CliRunner
 
 from chd_curator import assemble as assemble_module
-from chd_curator.assemble import AssembleError, assemble_run, commit
+from chd_curator.assemble import assemble_run, commit
 from chd_curator.atlas import Digests, FindingDigests
 from chd_curator.cli import app
 from chd_curator.quotes import check_quotes
@@ -356,14 +356,13 @@ def test_decisions_keyed_by_the_judges_local_id_are_read_under_the_final_id_once
     assert [(d.field, d.value) for d in decisions[ADDED_FINAL]] == [("design", "case_report")]
     assert (p.judge / "judge-01.decisions.yaml").read_bytes() == before  # the judge's file stays
     data = _review(p)
+    # the page lists the judged findings first, then the agreed ones (measured order)
     assert [c["id"] for c in data["findings"]] == [
-        "CHDA:LIT:0009002",
         JUDGED,
-        "CHDA:LIT:0009004",
         ADDED_FINAL,
-    ] or sorted(c["id"] for c in data["findings"]) == sorted(
-        ["CHDA:LIT:0009002", JUDGED, "CHDA:LIT:0009004", ADDED_FINAL]
-    )
+        "CHDA:LIT:0009004",
+        "CHDA:LIT:0009002",
+    ]
     checks = [(c.finding, c.origin, c.paper) for c in check_quotes(p)]
     assert (ADDED_FINAL, "judge", "PMID:91000002") in checks
     assert (ADDED, "judge", "PMID:91000002") not in checks
@@ -486,6 +485,19 @@ def test_a_free_field_the_comparison_never_reads_may_be_corrected_by_a_judge(
     _edit(_judge1(p), "One family carried", "Two related families carried")
     assert _assemble(p, stub_atlas)[0] == 0
     assert _findings(p)[JUDGED]["summary"].startswith("Two related families carried")
+
+
+def test_extracted_by_is_free_for_a_judge_as_the_comparison_never_reads_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    _edit(
+        _judge1(p),
+        "  extracted_by: agent:literature-extract/claude-sonnet-5-5\n  id: CHDA:LIT:0009003",
+        "  extracted_by: agent:literature-judge/claude-opus-5-5\n  id: CHDA:LIT:0009003",
+    )
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert _findings(p)[JUDGED]["extracted_by"] == "agent:literature-judge/claude-opus-5-5"
 
 
 def _only_first_run(
@@ -740,7 +752,10 @@ REFUSALS = {
     ),
     "a-judge-id-twice": (_judge_key_added_twice, "duplicate finding id"),
     "same-id-in-two-judge-files": (_same_id_in_two_judge_files, "is also in"),
-    "judge-finding-for-an-id-the-file-lacks": (_id_missing_from_the_file, "but"),
+    "judge-finding-for-an-id-the-file-lacks": (
+        _id_missing_from_the_file,
+        "CHDA:LIT:0009999: a judge finding replaces it, but",
+    ),
     "verify-files-gone": (_verify_files_gone, "holds no finding to read the verifier's name from"),
     "verify-finding-without-a-name": (_verify_finding_without_a_name, "has no extracted_by"),
     "review-marks-not-in-differs": (_review_marks_not_in_differs, "the judge changed"),
@@ -878,6 +893,34 @@ def test_a_crash_after_assemble_json_leaves_it_in_place_and_a_rerun_refuses_unti
     _expect_refused(p, stub_atlas, "stopped part-way: remove assemble.json")
     (p.dir / "assemble.json").unlink()
     assert _assemble(p, stub_atlas)[0] == 0
+    # the crashed run had already raised the counter to 9005, so the re-run's added finding takes
+    # 9006 and 0009005 is skipped for good (m11: the README says so)
+    assert ADDED_FINAL not in _findings(p) and "CHDA:LIT:0009006" in _findings(p)
+    assert (p.root / "curation" / ".id_registry.yaml").read_text().endswith("LIT: 9006\n")
+
+
+def test_a_write_refused_after_assemble_json_says_what_was_already_written(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m6: the registry write is refused (the file changed since it was read) after
+    ``assemble.json`` is on disk, so "nothing was written" would be false."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    lit = _lit(p).read_bytes()
+    registry = (p.root / "curation" / ".id_registry.yaml").read_bytes()
+
+    def refuse(path: Path, *args: Any, **kwargs: Any) -> None:
+        raise WriteRefused(f"{path}: the file changed since it was read; nothing was written")
+
+    monkeypatch.setattr(assemble_module, "write_registry", refuse)
+    code, out = _assemble(p, stub_atlas)
+    reg = p.root / "curation" / ".id_registry.yaml"
+    assert code == 2
+    assert out == (
+        f"error: {reg}: the file changed since it was read; this command had already written "
+        f"{p.dir / 'assemble.json'}, which stays as written\n"
+    )
+    assert load_assemble(p) is not None
+    assert _lit(p).read_bytes() == lit and reg.read_bytes() == registry
 
 
 def test_a_crash_writing_the_counter_leaves_the_literature_file_unwritten(
@@ -1270,6 +1313,31 @@ def test_a_judge_that_gives_a_common_variant_finding_its_first_variant_gets_snv_
     assert "verified_by" not in f
 
 
+def test_a_judge_that_writes_a_wrong_variant_classes_for_a_first_variant_is_refused(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    """Without the stray-field guard the allowance's ``[snv_indel]`` would silently replace the
+    judge's own value."""
+    p = _first_variant_run(tmp_path, atlas_root, stub_atlas)
+    judge = JUDGED_BACKFILL.replace(
+        "design: family_segregation", "design: common_variant_association"
+    )
+    judge = judge.replace("  cohorts: [elsewhere]\n", "").replace(
+        "zygosity: heterozygous", "zygosity: not_stated"
+    )
+    assert judge.count("  - snv_indel\n") + judge.count("variant_classes: [snv_indel]") == 1
+    judge = judge.replace("variant_classes: [snv_indel]", "variant_classes: [cnv]")
+    p.judging.mkdir(exist_ok=True)
+    (p.judging / "judge-01.findings.yaml").write_text(judge)
+    _expect_refused(
+        p,
+        stub_atlas,
+        "CHDA:LIT:0009001: the judge changed fields the run did not declare: ['variant_classes']",
+        "--verifier",
+        "agent:literature-verify/test-model",
+    )
+
+
 # -- records -----------------------------------------------------------------------------------
 
 
@@ -1326,4 +1394,3 @@ def test_the_judge_fixture_is_the_one_the_literal_expects() -> None:
     assert assemble_module.summary(AssembleRecord((), {}, (), (), None, {})) == (
         "replaced 0 judged findings, added 0, fixed 0 names by rule, marked 0 verified"
     )
-    assert AssembleError.__name__ == "AssembleError"

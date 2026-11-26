@@ -880,7 +880,7 @@ def test_a_ref_to_an_id_of_no_batch_exits_2_saying_what_it_is(
     code, out = _check(p.root, _fake(tmp_path, _stdout()), batch="02")
     assert (code, out) == (
         2,
-        "error: CHDA:LIT:0009002: shares_probands_with names CHDA:LIT:0999999, which is neither "
+        "error: CHDA:LIT:0902001: shares_probands_with names CHDA:LIT:0999999, which is neither "
         "a finding of this run nor one in the file\n",
     )
     assert list(scratch_parent.iterdir()) == []
@@ -944,9 +944,9 @@ def test_a_verify_ref_to_another_batchs_verify_id_is_deferred_because_compare_ig
 @pytest.mark.parametrize(
     ("pass_", "ref", "id_"),
     [
-        ("extract", "CHDA:LIT:0801001", "CHDA:LIT:0009002"),  # a verify id: merge refuses it
-        ("verify", "CHDA:LIT:0901001", "CHDA:LIT:0009002"),  # an extract id: not a verify id
-        ("extract", "CHDA:LIT:0701001", "CHDA:LIT:0009002"),  # a judge id
+        ("extract", "CHDA:LIT:0801001", "CHDA:LIT:0902001"),  # a verify id: merge refuses it
+        ("verify", "CHDA:LIT:0901001", "CHDA:LIT:0802001"),  # an extract id: not a verify id
+        ("extract", "CHDA:LIT:0701001", "CHDA:LIT:0902001"),  # a judge id
     ],
 )
 def test_a_ref_the_next_command_would_refuse_exits_2_with_that_commands_message(

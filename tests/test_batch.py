@@ -55,6 +55,12 @@ def test_packing_is_by_year_then_pmid_number_and_isolates_oversize_papers(tmp_pa
     )
 
 
+@pytest.fixture(autouse=True)
+def _stub_atlas_cli(stub_atlas: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``batch`` resolves its symbol through ``literature target``, as ``merge`` does."""
+    monkeypatch.setenv("CHD_ATLAS_CLI", str(stub_atlas))
+
+
 def _fresh(tmp_path: Path, atlas_root: Path) -> RunPaths:
     p = copy_run_fixture(tmp_path)
     p.batches_json.unlink()
@@ -113,6 +119,22 @@ def test_new_mode_writes_the_planned_batches_and_manifests(
         "- text: abstract only\n"
         f"- abstract path: {texts}/91000004/abstract.txt\n"
     )
+
+
+def test_a_symbol_typed_as_a_previous_name_finds_the_approved_symbols_literature_file(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    """m14: the run directory is named as typed (HOS), the literature file by the approved symbol
+    (TBX5), as for merge, compare, assemble and check-batch."""
+    p = _fresh(tmp_path, atlas_root)
+    (p.root / "local/literature/runs/TBX5").rename(p.root / "local/literature/runs/HOS")
+    result = runner.invoke(
+        app,
+        ["batch", "HOS", "--run", "r1", "--root", str(p.root), "--mode", "new"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert (p.root / "local/literature/runs/HOS/r1/batches.json").is_file()
 
 
 def test_the_fixture_budget_reproduces_the_committed_two_batches(
@@ -177,7 +199,8 @@ def test_backfill_by_default_selects_only_findings_whose_declared_fields_are_all
 ) -> None:
     p = _fresh(tmp_path, atlas_root)
     _with_findings(p)
-    _batch(p, "--mode", "backfill", "--fields", "cohorts")
+    code, out = _batch(p, "--mode", "backfill", "--fields", "cohorts")
+    assert code == 0 and out.endswith("; skipped 1 finding already holding a declared field\n")
     plan = json.loads(p.batches_json.read_text())
     # 0009002 holds cohorts and is skipped; an empty list and an absent key are empty
     assert [(b["papers"], b["findings"]) for b in plan["batches"]] == [
@@ -194,9 +217,40 @@ def test_backfill_with_two_declared_fields_skips_a_finding_filled_in_either(
     p = _fresh(tmp_path, atlas_root)
     _with_findings(p)
     # 0009001 holds screened, 0009002 holds cohorts: neither is empty in every declared field
-    _batch(p, "--mode", "backfill", "--fields", "cohorts,screened")
+    code, out = _batch(p, "--mode", "backfill", "--fields", "cohorts,screened")
+    assert code == 0 and out.endswith("; skipped 2 findings already holding a declared field\n")
     plan = json.loads(p.batches_json.read_text())
     assert [b["findings"] for b in plan["batches"]] == [["CHDA:LIT:0009003", "CHDA:LIT:0009004"]]
+
+
+def test_a_backfill_in_several_batches_gives_each_batch_the_findings_of_its_own_papers(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    """``Batch.findings`` is what merge's backfill authorises a pass file against, so each batch
+    lists only the findings on its own papers (measured: budget 100 gives three batches)."""
+    p = _fresh(tmp_path, atlas_root)
+    _with_findings(p)
+    prepared = prepare_batches(p, "backfill", ("cohorts",), (), 100)
+    assert [(b.id, b.papers, b.findings) for b in prepared.plan.batches] == [
+        ("01", ("PMID:91000001",), ("CHDA:LIT:0009001",)),
+        ("02", ("PMID:91000003",), ("CHDA:LIT:0009003",)),
+        ("03", ("PMID:91000004",), ("CHDA:LIT:0009004",)),
+    ]
+    assert prepared.skipped == 1  # 0009002 holds cohorts
+
+
+def test_an_explicit_findings_list_skips_nothing_so_the_summary_says_nothing_of_skips(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    _with_findings(p)
+    code, out = _batch(
+        p, "--mode", "backfill", "--fields", "cohorts", "--findings", "CHDA:LIT:0009001"
+    )
+    assert (code, out) == (
+        0,
+        "planned 1 batch for 1 paper (budget 170,000 bytes): 01 1 paper 55 bytes\n",
+    )
 
 
 def test_prepare_refuses_a_mode_the_cli_does_not_plan(tmp_path: Path, atlas_root: Path) -> None:
@@ -272,6 +326,14 @@ REFUSALS = [
     (lambda p: None, ["--mode", "backfill", "--fields", "nonesuch"], "'nonesuch'"),
     (lambda p: None, ["--mode", "backfill", "--fields", "approved_digest"], "may not re-read"),
     (lambda p: None, ["--mode", "backfill", "--fields", "id"], "may not re-read"),
+    *[
+        (
+            lambda p, name=name: None,
+            ["--mode", "backfill", "--fields", name],
+            f"--fields '{name}': compare never reads it",
+        )
+        for name in ("summary", "locators", "shares_probands_with", "review_status", "review_note")
+    ],
     (
         lambda p: None,
         ["--mode", "backfill", "--fields", "screened", "--findings", "CHDA:LIT:0000042"],
