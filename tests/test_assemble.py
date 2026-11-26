@@ -352,6 +352,24 @@ def test_a_finding_assemble_already_marked_may_change_afterwards_and_a_rerun_goe
     assert found["variants"][0]["reported"]["p"] == "p.(Arg34*)"
 
 
+def test_an_id_the_record_lists_as_verified_but_the_file_does_not_mark_is_re_derived(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-P2-66(c): the skip is for a finding that carries `verified_by` in the file. After a
+    crash the first write of assemble.json already lists 0009002 as verified while the file never
+    got the mark; an edit since must not be marked as agreed."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    assert _assemble(p, stub_atlas)[0] == 0
+    assert "CHDA:LIT:0009002" in json.loads(p.assemble.read_text())["verified"]
+    _edit_in_block(p, "CHDA:LIT:0009002", f"\n    verified_by: {VERIFIER}", "")
+    _edit_in_block(p, "CHDA:LIT:0009002", "screened: 1", "screened: 7")
+    _expect_refused(
+        p,
+        stub_atlas,
+        "CHDA:LIT:0009002: no longer agrees with the blind pass's CHDA:LIT:0801001",
+    )
+
+
 def test_a_fix_round_replaces_the_added_finding_under_its_final_id(
     tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -764,9 +764,15 @@ def assemble_run(root: Path, run: RunPaths, approved: str, verifier: str | None)
     # Blind agreement.
     to_mark = sorted({*comparison.agreed, *comparison.span_only})
     name = _verifier(run, plan, verifier, bool(to_mark))
-    _check_agreement_still_holds(
-        run, state, [fid for fid in to_mark if fid not in previous.verified]
-    )
+    # A finding the file already marks was marked by an earlier assemble of this run (merge writes
+    # no mark), except in a backfill, where an older mark can predate this run's blind pass; there
+    # the record must list it too.
+    marked = {
+        fid
+        for fid in to_mark
+        if "verified_by" in c.findings[fid] and (not backfill or fid in previous.verified)
+    }
+    _check_agreement_still_holds(run, state, [fid for fid in to_mark if fid not in marked])
     if to_mark and name is not None:
         literature = with_verified(literature, to_mark, name)
 
