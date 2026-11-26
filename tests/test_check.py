@@ -319,6 +319,29 @@ def test_a_papers_json_that_is_missing_or_excludes_a_cited_paper_exits_2_and_val
     assert not (_seen(tmp_path) / "args").exists()
 
 
+def test_a_merged_runs_exclusion_is_not_applied_twice(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After ``merge`` the triage already reads ``excluded`` for PMID:91000004, and a check of
+    batch 02 is not refused for excluding it again."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    code, out = _check(p.root, cli, batch="02")
+    assert (code, out) == (0, "0 error(s), 3 warning(s)\n" + OK_LINE)
+
+
+def test_a_papers_json_naming_a_paper_outside_the_batch_exits_2(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    p = _fresh(tmp_path, atlas_root)
+    papers = p.extract / "batch-02.papers.json"
+    entries = json.loads(papers.read_text())
+    entries.append({"pmid": "PMID:91000002", "study_type": "case_report", "reading": "x"})
+    papers.write_text(json.dumps(entries))
+    code, out = _check(p.root, _fake(tmp_path, _stdout()), batch="02")
+    assert (code, out) == (2, f"error: {papers}: names PMID:91000002, which is not in batch 02\n")
+
+
 @pytest.mark.parametrize(
     ("batch", "pmid", "listed"),
     [("01", "PMID:91000002", True), ("01", "PMID:91000003", False), ("02", "PMID:91000002", False)],
@@ -910,6 +933,28 @@ def test_a_judge_ref_to_an_extract_id_is_refused_as_assemble_refuses_it(
     )
     assert _snapshot(p.root) == before
     assert _assemble(p, stub_atlas)[0] == 2  # and the next command refuses it too
+
+
+def test_a_deferred_ref_does_not_make_an_unchanged_approved_judge_finding_look_changed(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The digest is of the finding as the judge wrote it: dropping a cross-batch ref for the
+    check must not change it. Batch 01's judged 0009003 names batch 02's added 0702001, which
+    assemble numbered; once 0009003 is approved the check still says OK, with the line."""
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    added = YAML_SAFE.load(_judge1(p).read_text())["findings"][1]
+    other = {**added, "id": "CHDA:LIT:0702001", "publication": "PMID:91000003"}
+    (p.judging / "judge-02.findings.yaml").write_text(json.dumps({"findings": [other]}))
+    _judge_share(p, "CHDA:LIT:0702001")
+    assert _assemble(p, stub_atlas)[0] == 0
+    _approve_in_the_file(p, JUDGED)
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    code, out = _check(p.root, cli, pass_="judge")
+    assert (code, out) == (
+        0,
+        f"NOT CHECKED: {JUDGED} shares_probands_with CHDA:LIT:0702001 "
+        "(batch 02; assemble resolves it)\n0 error(s), 3 warning(s)\n" + OK_LINE,
+    )
 
 
 def test_a_judge_ref_to_another_batchs_judge_id_is_deferred_to_assemble(

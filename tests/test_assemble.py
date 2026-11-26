@@ -232,6 +232,11 @@ def test_the_digest_of_a_judge_finding_is_the_sha256_of_its_canonical_json(
     """The digest covers the finding as the judge wrote it, under the judge's own id, for a
     replacement and for an added finding."""
     p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    # keys in reverse order, so a digest that did not sort them would differ
+    reordered = [
+        dict(reversed(f.items())) for f in YAML_SAFE.load(_judge1(p).read_text())["findings"]
+    ]
+    _judge1(p).write_text(json.dumps({"findings": reordered}))
     assert _assemble(p, stub_atlas)[0] == 0
     rows = {f["id"]: f for f in YAML_SAFE.load(_judge1(p).read_text())["findings"]}
     expected = {
