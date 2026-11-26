@@ -14,6 +14,7 @@ A role file is ``workflow/roles/<role>.md``::
     cites:
       - <a heading of curator-rules.md, without its hashes>
     schema: <name of workflow/schemas/<name>.answer.json>
+    backfill_schema: <the schema a backfill run's call uses; readers only>
     ---
     ## Task
     ...
@@ -104,8 +105,11 @@ def section(rules: str, cite: str) -> str:
     return "\n".join(lines[start:end])
 
 
-def _read_role(role: str) -> tuple[list[str], str, str, str]:
-    """``(cites, schema name, task text, input template)`` of a role file."""
+def _read_role(role: str, mode: str) -> tuple[list[str], str, str, str]:
+    """``(cites, schema name, task text, input template)`` of a role file. `mode` is the run's:
+    ``new`` (also a reread) uses ``schema``, ``backfill`` the role's ``backfill_schema``."""
+    if mode not in ("new", "backfill"):
+        raise RoleError(f"unknown mode {mode!r}; the modes are new and backfill")
     if role not in ROLES:
         raise RoleError(f"unknown role {role!r}; the roles are {', '.join(ROLES)}")
     path = WORKFLOW / "roles" / f"{role}.md"
@@ -130,6 +134,12 @@ def _read_role(role: str) -> tuple[list[str], str, str, str]:
     sections = dict(zip(parts[1::2], parts[2::2], strict=True))
     if set(sections) != {"Task", "Inputs"} or len(parts) != 5:
         raise RoleError(f"{path}: needs exactly one `## Task` and one `## Inputs`")
+    if mode == "backfill":
+        schema = front.get("backfill_schema")
+        if not isinstance(schema, str):
+            raise RoleError(
+                f"{path}: the role has no `backfill_schema`; it is not run in a backfill"
+            )
     return cites, schema, sections["Task"].strip(), sections["Inputs"].strip()
 
 
@@ -151,9 +161,10 @@ def _fill(template: str, inputs: Mapping[str, str], role: str) -> str:
     return _PLACEHOLDER.sub(lambda m: inputs[m.group(1)], template)
 
 
-def assemble(role: str, root: Path, inputs: Mapping[str, str]) -> RoleInput:
-    """The input of one call of ``role``, with the rules read from ``root`` (an atlas checkout)."""
-    cites, schema_name, task, template = _read_role(role)
+def assemble(role: str, root: Path, inputs: Mapping[str, str], mode: str = "new") -> RoleInput:
+    """The input of one call of ``role``, with the rules read from ``root`` (an atlas checkout).
+    ``mode`` is the run's (``new`` or ``backfill``) and picks the answer schema."""
+    cites, schema_name, task, template = _read_role(role, mode)
     schema = _read_schema(schema_name)
     path = root / RULES_PATH
     try:

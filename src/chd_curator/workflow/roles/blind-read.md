@@ -5,20 +5,31 @@ cites:
   - Triage
   - Attribution and approval
 schema: reader
+backfill_schema: reader-backfill
 ---
 
 ## Task
 
 You read one batch of papers for one gene from scratch and write down what each reports
-about it, as findings. Another reader has read the same papers; you have not seen its
-answer and you must write yours as if no other existed. You receive a manifest of the batch
+about it, as findings. You write as if no other reading existed: the manifest may show the
+findings as curated (in a backfill), which you read as the record, but you are never given
+another reader's answer, and you do not look for one. You receive a manifest of the batch
 and the text of each paper (its full text where one was reached, else its abstract, with
 any supplement). You have no tools: read only what is given.
 
-Answer with one JSON object only, no prose around it, with the keys of the answer schema:
+Answer with one JSON object only, no prose around it.
 
-- `findings`: the findings, each with a distinct local `id` of the form `CHDA:LIT:` and
-  seven digits, taken from the range the manifest names for this batch;
+The `texts` input holds each paper's text under a `--- file: <path> ---` marker, where the
+path is exactly the one the manifest names (`text path`, `abstract path`, `supplement`): use
+the marker to find the text the manifest describes, and quote only from it.
+
+When the manifest's title line (`# Batch NN of run ...`) gives `mode new`, answer with the
+keys of the answer schema:
+
+- `findings`: the findings, each with a distinct local `id` `CHDA:LIT:08NNnnn`: the digits
+  `08`, then `NN`, the batch number from the manifest's title line, then `nnn`, a
+  three-digit count that starts at 001 in this batch. The batch number keeps ids of
+  different batches apart, and the id is replaced by a final one afterwards;
 - `evidence`: for each finding id, the verbatim quotes the text gives for the fields it
   rests on, each as `field`, `quote` (copied character for character from the text) and
   `where` (the section, table or file it comes from);
@@ -26,6 +37,16 @@ Answer with one JSON object only, no prose around it, with the keys of the answe
   study type fits) and `reading` (what the paper says about its own design), or `pmid` with
   `exclude` giving `reason` and `note` for a paper that supports no finding;
 - `report`: Markdown for the curator, naming what you could not read or settle and why.
+
+When the title line gives `mode backfill`, the manifest shows the findings as curated, under
+"Findings as curated:", and names the fields to re-read ("Fields to re-read:"). You write no
+new finding and no `papers` entry. Answer with the keys of the backfill answer schema:
+
+- `findings`: a mapping from the `id` of a curated finding, as the manifest shows it, to a
+  mapping of the fields to fill, each one of the fields to re-read and each one the curated
+  finding does not yet hold; leave out a finding for which you find nothing to fill;
+- `evidence`: for each of those ids, the verbatim quotes for the fields you filled, as above;
+- `report`: Markdown for the curator, as above.
 
 ## Inputs
 

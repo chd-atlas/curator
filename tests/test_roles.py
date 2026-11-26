@@ -353,3 +353,153 @@ def test_each_skill_points_at_its_role_file_and_restates_no_rule(skill: str) -> 
 
 def test_every_role_is_pointed_at_by_a_skill() -> None:
     assert sorted(r for roles_ in POINTS_AT.values() for r in roles_) == sorted(ROLES)
+
+
+# ---- fix round 1: ids, manifests, one-sided judge rows, backfill ---------------------------
+
+
+def _task(role: str) -> str:
+    text = (roles.WORKFLOW / "roles" / f"{role}.md").read_text(encoding="utf-8")
+    return text.split("## Task\n", 1)[1].split("\n## Inputs", 1)[0]
+
+
+# role -> (the pass `check._DEFERRED` keys it under, batch number the role is asked to use)
+LOCAL_ID_PASS = {"extract": "extract", "blind-read": "verify", "judge": "judge"}
+
+
+@pytest.mark.parametrize("role", LOCAL_ID_PASS)
+def test_a_role_states_the_local_id_form_check_enforces_for_its_pass(role: str) -> None:
+    from chd_curator import assemble as assemble_module
+    from chd_curator import check
+
+    kind = check._DEFERRED[LOCAL_ID_PASS[role]][0]
+    task = _task(role)
+    stated = re.findall(r"`CHDA:LIT:(0[0-9])NNnnn`", task)
+    assert stated == [f"0{kind}"]
+    assert f"CHDA:LIT:0{kind}NNnnn" in task
+    sample = f"CHDA:LIT:0{kind}03001"  # batch 03, first finding, as the role says to write it
+    found = check._LOCAL_ID.fullmatch(sample)
+    assert found is not None and found.group(1) == kind and found.group(2) == "03"
+    if role == "judge":
+        assert assemble_module.LOCAL_ID.fullmatch(sample)  # assemble's own form, 07 only
+        blind = check._LOCAL_ID.fullmatch("CHDA:LIT:08" + "03001")
+        assert blind is not None and blind.group(1) == check._DEFERRED["verify"][0]
+        assert "whose id begins `CHDA:LIT:08`" in " ".join(task.split())
+
+
+def test_the_roles_name_the_title_lines_the_manifests_print() -> None:
+    import inspect
+
+    from chd_curator import batch, compare
+
+    assert "# Batch {batch.id} of run" in inspect.getsource(batch._manifest)
+    assert "# Judging batch {batch.id} of run" in inspect.getsource(compare._manifest)
+    for role in ("extract", "blind-read"):
+        assert "`# Batch NN of run ...`" in _task(role)
+    assert "`# Judging batch NN of run ...`" in _task("judge")
+
+
+@pytest.mark.parametrize("role", ["extract", "blind-read", "judge"])
+def test_the_readers_and_the_judge_are_told_how_a_text_is_marked(role: str) -> None:
+    flat = " ".join(_task(role).split())
+    assert "under a `--- file: <path> ---` marker" in flat
+    assert "`text path`, `abstract path`, `supplement`" in flat
+
+
+def test_the_judge_task_describes_the_three_kinds_of_item_the_manifest_prints() -> None:
+    from chd_curator import compare
+
+    source = __import__("inspect").getsource(compare._manifest)
+    flat = " ".join(_task("judge").split())
+    for heading in ("(blind pass ", "(first pass only)", "(blind pass only)"):
+        assert heading in source and heading in flat
+    assert "`field` set to `finding`" in flat and "`decision`:" in flat
+
+
+def _row(decision: str, value: str, first: str = "not reported", second: str = "reported") -> Any:
+    return {
+        "field": "finding",
+        "first": first,
+        "second": second,
+        "decision": decision,
+        "value": value,
+        "quote": "q",
+        "where": "w",
+        "rule": "r",
+    }
+
+
+def test_the_judge_schema_accepts_the_one_sided_rows_the_loaders_read() -> None:
+    validator = Draft202012Validator(_schema("judge"))
+    adopted = _row("second", "CHDA:LIT:0701001")
+    refused = _row("neither", "")
+    blank = _row("first", "", first="", second="")
+    for row in (adopted, refused, blank):
+        assert validator.is_valid({"findings": [], "decisions": {"CHDA:LIT:0801003": [row]}}), row
+    # The fixture's own row of this kind (the one assemble reads) is the adopted shape.
+    fixture = _yaml(JUDGE / "judge" / "judge-01.decisions.yaml")["CHDA:LIT:0801003"][0]
+    assert fixture["field"] == "finding" and fixture["decision"] == "second"
+    assert validator.is_valid({"findings": [], "decisions": {"CHDA:LIT:0801003": [fixture]}})
+
+
+def test_the_judge_rows_load_through_the_run_loader(tmp_path: Path) -> None:
+    from chd_curator.run import RunPaths, load_judge
+
+    paths = RunPaths(tmp_path, "TBX5", "r1")
+    paths.judge.mkdir(parents=True)
+    rows = {
+        "CHDA:LIT:0801003": [_row("neither", "")],
+        "CHDA:LIT:0801004": [_row("first", "", "", "")],
+    }
+    (paths.judge / "judge-01.decisions.yaml").write_text(json.dumps(rows), encoding="utf-8")
+    assert Draft202012Validator(_schema("judge")).is_valid({"findings": [], "decisions": rows})
+    loaded = load_judge(paths)
+    assert sorted(loaded) == sorted(rows) and loaded["CHDA:LIT:0801003"][0].value == ""
+
+
+def test_a_backfill_call_uses_the_backfill_schema_and_only_a_reader_has_one() -> None:
+    new = assemble("extract", FIXTURE_ROOT, READER)
+    back = assemble("extract", FIXTURE_ROOT, READER, mode="backfill")
+    assert new.schema == _schema("reader") and back.schema == _schema("reader-backfill")
+    assert new.digest != back.digest and new.rules_digest == back.rules_digest
+    assert assemble("blind-read", FIXTURE_ROOT, READER, mode="backfill").schema == back.schema
+    for role in ("judge", "triage-check", "triage-screen"):
+        with pytest.raises(RoleError, match="backfill_schema"):
+            assemble(role, FIXTURE_ROOT, INPUTS[role], mode="backfill")
+    with pytest.raises(RoleError, match="mode"):
+        assemble("extract", FIXTURE_ROOT, READER, mode="reread")
+
+
+def test_the_backfill_schema_accepts_what_the_backfill_loader_reads(tmp_path: Path) -> None:
+    from chd_curator.run import load_backfill_pass
+
+    validator = Draft202012Validator(_schema("reader-backfill"))
+    quote = {"field": "phenotypes", "quote": "q", "where": "Table 1"}
+    answer = {
+        "findings": {
+            "CHDA:LIT:0000001": {"phenotypes": ["HP:0001631"], "lesion_groups": ["septal"]}
+        },
+        "evidence": {"CHDA:LIT:0000001": [quote]},
+        "report": "nothing else",
+    }
+    assert validator.is_valid(answer)
+    path = tmp_path / "batch-01.findings.yaml"
+    path.write_text(json.dumps({"findings": answer["findings"]}), encoding="utf-8")
+    assert load_backfill_pass(path) == answer["findings"]
+    assert validator.is_valid({**answer, "findings": {}})  # a batch with nothing to fill
+    for bad in (
+        {**answer, "findings": [{"id": "CHDA:LIT:0000001"}]},
+        {**answer, "findings": {"CHDA:LIT:0000001": {}}},
+        {**answer, "findings": {"local": {"phenotypes": []}}},
+        {**answer, "papers": []},
+        {k: v for k, v in answer.items() if k != "evidence"},
+    ):
+        assert not validator.is_valid(bad), bad
+    assert not Draft202012Validator(_schema("reader")).is_valid(answer)  # the shapes do differ
+
+
+def test_the_blind_reader_is_never_pointed_at_another_readers_answer() -> None:
+    flat = " ".join(_task("blind-read").split())
+    assert "you are never given another reader's answer" in flat
+    assert "findings as curated" in flat and "as the record" in flat
+    assert "extract pass" not in flat and "first pass" not in flat
