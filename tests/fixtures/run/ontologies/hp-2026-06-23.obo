@@ -1,0 +1,20 @@
+format-version: 1.2
+ontology: hp
+
+[Term]
+id: HP:0001627
+name: Abnormal heart morphology
+
+[Term]
+id: HP:0001629
+name: Ventricular septal defect
+is_a: HP:0001627 ! Abnormal heart morphology
+
+[Term]
+id: HP:0001631
+name: Atrial septal defect
+is_a: HP:0001627 ! Abnormal heart morphology
+
+[Term]
+id: HP:0030853
+name: Heterotaxy

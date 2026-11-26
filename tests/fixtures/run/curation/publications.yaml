@@ -1,0 +1,10 @@
+# Synthetic records for the run-command tests: the PMIDs are made up.
+publications:
+  - id: PMID:91000001
+    title: A synthetic Holt-Oram family with a TBX5 frameshift.
+    journal: Journal of synthetic genetics
+    year: 2019
+    authors:
+      - Alpha A
+      - Beta B
+    study_type: family_linkage

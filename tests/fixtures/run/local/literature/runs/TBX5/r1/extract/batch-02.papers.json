@@ -1,0 +1,14 @@
+[
+ {
+  "pmid": "PMID:91000003",
+  "study_type": "case_report",
+  "reading": "abstract only"
+ },
+ {
+  "pmid": "PMID:91000004",
+  "exclude": {
+   "reason": "not_human_genetics",
+   "note": "A mouse model; no human carrier is reported."
+  }
+ }
+]

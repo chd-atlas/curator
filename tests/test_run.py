@@ -82,7 +82,7 @@ def test_the_run_paths_are_the_contracts_children() -> None:
         for n in (
             "texts.json",
             "evidence",
-            "verify.yaml",
+            "verify",
             "comparison.json",
             "judge",
             "quotes.json",
@@ -148,6 +148,8 @@ def test_comparison_loads_and_a_missing_one_is_empty(run_copy: RunPaths) -> None
         ("CHDA:LIT:0000901",),
         ("CHDA:LIT:0000903",),
         {"CHDA:LIT:0000902": ("phenotypes", "variants")},
+        (),
+        ("CHDA:LIT:0801004",),
     )
     run_copy.comparison.unlink()
     assert load_comparison(run_copy) == Comparison({}, (), (), {})
@@ -155,7 +157,7 @@ def test_comparison_loads_and_a_missing_one_is_empty(run_copy: RunPaths) -> None
 
 def test_judge_decisions_load_with_their_fields(run_copy: RunPaths) -> None:
     judged = load_judge(run_copy)
-    assert list(judged) == ["CHDA:LIT:0000902"]
+    assert list(judged) == ["CHDA:LIT:0000902", "CHDA:LIT:0801004"]
     decisions = judged["CHDA:LIT:0000902"]
     assert decisions[0] == JudgeDecision(
         "phenotypes",
@@ -470,6 +472,10 @@ def _without_finding_key(key: str) -> dict[str, Any]:
         (_with_finding(approval_void=0), "approval_void is not a boolean"),
         (_without_finding_key("approval_void"), r"missing \['approval_void'\]"),
         (_with_finding(shown_digest=None), "shown_digest is not a non-empty string"),
+        (
+            GOOD_DIGESTS | {"findings": GOOD_DIGESTS["findings"] * 2},
+            r"lists finding CHDA:LIT:0000901 twice",
+        ),
     ],
 )
 def test_a_malformed_digests_answer_is_refused(

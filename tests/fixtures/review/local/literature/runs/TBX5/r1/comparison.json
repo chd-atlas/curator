@@ -9,5 +9,6 @@
   "span_only": ["CHDA:LIT:0000903"],
   "differs": {
     "CHDA:LIT:0000902": ["phenotypes", "variants"]
-  }
+  },
+  "only_second": ["CHDA:LIT:0801004"]
 }

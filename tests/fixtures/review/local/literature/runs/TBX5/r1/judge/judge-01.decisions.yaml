@@ -39,3 +39,12 @@ CHDA:LIT:0000902:
     quote: "c.250G>A, p.(Gly84Arg)"
     where: "Abstract"
     rule: "Whitespace inside a name in reported is removed by the controller by rule and is not judged."
+CHDA:LIT:0801004:
+  - field: finding
+    first: "not reported"
+    second: "reported"
+    decision: neither
+    value: "not added"
+    quote: "Family 1: father, atrial septal defect, c.1085delC"
+    where: "Supplementary table S1"
+    rule: "The row restates the father already in the first reader's finding; it is not a second carrier."

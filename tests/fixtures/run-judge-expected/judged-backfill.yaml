@@ -1,0 +1,28 @@
+findings:
+- id: CHDA:LIT:0009001
+  publication: PMID:91000001
+  design: family_segregation
+  methods: [exome]
+  count_unit: families
+  screened: 1
+  carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+  variant_classes: [snv_indel]
+  variants:
+  - id: 1
+    as_reported: "c.1085delC, p.(Pro362Argfs*8)"
+    locator: {kind: in_text, element: Results - Patients}
+    kind: snv_indel
+    reported: {c: c.1085delC, p: "p.(Pro362Argfs*8)"}
+    placement: unplaced
+    zygosity: heterozygous
+    carriers: {de_novo: 0, inherited: 1, origin_unknown: 0}
+    phenotypes: [HP:0001631]
+  phenotypes: [HP:0001631]
+  lesion_groups: [septal]
+  syndromic: syndromic
+  cohorts: [elsewhere]
+  shares_probands_with: unknown
+  locators:
+  - {kind: in_text, element: Results - Patients}
+  summary: One family with Holt-Oram syndrome had a heterozygous frameshift in TBX5 and an atrial septal defect in the affected father and daughter.
+  extracted_by: agent:literature-extract/claude-sonnet-5-5
