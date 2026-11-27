@@ -1041,8 +1041,11 @@ def batch(
 
     SYMBOL may be an alias or a previous symbol: the run directory is named as typed and the
     literature file by the approved symbol. The budget is budget-kb x 1,000 bytes of main text per
-    batch. A backfill's summary line says how many findings its default selection left out for
-    holding a declared field. Exit 2, nothing written, when the run is already batched, has no
+    batch. A manifest names each text, abstract and supplement by its path relative to --root
+    (`local/literature/texts/<digits>/fulltext.txt`), so it reads the same wherever the run was
+    planned; an agent running from the atlas root opens the path from there. A backfill's summary
+    line says how many findings its default selection left out for holding a declared field. Exit
+    2, nothing written, when the run is already batched, has no
     texts.json, a selected paper has no text or year, or a field is unknown, forbidden or one
     that compare does not compare as a field of its own.
     """
@@ -1131,10 +1134,11 @@ def compare(
     """Compare a merged run's blind pass with its first pass and write the judges' manifests.
 
     Writes comparison.json and judging/judge-NN.md for each batch with something to judge. A
-    re-run replaces the manifests, so a corrected verify file can be compared again. Exit 2,
-    nothing written, when the judges have already written decisions or findings, the run has no
-    merge.json, or a batch's blind pass is missing, misplaced or inconsistent. Exit 1 on an OS
-    error.
+    re-run replaces the manifests, so a corrected verify file can be compared again. A manifest
+    names each text, abstract and supplement by its path relative to --root, as `batch` does.
+    Exit 2, nothing written, when the judges have already written decisions or findings, the run
+    has no merge.json, or a batch's blind pass is missing, misplaced or inconsistent. Exit 1 on an
+    OS error.
     """
     _require_root(root)
     try:
@@ -1737,7 +1741,9 @@ def read_requests_command(
     One row `{key, gene, batch, mode, inputs: {manifest, texts, registries}}` per batch of
     batches.json (extract and blind-read, identical rows) or per judging/judge-NN.md (judge, with
     `owner_notes` too: the `fix` notes of `--decisions` for the findings that manifest names, or
-    `none`); each text and registry is under a `--- file: <path> ---` marker. Exit 1, nothing
+    `none`); each text and registry is under a `--- file: <path> ---` marker. A manifest's path is
+    read against --root (a run written by v0.1.0 names absolute paths inside the root, which are
+    read as before); one that leaves the root is refused. Exit 1, nothing
     written, for a named file that is missing, outside the root, not a .txt or not UTF-8, a
     missing registry, or a `fix` decision on a finding no judge manifest names; exit 2 for a bad
     argument (an unusable `--decisions`, or one given for a reader), a symbol the atlas refuses

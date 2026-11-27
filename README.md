@@ -154,8 +154,10 @@ and each name must be a `Finding` property of the exported schema other than `id
 (`summary`, `locators`, `shares_probands_with` and `review_note`, which it ignores, and
 `review_status` and `review_settled_by`, which it reports only together as `review marks`); the manifest then
 lists the fields and each paper's findings as curated, with `approved_by`, `approved_on` and
-`approved_digest` left out because a reader needs none of them. A manifest gives absolute paths to
-each paper's text, abstract and supplements (with sizes) and names no other file of the run.
+`approved_digest` left out because a reader needs none of them. A manifest gives each paper's text, abstract and
+supplement paths (with sizes) relative to `--root`, as `local/literature/texts/<digits>/fulltext.txt`,
+never absolute, so the same run planned in two roots writes the same manifest (an agent running from the atlas
+root opens a path from there), and names no other file of the run.
 Example output: `planned 1 batch for 3 papers (budget 170,000 bytes): 01 3 papers 637 bytes`; a
 backfill's default selection appends `; skipped N findings already holding a declared field` when
 it left any out. `<SYMBOL>` may be an alias or a previous symbol (the run directory is named as
@@ -242,7 +244,7 @@ pseudo-field, `review marks`; `review_note` is not compared. A pair that differs
 another field lists only the other field. A backfill that declares a field the comparison never
 reads (`summary`, `locators`, the review fields) is refused, because every difference in it would
 read as agreement. A manifest names, for each differing pair and each unpaired finding, the paper's
-text, abstract and supplement paths (absolute), each differing field as
+text, abstract and supplement paths (relative to `--root`, as `batch` writes them), each differing field as
 `<field>: first <json> | second <json>`, and both findings as YAML, the first as merged and
 without its approval. Example output: `compared 3 pairs: 1 agreed, 1 span only, 1 differ; 0 only
 in the first pass, 1 only in the blind pass`.
@@ -763,7 +765,9 @@ Writes the rows `ask --validate check-batch` takes, from the run folder: for `ex
 `blind-read` one row per batch of `batches.json` (the two roles get identical rows), for `judge`
 one per `judging/judge-NN.md`. `inputs.manifest` is the manifest's text; `inputs.texts` is every
 file the manifest names (`- text path:`, `- abstract path:`, `- supplement:`), once each, in order,
-each under `--- file: <path as the manifest names it> ---`; a path inside the root is read through
+each under `--- file: <path as the manifest names it> ---`. A manifest's path is read against `--root`: the relative paths
+`batch` and `compare` write, and the absolute paths inside the root that v0.1.0 wrote, which still work; a path that leaves the root
+is refused. A path inside the root is read through
 any link (in a scratch root a text is a link into the atlas). `inputs.registries` holds
 `curation/cohorts.yaml` and `curation/phenotypes.yaml` under the same marker, since the cited
 rules send the reader there. A judge row also has `inputs.owner_notes`: with `--decisions` (the

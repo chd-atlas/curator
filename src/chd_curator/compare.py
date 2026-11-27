@@ -26,12 +26,10 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any, Final, Literal
 
 from jsonschema import Draft202012Validator
@@ -63,6 +61,7 @@ from chd_curator.run import (
     load_batches,
     load_merge,
     load_texts,
+    manifest_path,
     write_comparison,
 )
 from chd_curator.write import APPROVAL_FIELDS, schema_error_lines
@@ -592,10 +591,6 @@ def summary(c: Comparison) -> str:
     )
 
 
-def _absolute(path: Path) -> str:
-    return os.path.abspath(path)
-
-
 def _manifest(
     run: RunPaths, batch: Batch, items: Sequence[Judged], papers: Mapping[str, PaperText]
 ) -> str:
@@ -621,10 +616,10 @@ def _manifest(
         }[item.kind]
         lines += [f"## {ids}", "", f"- publication: {item.publication}", f"- design: {item.design}"]
         if paper.text:
-            lines.append(f"- text path: {_absolute(paper.text)}")
+            lines.append(f"- text path: {manifest_path(run.root, paper.text)}")
         if paper.abstract:
-            lines.append(f"- abstract path: {_absolute(paper.abstract)}")
-        lines += [f"- supplement: {_absolute(s)}" for s in paper.supplements]
+            lines.append(f"- abstract path: {manifest_path(run.root, paper.abstract)}")
+        lines += [f"- supplement: {manifest_path(run.root, s)}" for s in paper.supplements]
         lines.append("")
         for name, a, b in item.fields:
             lines.append(f"- {name}: first {_j(a)} | second {_j(b)}")

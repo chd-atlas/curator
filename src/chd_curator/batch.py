@@ -31,6 +31,7 @@ from chd_curator.run import (
     PaperText,
     RunPaths,
     load_texts,
+    manifest_path,
     write_batches,
 )
 
@@ -193,10 +194,13 @@ def _manifest(
         which = _TEXT_LABEL.get(paper.source, "abstract only") if paper.text else "abstract only"
         lines += [f"## {pmid}", "", f"- year: {year}", f"- title: {title}", f"- text: {which}"]
         if paper.text:
-            lines.append(f"- text path: {paper.text}")
+            lines.append(f"- text path: {manifest_path(p.root, paper.text)}")
         if paper.abstract:
-            lines.append(f"- abstract path: {paper.abstract}")
-        lines += [f"- supplement: {s} ({_size(s)} bytes)" for s in paper.supplements]
+            lines.append(f"- abstract path: {manifest_path(p.root, paper.abstract)}")
+        lines += [
+            f"- supplement: {manifest_path(p.root, s)} ({_size(s)} bytes)"
+            for s in paper.supplements
+        ]
         lines.append("")
         if mode == "backfill":
             shown = [f for f in batch.findings if findings[f]["publication"] == pmid]

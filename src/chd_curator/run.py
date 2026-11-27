@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -227,6 +228,17 @@ def _read_yaml(path: Path) -> Any:
 def _check_format(data: dict[str, Any], path: Path) -> None:
     if type(data["format"]) is not int or data["format"] != RUN_FORMAT:
         raise RunFormatError(f"{path}: format is {data['format']!r}; curator reads {RUN_FORMAT}")
+
+
+def manifest_path(root: Path, path: Path) -> str:
+    """How a manifest names `path`: a POSIX path relative to `root`, so the manifest, and the
+    request built from it, do not change with where the run was planned. A path outside the root
+    (which ``texts.json`` could name) keeps its absolute form. Lexical: no link is followed."""
+    top = os.path.abspath(root)
+    full = os.path.abspath(path)
+    if os.path.commonpath([top, full]) != top:
+        return full
+    return Path(os.path.relpath(full, top)).as_posix()
 
 
 def _relative(root: Path, value: Any, path: Path, key: str) -> Path | None:

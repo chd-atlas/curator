@@ -92,7 +92,7 @@ def test_new_mode_writes_the_planned_batches_and_manifests(
         }
     ]
     assert batches["budget_bytes"] == 170000 and batches["mode"] == "new"
-    texts = f"{p.root}/local/literature/texts"
+    texts = "local/literature/texts"
     assert (p.batches_dir / "batch-01.md").read_text() == (
         "# Batch 01 of run r1 (gene TBX5, mode new)\n"
         "\n"
