@@ -210,6 +210,25 @@ def test_every_packaged_role_assembles_against_the_atlas_rules(role: str) -> Non
         assert "Triage" in [cite for cite, _ in blocks]
 
 
+UNREADABLE_PAPER = (
+    "A paper whose abstract is missing or whose full text you cannot reach "
+    "is not excluded for that."
+)
+
+
+@pytest.mark.parametrize("role", ["triage-screen", "triage-check"])
+def test_the_triage_input_holds_the_reason_table_and_the_unreadable_paper_rule(role: str) -> None:
+    """R-SWA-40: the triage roles cite ``## Triage`` and rely on it to carry the reason table
+    and the rule for a paper that cannot be read (both left curator's triage skill). Assembled
+    against ``$CHD_ATLAS_ROOT``, so this stays red until the atlas's house rules carry them."""
+    got = assemble(role, Path(os.environ["CHD_ATLAS_ROOT"]), INPUTS[role])
+    reasons = [r for r in _schema("triage")["properties"]["reason"]["enum"] if r != "none"]
+    lines = got.system.split("\n")
+    missing = [r for r in reasons if not any(ln.startswith(f"| `{r}` |") for ln in lines)]
+    assert missing == [], f"no reason-table row in the triage input for {missing}"
+    assert UNREADABLE_PAPER in " ".join(got.system.split())
+
+
 def test_python_dash_m_runs_the_cli() -> None:
     done = subprocess.run(
         [sys.executable, "-m", "chd_curator", "--help"], capture_output=True, text=True, check=False
