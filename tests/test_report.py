@@ -396,3 +396,34 @@ def test_the_summary_says_100_percent_local_and_0_percent_local(
     assert summary == (
         f"1 findings: 1 agreed, 0 judged, 0 corrected by the owner; {percent}% of tokens local"
     )
+
+
+def test_decisions_in_a_run_with_no_assemble_are_unmatched_not_outside_the_run(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path / "root", fixed=[1, 2], assemble=False)
+    report = _report(run, [], tmp_path / "out")
+    assert report["findings"]["corrected_by_owner"] == 0
+    assert report["decisions_outside_run"] == []
+    assert report["decisions_unmatched"] == sorted(
+        [_fid(1), _fid(2), _fid(900), _fid(901), _fid(902)]
+    )
+    md = (tmp_path / "out" / "report.md").read_text("utf-8")
+    assert (
+        "decisions/ holds 5 decision(s) that cannot be matched to findings because the run has "
+        "no assemble.json; none counted"
+    ) in md
+    assert "not findings of this run" not in md
+
+
+def test_an_answer_row_with_no_model_key_is_named_not_called_none(tmp_path: Path) -> None:
+    run = make_run(tmp_path / "root", verified=[1])
+    bare = row("a", {}, 1)
+    del bare["model_key"]
+    f = answers_file(tmp_path / "a.jsonl", [bare])
+    report = _report(run, [("extract", f)], tmp_path / "out")
+    assert report["notes"] == [
+        "note: extract ran a model with no register entry (no model_key recorded); "
+        "its answers were recorded in shadow or unqualified"
+    ]
+    assert report["unqualified_models"] == [{"role": "extract", "model_key": None, "answers": 1}]

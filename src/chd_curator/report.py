@@ -36,7 +36,8 @@ parse, is refused (exit 2) naming it. ``core_hours`` of a role is the sum of
   of the ``decisions/*.json`` files (``review-decisions`` output). Files are read in name order,
   so for a finding in two files the last file wins. 0 when there is no ``decisions/``. Only ids
   among the run's findings (``agreed`` or ``judged``) count; any decision id outside them is
-  listed in ``decisions_outside_run`` and named in a warning.
+  listed in ``decisions_outside_run`` and named in a warning. With no ``assemble.json`` nothing
+  can be matched: none counts, and the ids are listed in ``decisions_unmatched`` instead.
 * ``normalised``: the distinct findings with at least one entry of ``outcome`` ``placed`` in
   ``normalise.json``'s ``variants``, that is, whose variant code placed. 0 when there is no
   such file.
@@ -131,8 +132,8 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
 
 def _process(
     role: str, files: Sequence[Path], register: Sequence[Entry]
-) -> tuple[dict[str, Any], int, dict[str, int]]:
-    unqualified: dict[str, int] = {}
+) -> tuple[dict[str, Any], int, dict[str | None, int]]:
+    unqualified: dict[str | None, int] = {}
     seconds = 0.0
     tokens = failed = cached = stale = answers = 0
     qualified = {e.model_key: e.rules_digest for e in register if e.role == role}
@@ -150,10 +151,11 @@ def _process(
             secs = r.get("seconds", 0)
             if isinstance(secs, int | float) and not isinstance(secs, bool):
                 seconds += secs
-            mkey = str(r.get("model_key"))
-            if mkey not in qualified and mkey.split(":", 1)[0] not in _TEST_KINDS:
+            raw_key = r.get("model_key")
+            mkey = raw_key if isinstance(raw_key, str) and raw_key else None
+            if mkey is None or (mkey not in qualified and mkey.split(":", 1)[0] not in _TEST_KINDS):
                 unqualified[mkey] = unqualified.get(mkey, 0) + 1
-            was = qualified.get(mkey)
+            was = qualified.get(mkey) if mkey is not None else None
             if was and r.get("rules_digest") != was:
                 stale += 1
     entry = {
@@ -336,10 +338,11 @@ def write_report(
     for role in ROLES:
         if role in files:
             processes[role], stale, unqual = _process(role, files[role], entries)
-            for mkey in sorted(unqual):
+            for mkey in sorted(unqual, key=lambda k: (k is None, k or "")):
                 unqualified.append({"role": role, "model_key": mkey, "answers": unqual[mkey]})
+                shown = mkey or "no model_key recorded"
                 notes.append(
-                    f"note: {role} ran a model with no register entry ({mkey}); "
+                    f"note: {role} ran a model with no register entry ({shown}); "
                     "its answers were recorded in shadow or unqualified"
                 )
             if stale:
@@ -377,7 +380,17 @@ def write_report(
         )
     else:
         agreed, judged = set(record.verified), set(record.judged)
-    outside = sorted(set(decided) - agreed - judged)
+    outside: list[str] = []
+    unmatched_ids: list[str] = []
+    if record is None:
+        unmatched_ids = sorted(decided)
+        if unmatched_ids:
+            warnings.append(
+                f"warning: decisions/ holds {len(unmatched_ids)} decision(s) that cannot be "
+                "matched to findings because the run has no assemble.json; none counted"
+            )
+    else:
+        outside = sorted(set(decided) - agreed - judged)
     if outside:
         warnings.append(
             "warning: decisions/ names findings that are not findings of this run, "
@@ -406,6 +419,7 @@ def write_report(
         "notes": notes,
         "unqualified_models": unqualified,
         "decisions_outside_run": outside,
+        "decisions_unmatched": unmatched_ids,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path, md_path = out_dir / "report.json", out_dir / "report.md"
