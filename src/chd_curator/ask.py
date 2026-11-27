@@ -63,6 +63,8 @@ from chd_curator.site import BackendSpec, Site, model_key
 from chd_curator.write import schema_error_lines
 
 TRIAGE: Final = ("triage-screen", "triage-check")
+# Spec section 3: in shadow the check decides every hit; only the screen is recorded and scored.
+SHADOWABLE: Final = "triage-screen"
 PASS_OF: Final = {"extract": "extract", "blind-read": "verify", "judge": "judge"}
 BACKOFF_SECONDS: Final = (5, 20, 60)
 MAX_RETRIES: Final = 2
@@ -441,6 +443,11 @@ def ask(
         raise AskUsageError(f"unknown role {role!r}; the roles are {', '.join(ROLES)}")
     if validate not in ("schema", "check-batch"):
         raise AskUsageError(f"--validate {validate!r} is not schema or check-batch")
+    if shadow and role != SHADOWABLE:
+        raise AskUsageError(
+            f"--shadow is for {SHADOWABLE} only, not {role}: its answers decide, so its model "
+            "must be qualified"
+        )
     spec = site.roles.get(role)
     if spec is None:
         raise AskUsageError(f"{role}: not configured in the site config")

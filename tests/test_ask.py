@@ -256,6 +256,32 @@ def test_an_unqualified_backend_exits_2_unless_shadow(tmp_path: Path) -> None:
     assert refused.exit_code == 2 and "not qualified" in refused.output
 
 
+@pytest.mark.parametrize("role", ["triage-check", "extract", "blind-read", "judge"])
+def test_shadow_is_for_the_screen_only_and_any_other_role_exits_2_before_any_call(
+    tmp_path: Path, role: str
+) -> None:
+    """R-SWA-41: in shadow only the screen is recorded and scored; every other role's answers
+    decide something (the check's exclusions, the readers' and judge's findings), so a model
+    the register does not qualify may not fill it, shadow or not. Even a test backend is
+    refused, so the refusal comes before the register is read."""
+    fake = Fake(spec({PMID: [triage()]}))
+    with pytest.raises(AskUsageError, match=rf"--shadow.*triage-screen.*{role}|{role}.*shadow"):
+        ask(role, requests_file(tmp_path, [PMID]), tmp_path / "a.jsonl", site_of(spec(), role),
+            [], RULES_ROOT, None, "schema", None, True, make=lambda _s: fake)  # fmt: skip
+    assert fake.requests == [] and not (tmp_path / "a.jsonl").exists()
+    site = tmp_path / "site.yaml"
+    site.write_text(
+        f"roles:\n  {role}:\n    id: t\n    kind: fake\n    model: m\n"
+        "    context_tokens: 100000\n    concurrency: 1\n"
+    )
+    cli = ["ask", "--role", role, "--requests", str(requests_file(tmp_path, [PMID])),
+           "--answers", str(tmp_path / "b.jsonl"), "--site", str(site),
+           "--root", str(RULES_ROOT), "--shadow"]  # fmt: skip
+    refused = runner.invoke(app, cli)
+    assert refused.exit_code == 2 and "shadow" in refused.output
+    assert not (tmp_path / "b.jsonl").exists()
+
+
 def test_no_more_than_concurrency_calls_in_flight(tmp_path: Path) -> None:
     keys = [f"PMID:{n}" for n in range(1, 7)]
     b = spec({k: [triage(k)] for k in keys}, concurrency=2, delay=0.05)

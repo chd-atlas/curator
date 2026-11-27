@@ -209,9 +209,10 @@ def test_check_site_exit_codes(tmp_path: Path) -> None:
     missing = {k: v for k, v in everything.items() if k != "judge"}
     gone = _check(tmp_path, missing)
     assert gone.exit_code == 2 and "judge" in gone.output
-    # Only triage roles may be shadowed.
-    usage = _check(tmp_path, everything, "--shadow-role", "judge")
-    assert usage.exit_code == 2 and "shadow" in usage.output
+    # Only the screen may be shadowed (R-SWA-41): the check decides, so it must be qualified.
+    for role in ("judge", "triage-check"):
+        usage = _check(tmp_path, everything, "--shadow-role", role)
+        assert usage.exit_code == 2 and "shadow" in usage.output, role
     # A site that does not load names why.
     broken = _check(tmp_path, {"extract": {**everything["extract"], "api_key": "x"}})
     assert broken.exit_code == 2 and "api_key" in broken.output

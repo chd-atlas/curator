@@ -1677,7 +1677,7 @@ def agreement_command(
         typer.echo(line)
 
 
-_SHADOWABLE = ("triage-screen", "triage-check")
+_SHADOWABLE = (ask_module.SHADOWABLE,)
 
 
 @app.command("check-site")
@@ -1686,7 +1686,7 @@ def check_site(
     shadow_role: list[str] = typer.Option(
         [],
         "--shadow-role",
-        help="A triage role that runs in shadow, so its model needs no qualification. Repeatable.",
+        help="triage-screen, when it runs in shadow, so its model needs no qualification.",
     ),
 ) -> None:
     """Check that every role maps to a backend the register allows.
@@ -1854,7 +1854,9 @@ def ask_command(
     cache: Path | None = typer.Option(None, "--cache", help="A directory of validated answers."),
     validate: str = typer.Option("schema", "--validate", help="schema or check-batch."),
     run: str | None = typer.Option(None, "--run", help="The run id (needed by check-batch)."),
-    shadow: bool = typer.Option(False, "--shadow", help="Run a model the register does not allow."),
+    shadow: bool = typer.Option(
+        False, "--shadow", help="triage-screen only: run a model the register does not allow."
+    ),
     allow_errors: bool = typer.Option(
         False, "--allow-errors", help="Exit 0 although some request has an error row."
     ),
@@ -1868,9 +1870,9 @@ def ask_command(
     the cache, requests with an error row (their keys), and the sum of the usage counts the
     backends reported. Exit 0 when every request has an answer (or with
     `--allow-errors`); 1 when a request has an error row; 2 for a bad argument, request, site,
-    run or a model the register does not qualify for the role (unless `--shadow`), before any
-    call. Writes no approval: it writes answers, and with `--validate check-batch` the batch's
-    contract files under the run directory.
+    run or a model the register does not qualify for the role (unless `--shadow`, which only
+    triage-screen takes), before any call. Writes no approval: it writes answers, and with
+    `--validate check-batch` the batch's contract files under the run directory.
     """
     _require_root(root)
     if validate not in ("schema", "check-batch"):
