@@ -1,0 +1,3110 @@
+[
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "MMP21",
+  "pmid": "PMID:26429889",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "MMP21",
+  "pmid": "PMID:26437028",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "MMP21",
+  "pmid": "PMID:29263817",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "MMP21",
+  "pmid": "PMID:30622330",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "MMP21",
+  "pmid": "PMID:33131162",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "MMP21",
+  "pmid": "PMID:33240936",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "MMP21",
+  "pmid": "PMID:36123719",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "MMP21",
+  "pmid": "PMID:39513328",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "MMP21",
+  "pmid": "PMID:39753129",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "MMP21",
+  "pmid": "PMID:39976347",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "MMP21",
+  "pmid": "PMID:40467998",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "MMP21",
+  "pmid": "PMID:40679208",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:17404209",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "NR2F2",
+  "pmid": "PMID:17931990",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "NR2F2",
+  "pmid": "PMID:21172461",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:21242650",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:22962329",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:24479926",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 6,
+  "gene": "NR2F2",
+  "pmid": "PMID:24702954",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "NR2F2",
+  "pmid": "PMID:27363585",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:28863274",
+  "reason": "other"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "NR2F2",
+  "pmid": "PMID:29089047",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:29157563",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "NR2F2",
+  "pmid": "PMID:29222010",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "NR2F2",
+  "pmid": "PMID:29478779",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:29498561",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "NR2F2",
+  "pmid": "PMID:29663647",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:29866040",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:29903739",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "NR2F2",
+  "pmid": "PMID:30720060",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:30721228",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "NR2F2",
+  "pmid": "PMID:31687637",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "NR2F2",
+  "pmid": "PMID:32037394",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:32819587",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "NR2F2",
+  "pmid": "PMID:34530895",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:34619368",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:36010266",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:36874970",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:37039367",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "NR2F2",
+  "pmid": "PMID:37500725",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:40015456",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:40883017",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:42418116",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "NR2F2",
+  "pmid": "PMID:42428666",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10077612",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10079235",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10096597",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10373308",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10821756",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10842287",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10864469",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10882515",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10932003",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:10974675",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:11161571",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:11431700",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:11555635",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:11572777",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:11748310",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:11792287",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12005433",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12210327",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12223419",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12237100",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12393809",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12397116",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12499378",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12536695",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12624158",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12687661",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12736217",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12773460",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:12789647",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:12818525",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12843316",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12845333",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12858531",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:12941624",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:14519425",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:14519429",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15039979",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15070885",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15087119",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15095414",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15143159",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15221798",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15289437",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15302601",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15364612",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15368344",
+  "reason": "not_peer_reviewed"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15464586",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15548583",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:15639924",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15710732",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15735645",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15810003",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15823919",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15843414",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15849237",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15923624",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:15958514",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16086360",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16134140",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16183809",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16329098",
+  "reason": "other"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16332960",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16359490",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16376438",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16380715",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16484617",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16501170",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:16792966",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16870172",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16892408",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16894625",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:16917909",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:17138667",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:17334998",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:17366586",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:17468179",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:17502954",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:17534187",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:17604724",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:17668378",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18285513",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18328475",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18337497",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18351627",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18378906",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18391012",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18407257",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:18451335",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18661250",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18685167",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:18706711",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18726671",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18818409",
+  "reason": "review_article"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:18828908",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:18938699",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19074289",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19084512",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19158954",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:19187613",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19204083",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19243417",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19345202",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19405322",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:19586889",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19648116",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19895804",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:19925885",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20152185",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20219112",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20306498",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20450920",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20460370",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20519243",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20553648",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20811785",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20858598",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:20974940",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21070912",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21079360",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21184723",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21215183",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:21272410",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21304516",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "TBX5",
+  "pmid": "PMID:21637475",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21752519",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21803945",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21812358",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21897873",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21982178",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:21990232",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:22011241",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:22190901",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22226977",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:22333898",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:22543974",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22572437",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22576768",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22577452",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22589735",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22776023",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22776204",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22824467",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22885181",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22895573",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22898775",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22901678",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:22903933",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23226307",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:23266815",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23342975",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23441045",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23457456",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23607171",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23619295",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23626780",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23713051",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23804889",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23984174",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:23999067",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:24000169",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:24408148",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:24430697",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:24479926",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:24498650",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:24565863",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:24664498",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:24664963",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:24714979",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:24759614",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:24858909",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25099673",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:25216260",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25245104",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25257289",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:25263169",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:25274398",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25315346",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25344219",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25356765",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25455949",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25468972",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25576386",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25621081",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25623069",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25691335",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25725155",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25886110",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25912687",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25931334",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:25986147",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:26036351",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26208718",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:26219450",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26243320",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:26283027",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26401820",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:26490186",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26525676",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26657204",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26715205",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26744331",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26749485",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26780237",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26859347",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26859351",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26875865",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26882979",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:26917986",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:26989721",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:27026770",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:27035640",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:27293527",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:27471727",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:27552067",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:27652283",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:27695215",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:27722056",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:27958623",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:27984724",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:27992425",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28074809",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28111280",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28164238",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28337273",
+  "reason": "review_article"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:28434921",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28469241",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28511407",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "TBX5",
+  "pmid": "PMID:28606231",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28757710",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "TBX5",
+  "pmid": "PMID:28761722",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28807900",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28878125",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28899000",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28961509",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:28961683",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:29174768",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:29250101",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:29326753",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:29377175",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:29461882",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:29506474",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "TBX5",
+  "pmid": "PMID:29555671",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:29574800",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:29707177",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:29755943",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:29922649",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:29952356",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30016433",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30061737",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30062430",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30152191",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:30221396",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30344832",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30352852",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30469006",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30532148",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:30538526",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:30552424",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30590978",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:30834692",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30844313",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:30955100",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31086358",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31215120",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31373354",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:31388035",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31471016",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31681553",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31686119",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31775637",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31784580",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31786957",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31938300",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:31953255",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32035120",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32099963",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32134193",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32160556",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32236096",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32293321",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32368852",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32443233",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32449309",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "TBX5",
+  "pmid": "PMID:32641638",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:32863662",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33082984",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33098376",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33165819",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33221539",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:33281169",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "TBX5",
+  "pmid": "PMID:33306779",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33321106",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33359755",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:33369127",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33497883",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33576403",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33597201",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33680640",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33706167",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33744937",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:33866394",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:33930582",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:33947614",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:33996178",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:3400729",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:34062094",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:34068962",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:34159885",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:34214246",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:34490705",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:34666056",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:34738001",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:34894535",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:34917776",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:35053095",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:35113653",
+  "reason": "same_data_as"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:35121196",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:35182466",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:35320615",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:35450884",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:35514310",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:35697867",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:35698674",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:35711406",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:35870951",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:36114760",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:36177858",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:36444245",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:36759823",
+  "reason": "same_data_as"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:36936432",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:37083132",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:37096669",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:37106752",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:37210946",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:37253295",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:37340539",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:37523935",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:3800624",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:38062907",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38197531",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38235884",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38268646",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38317221",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38395134",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:38397197",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38491513",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38663507",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38689186",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38761027",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38884729",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38884730",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38884762",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:38954331",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:39156428",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:39230761",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:39268717",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:3953367",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:39541167",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:39747948",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:39925448",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:40059089",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:40126773",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:40334872",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:40430071",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:40602649",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:40697198",
+  "reason": "not_chd"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:40721580",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:40751491",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:41379537",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:41393511",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:41399852",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:41401880",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:41461901",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:41574629",
+  "reason": "review_article"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:41764505",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:42028010",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 2,
+  "gene": "TBX5",
+  "pmid": "PMID:42311150",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:42472571",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:42482497",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:42490494",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:42580346",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:42677002",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:42683017",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:42751140",
+  "reason": "none"
+ },
+ {
+  "decision": "included",
+  "findings": 1,
+  "gene": "TBX5",
+  "pmid": "PMID:42778323",
+  "reason": "none"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:42857310",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:8054982",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:8054983",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:8339498",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:8465226",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:8595424",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:8730285",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:8940280",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:8988164",
+  "reason": "full_text_not_accessible"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:8988165",
+  "reason": "other"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:9207801",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:9434949",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:9611267",
+  "reason": "not_human_genetics"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:9771325",
+  "reason": "no_finding_in_gene"
+ },
+ {
+  "decision": "excluded",
+  "findings": 0,
+  "gene": "TBX5",
+  "pmid": "PMID:9888994",
+  "reason": "no_finding_in_gene"
+ }
+]

@@ -128,7 +128,12 @@ def _commands() -> dict[str, Any]:
 
 
 def _options(command: Any) -> set[str]:
-    return {opt for param in command.params for opt in getattr(param, "opts", [])}
+    found = {opt for param in command.params for opt in getattr(param, "opts", [])}
+    for sub in getattr(
+        command, "commands", {}
+    ).values():  # a group (`qualify`) has its subcommands'
+        found |= _options(sub)
+    return found
 
 
 def _schema(name: str) -> dict[str, Any]:
@@ -297,6 +302,7 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "integrate",
         "job-script",
         "report",
+        "qualify",
     }
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS

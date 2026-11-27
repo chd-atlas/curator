@@ -786,6 +786,25 @@ an exclusion `reason` (and `note`, the answer's `why`, for `other`) into the ent
 `pending`; it refuses (exit 1) a decisions file with any awaiting_check or a key that is not a
 pending entry, and (exit 2) a file changed since it was read. None of the three writes an approval.
 
+### Qualifying a triage screen
+
+```bash
+chd-curator qualify triage TBX5 --screen screen-ans.jsonl --check check-ans.jsonl --run r1 \
+    --gold-root /path/to/atlas
+```
+
+A model fills `triage-screen` only after it passes in its place in the hybrid. `qualify triage`
+takes a gene's approved curation as the gold (each decided hit's final decision and the number of
+approved findings citing it), reads the screen's and the check's `ask` answers over the gold's hits,
+and runs `triage-combine`'s own rules (the check over the risky classes, the audit sample seeded
+by `--run`, every unanswered hit). The verdict is PASS when no hit with approved findings is
+lost, FAIL otherwise (the lost PMIDs are named), and INCOMPLETE when the check owes hits it has not
+answered. The score line gives the hits with approved findings, how many the screen included alone,
+how many hits went to the check before the audit and how many were audited. For a PASS or FAIL it
+prints the register entry to propose, as YAML, with `backend` left for the curator. Exit 0 for PASS
+and FAIL, 1 for INCOMPLETE, 2 for an unreadable file or gold. It writes nothing: no register entry,
+no approval.
+
 ### Running a writing step in a scratch root
 
 ```bash

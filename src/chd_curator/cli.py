@@ -18,6 +18,7 @@ refused ``--draft`` exits 2, and a literature file that is not valid YAML exits 
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -44,6 +45,7 @@ from chd_curator import compare as compare_module
 from chd_curator import jobs as jobs_module
 from chd_curator import merge as merge_module
 from chd_curator import package as package_module
+from chd_curator import qualify as qualify_module
 from chd_curator import redact as redact_mod
 from chd_curator import register as register_mod
 from chd_curator import report as report_module
@@ -93,6 +95,9 @@ from chd_curator.write import (
 )
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="CHD atlas curator tools.")
+
+qualify_app = typer.Typer(no_args_is_help=True, help="Score a model against a gold for a role.")
+app.add_typer(qualify_app, name="qualify")
 
 # The network hooks: tests replace them, nothing else reaches PubMed or VariantValidator.
 _fetch: Fetch = urllib_fetch
@@ -2074,3 +2079,78 @@ def job_script_command(
         raise _fail(
             f"no job script {name!r}; the scripts are {', '.join(jobs_module.JOB_SCRIPTS)}", 2
         ) from None
+
+
+def _answers_meta(path: Path, field: str) -> str:
+    """The one value of `field` across an answers file's rows, or "" when absent or mixed."""
+    found: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line) if line.strip() else {}
+        if isinstance(row, dict) and isinstance(row.get(field), str) and row[field]:
+            found.add(row[field])
+    return next(iter(found)) if len(found) == 1 else ""
+
+
+@qualify_app.command("triage")
+def qualify_triage_command(
+    symbol: str = typer.Argument(..., help="The approved symbol whose curation is the gold."),
+    screen: Path = typer.Option(..., "--screen", help="The screen's answers JSONL."),
+    check: Path = typer.Option(..., "--check", help="The capable check's answers JSONL."),
+    run: str = typer.Option(..., "--run", help="The run id (seeds the audit)."),
+    gold_root: Path = typer.Option(
+        Path("."), "--gold-root", help="The atlas checkout holding the approved curation."
+    ),
+) -> None:
+    """Score a triage configuration against a gene's approved curation; propose a register entry.
+
+    The gold is `triage_gold`: each decided hit's final decision and the count of approved
+    findings citing it. The hybrid is `triage-combine`'s (the check over the risky classes, the
+    audit sample seeded by `--run`, every unanswered hit). PASS means no paper with approved
+    findings is lost. Prints the score and, for a PASS or FAIL, the register entry to propose
+    (YAML). Exit 0 for PASS and FAIL, 1 for INCOMPLETE (the check owes hits; no entry), 2 for
+    an unreadable answers file, a key the gold lacks or an unreadable gold. Writes nothing:
+    no register entry, no approval.
+    """
+    if not gold_root.is_dir():
+        raise _fail(f"--gold-root {gold_root} is not a directory", 2)
+    try:
+        gold = qualify_module.triage_gold(gold_root, symbol)
+        keys = set(gold)
+        answered = triage_module.read_answers(screen, keys)
+        checked = triage_module.read_answers(check, keys)
+        meta = (_answers_meta(screen, "model_key"), _answers_meta(check, "model_key"))
+        rules = _answers_meta(screen, "rules_digest")
+    except qualify_module.QualifyError as exc:
+        raise _fail(str(exc), 2) from None
+    except triage_module.TriageUsageError as exc:
+        raise _fail(str(exc), 2) from None
+    except (OSError, ValueError) as exc:
+        raise _fail(str(exc), 2) from None
+    score = qualify_module.score_triage(
+        gold, {key: answered.get(key, {}) for key in sorted(keys)}, checked, run
+    )
+    typer.echo(
+        f"{score.verdict}: {score.with_findings} hit(s) with approved findings, "
+        f"{score.screen_alone} included by the screen alone, {len(score.missed)} missed"
+        + (f" ({', '.join(score.missed)})" if score.missed else "")
+        + f"; {score.sent_to_check} of {len(gold)} sent to the check before the audit, "
+        f"{score.audit} audited, {len(score.owed)} still owed"
+        + (f" ({', '.join(score.owed)})" if score.owed else "")
+    )
+    if score.verdict == "INCOMPLETE":
+        raise typer.Exit(code=1)
+    entry = qualify_module.proposed_entry(
+        symbol,
+        gold,
+        score,
+        seed=run,
+        screen_model_key=meta[0],
+        check_model_key=meta[1] or "unknown",
+        rules_digest=rules,
+    )
+    out = io.StringIO()
+    yaml_out = YAML()
+    yaml_out.default_flow_style = False
+    yaml_out.dump({"entries": [entry]}, out)
+    typer.echo("Proposed register entry (not written; fill `backend` from the site config):")
+    typer.echo(out.getvalue().rstrip())

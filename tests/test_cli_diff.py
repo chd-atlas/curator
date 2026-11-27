@@ -579,8 +579,14 @@ def test_the_cli_has_no_command_or_option_that_approves() -> None:
         "integrate",
         "job-script",
         "report",
+        "qualify",  # its one subcommand, `triage`, scores and proposes; it writes nothing
     }
     forbidden = {"--approve", "--by", "--on"}
-    for name, command in group.commands.items():
+    commands = dict(group.commands)
+    qualify = commands["qualify"]
+    assert isinstance(qualify, TyperGroup)
+    assert set(qualify.commands) == {"triage"}
+    commands.update({f"qualify {n}": c for n, c in qualify.commands.items()})
+    for name, command in commands.items():
         options = {opt for param in command.params for opt in param.opts + param.secondary_opts}
         assert not options & forbidden, (name, options & forbidden)
