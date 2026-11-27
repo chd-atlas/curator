@@ -13,6 +13,9 @@ the user message; nothing else is echoed). Environment:
   503, then exits 3 after 0.4 s: a server that dies while loading); ``ignore_term`` (``ok`` but
   SIGTERM is ignored, so only SIGKILL stops it).
 - ``STUB_HEALTH_503``: how many ``/health`` polls answer 503 first (default 0).
+- ``STUB_DELAY``: seconds each chat request waits before it answers (default 0).
+- The stub exits by itself after ``STUB_LIFETIME`` seconds (default 120), so a test that dies
+  before stopping it leaves no server behind for long.
 - ``STUB_PIDFILE``: where to write this process's pid; ``STUB_ARGS_FILE``: where to write argv;
   ``STUB_REQUEST_LOG``: one line per chat request is appended there.
 
@@ -79,6 +82,7 @@ class Handler(BaseHTTPRequestHandler):
         if log:
             with _lock, open(log, "a", encoding="utf-8") as handle:
                 handle.write(f"{answer['pmid']}\n")
+        time.sleep(float(os.environ.get("STUB_DELAY", "0")))  # after the log: "in flight"
         self._send(
             200,
             {
@@ -108,6 +112,7 @@ def main() -> None:
         raise SystemExit(3)
     if MODE == "ignore_term":
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    threading.Timer(float(os.environ.get("STUB_LIFETIME", "120")), lambda: os._exit(0)).start()
     server = ThreadingHTTPServer((_arg("--host", "127.0.0.1"), int(_arg("--port", "0"))), Handler)
     if MODE == "die_while_loading":
 

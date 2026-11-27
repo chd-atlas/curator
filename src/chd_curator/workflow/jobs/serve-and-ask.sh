@@ -51,6 +51,28 @@ server_alive() {
   [[ -n "$state" && "$state" != "Z" && "$state" != "X" ]]
 }
 
+stop_ask() {
+  # Stop a running `ask` (TERM, then KILL after the grace period) and reap it.
+  local pid="${ASK_PID:-}" ticks
+  [[ -n "$pid" ]] || return 0
+  if server_alive "$pid"; then
+    kill -TERM "$pid" 2>/dev/null
+    ticks=$(( ${SERVE_GRACE_SECONDS:-10} * 10 ))
+    while (( ticks > 0 )) && server_alive "$pid"; do
+      sleep 0.1
+      ticks=$(( ticks - 1 ))
+    done
+    server_alive "$pid" && kill -KILL "$pid" 2>/dev/null
+  fi
+  wait "$pid" 2>/dev/null
+  ASK_PID=""
+}
+
+cleanup() {
+  stop_ask
+  stop_server
+}
+
 stop_server() {
   local pid="${SERVER_PID:-}" ticks
   [[ -n "$pid" ]] || return 0
@@ -113,9 +135,13 @@ main() {
   if [[ -z "$WORKDIR" ]]; then WORKDIR="$(mktemp -d)"; own_workdir=1; fi
   mkdir -p "$WORKDIR" || usage_error "cannot create $WORKDIR"
   SERVER_PID=""
-  trap stop_server EXIT
+  ASK_PID=""
+  trap cleanup EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT
+  # The server and ask talk over loopback; a cluster's proxy must not intercept that.
+  export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost"
+  export no_proxy="${no_proxy:+$no_proxy,}127.0.0.1,localhost"
 
   local port
   port="$("$py" -m chd_curator.jobs port)" || { echo "serve-and-ask.sh: no free port" >&2; return 1; }
@@ -145,8 +171,15 @@ main() {
   done
   echo "serve-and-ask.sh: server healthy after $(( SECONDS - waited_from )) s on port $port" >&2
 
-  "$cli" ask --role "$role" --site "$WORKDIR/site.yaml" "${ask_args[@]}"
+  # ask runs in the background and is waited on: bash runs a trap only between foreground
+  # commands, so a TERM sent to this script would otherwise wait for ask to end. A signal now
+  # interrupts `wait`, the trap exits, and the EXIT cleanup stops ask and then the server.
+  # ${arr[@]+...} keeps an empty argument list valid under `set -u` on bash < 4.4.
+  "$cli" ask --role "$role" --site "$WORKDIR/site.yaml" ${ask_args[@]+"${ask_args[@]}"} &
+  ASK_PID=$!
+  wait "$ASK_PID"
   local rc=$?
+  ASK_PID=""
   stop_server
   if (( rc == 0 && own_workdir )); then rm -rf "$WORKDIR"; fi
   return "$rc"

@@ -61,7 +61,9 @@ def free_port() -> int:
 
 def healthy(url: str) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=5) as reply:
+        # No proxy, whatever the environment says: the server is on this node's loopback.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(url, timeout=5) as reply:
             return bool(reply.status == 200)
     except (urllib.error.URLError, OSError, ValueError):
         return False

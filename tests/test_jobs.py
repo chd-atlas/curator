@@ -8,6 +8,7 @@ and server flags that would have page-mapped the model from GPFS or silently tur
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -59,6 +61,16 @@ def kit(tmp_path: Path) -> dict[str, str]:
         "STUB_REQUEST_LOG": str(tmp_path / "requests.log"),
         "STUB_ARGS_FILE": str(tmp_path / "stub.args"),
     }
+
+
+@pytest.fixture(autouse=True)
+def _no_stub_survives(tmp_path: Path) -> Iterator[None]:
+    """Kill the stub named in the pidfile whatever the test did (a timeout kills bash only)."""
+    yield
+    pidfile = tmp_path / "stub.pid"
+    if pidfile.exists():
+        with contextlib.suppress(ProcessLookupError, ValueError):
+            os.kill(int(pidfile.read_text()), signal.SIGKILL)
 
 
 def _site(tmp_path: Path) -> Path:
@@ -310,3 +322,70 @@ def test_the_cluster_job_runs_the_serve_script_with_its_environment(
         timeout=30,
     )  # fmt: skip
     assert missing.returncode != 0 and "ASK_SITE" in missing.stderr
+
+
+def test_a_proxy_in_the_environment_does_not_intercept_loopback(
+    tmp_path: Path, kit: dict[str, str]
+) -> None:
+    kit["http_proxy"] = kit["HTTP_PROXY"] = "http://127.0.0.1:9"  # a closed port
+    kit["https_proxy"] = kit["HTTPS_PROXY"] = "http://127.0.0.1:9"
+    kit.pop("NO_PROXY", None)
+    kit.pop("no_proxy", None)
+    done = _run(tmp_path, kit)
+    assert done.returncode == 0, done.stdout + done.stderr
+    rows = [json.loads(x) for x in (tmp_path / "answers.jsonl").read_text().splitlines()]
+    assert len(rows) == 3 and all("parsed" in r for r in rows)
+
+
+def _pids_mentioning(text: str) -> list[int]:
+    found = []
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit() and int(entry.name) != os.getpid():
+            try:
+                cmd = (entry / "cmdline").read_bytes().decode(errors="replace")
+            except OSError:
+                continue
+            if text in cmd and not _gone(int(entry.name)):
+                found.append(int(entry.name))
+    return found
+
+
+def test_term_to_the_script_mid_run_leaves_neither_server_nor_ask(
+    tmp_path: Path, kit: dict[str, str]
+) -> None:
+    kit["STUB_DELAY"] = "60"  # every request is in flight when the signal arrives
+    answers = tmp_path / "answers.jsonl"
+    proc = subprocess.Popen(
+        ["bash", str(SERVE), "--site", str(_site(tmp_path)), "--role", "triage-screen",
+         "--model-file", "m.gguf", "--server-args", GOOD_ARGS, "--",
+         "--requests", str(_requests(tmp_path, 2)), "--answers", str(answers),
+         "--root", str(RULES_ROOT), "--shadow"],
+        env=kit, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )  # fmt: skip
+    try:
+        log = tmp_path / "requests.log"
+        deadline = time.monotonic() + 30
+        while not (log.exists() and log.read_text().strip()) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert log.exists(), "ask never reached the server"
+        assert _pids_mentioning(str(answers)), "ask is not running"
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=30) == 143
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert _gone(int((tmp_path / "stub.pid").read_text())), "the server outlived the script"
+    assert _pids_mentioning(str(answers)) == [], "ask outlived the script"
+
+
+def test_an_empty_ask_argument_list_is_not_an_unbound_variable(
+    tmp_path: Path, kit: dict[str, str]
+) -> None:
+    done = subprocess.run(
+        ["bash", str(SERVE), "--site", str(_site(tmp_path)), "--role", "triage-screen",
+         "--model-file", "m.gguf", "--server-args", GOOD_ARGS],
+        env=kit, capture_output=True, text=True, timeout=60,
+    )  # fmt: skip
+    assert "unbound variable" not in done.stderr
+    assert done.returncode == 2  # ask's own usage error: it got no arguments
