@@ -14,6 +14,7 @@ import pytest
 from typer.testing import CliRunner
 
 from chd_curator.cli import app
+from test_contract import _plain
 from test_merge import _pubmed
 from test_package import base_json, package
 from test_scratch import MUTABLE_TBX5, make_atlas, merge, scratch, snapshot
@@ -228,9 +229,10 @@ def test_integrate_reports_an_io_error_mid_copy_without_a_traceback(
 def test_the_help_says_what_a_refusal_names_and_not_every_file(  # R-SWA-62 (1)
 ) -> None:
     """A refusal names the files of the first check that fails, and the README says so; the
-    help said "every file named", which a run that fails two checks does not do."""
+    help said "every file named", which a run that fails two checks does not do. ANSI is
+    stripped: with GITHUB_ACTIONS=true typer/Rich keeps bold and dim styles under NO_COLOR."""
     result = runner.invoke(app, ["integrate", "--help"], env={"NO_COLOR": "1"})
-    flat = " ".join(result.output.split())
+    flat = " ".join(_plain(result.output).split())
     assert "every file named" not in flat
     assert "naming the files of the first check that fails" in flat
 
