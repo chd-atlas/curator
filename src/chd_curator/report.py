@@ -6,10 +6,11 @@ each atomically.
 **Answers** (``--answers <role>=<path>``, one or more per role; rows of ``chd-curator ask``).
 Per role, summed over its files: ``answers`` (rows), ``cached`` (rows with ``parsed`` and
 ``attempts`` 0, answered from the cache), ``failed`` (rows with ``error``), ``seconds`` (the
-rows' ``seconds``) and ``tokens``. A row's tokens are its ``usage.total_tokens`` when the backend
-reported one (openai_compat also reports prompt and completion counts, which are parts of it);
-otherwise the sum of every count in ``usage`` (anthropic and claude_code report input, output
-and cache counts, which are disjoint). Tier: ``local`` for ``triage-screen``, ``capable`` for
+rows' ``seconds``, error rows included) and ``tokens``. A row's tokens are
+``backends.base.token_count`` of its ``usage``: ``total_tokens`` when the backend reported one
+(openai_compat also reports prompt and completion counts, which are parts of it); otherwise the
+sum of every count (anthropic and claude_code report input, output and cache counts, which are
+disjoint). Tier: ``local`` for ``triage-screen``, ``capable`` for
 every other role. ``tokens.local`` is the ``local`` tier's tokens, and the summary's percentage
 is local over all, rounded half up.
 
@@ -46,8 +47,8 @@ parse, is refused (exit 2) naming it. ``core_hours`` of a role is the sum of
 
 With no ``assemble.json`` nothing is settled yet: the counts are 0 and a warning says so.
 
-**Tokens of failed attempts are not recorded.** An ``error`` row carries no ``usage``, so what
-the backend spent on failed attempts is absent from every token total and from the percentage.
+**Tokens of failed attempts are counted.** An ``error`` row carries the ``usage`` and
+``seconds`` its attempts spent, and they count in every total like an answer's.
 
 **Notes.** For each role and ``model_key`` with answers that has no register entry for the role
 (a shadow run, or a model never qualified), ``note: <role> ran a model with no register entry
@@ -69,6 +70,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
+from chd_curator.backends.base import token_count
 from chd_curator.fs import write_bytes_atomically
 from chd_curator.register import Entry, load_register
 from chd_curator.roles import ROLES
@@ -104,13 +106,6 @@ def _run_paths(run_dir: Path) -> RunPaths:
     return RunPaths(d.parents[4], d.parent.name, d.name)
 
 
-def _tokens(usage: Mapping[str, Any]) -> int:
-    counts = {k: v for k, v in usage.items() if isinstance(v, int) and not isinstance(v, bool)}
-    if "total_tokens" in counts:
-        return counts["total_tokens"]
-    return sum(counts.values())
-
-
 def _read_rows(path: Path) -> list[dict[str, Any]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -140,17 +135,17 @@ def _process(
     for path in files:
         for r in _read_rows(path):
             answers += 1
+            usage = r.get("usage", {})
+            if isinstance(usage, dict):
+                tokens += token_count(usage)
+            secs = r.get("seconds", 0)
+            if isinstance(secs, int | float) and not isinstance(secs, bool):
+                seconds += secs
             if "error" in r:
                 failed += 1
                 continue
             if r["attempts"] == 0 and "parsed" in r:
                 cached += 1
-            usage = r.get("usage", {})
-            if isinstance(usage, dict):
-                tokens += _tokens(usage)
-            secs = r.get("seconds", 0)
-            if isinstance(secs, int | float) and not isinstance(secs, bool):
-                seconds += secs
             raw_key = r.get("model_key")
             mkey = raw_key if isinstance(raw_key, str) and raw_key else None
             if mkey is None or (mkey not in qualified and mkey.split(":", 1)[0] not in _TEST_KINDS):

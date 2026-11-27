@@ -29,7 +29,9 @@ reaching an answer is Task A6's refusal of any answer containing an email addres
 
 Claude Code cannot set a temperature or a token cap, so ``meta`` records ``temperature: null``.
 The call runs in a fresh empty directory, removed afterwards, so no checkout's CLAUDE.md or
-project settings are found. It never runs on a cluster node.
+project settings are found, and without ``ANTHROPIC_API_KEY`` or ``ANTHROPIC_AUTH_TOKEN`` in its
+environment, so it uses the login rather than billing the API. It never runs on a cluster node:
+it refuses when ``SLURM_JOB_ID``, ``LSB_JOBID`` or ``PBS_JOBID`` is set.
 """
 
 from __future__ import annotations
@@ -55,7 +57,11 @@ from chd_curator.backends.base import (
 from chd_curator.site import BackendSpec
 
 DEFAULT_TIMEOUT: Final = 900.0
-REFUSAL: Final = "refusing to run Claude Code on a cluster node (SLURM_JOB_ID is set)"
+REFUSAL: Final = "refusing to run Claude Code on a cluster node"
+# The job variable each scheduler sets inside a job: Slurm, LSF, PBS.
+CLUSTER_VARIABLES: Final = ("SLURM_JOB_ID", "LSB_JOBID", "PBS_JOBID")
+# With either set, Claude Code bills the API instead of the OAuth login it is meant to use.
+DROPPED_VARIABLES: Final = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 FLAGS: Final = (
     "-p",
     "--output-format",
@@ -80,6 +86,11 @@ USAGE_NAMES: Final = (
 )
 
 
+def _environment() -> dict[str, str]:
+    """The caller's environment less ``DROPPED_VARIABLES``; the caller's own is untouched."""
+    return {k: v for k, v in os.environ.items() if k not in DROPPED_VARIABLES}
+
+
 class ClaudeCode:
     def __init__(self, spec: BackendSpec, _post: Post = urllib_post, clock: Clock = now) -> None:
         # `_post` is accepted only so make_backend can build every kind the same way.
@@ -87,6 +98,17 @@ class ClaudeCode:
         self._clock = clock
         self._timeout = timeout_of(spec) if "timeout_seconds" in spec.settings else DEFAULT_TIMEOUT
         self._version: str | None = None
+
+    def _refuse_on_a_cluster_node(self) -> None:
+        for name in CLUSTER_VARIABLES:
+            if os.environ.get(name):
+                raise BackendError(f"{self.spec.id}: {REFUSAL} ({name} is set)")
+
+    def preflight(self) -> None:
+        """What ``ask`` checks before its first call: not on a cluster node, and ``claude
+        --version`` succeeds. Raises ``BackendError`` (or ``TransientError`` on a timeout)."""
+        self._refuse_on_a_cluster_node()
+        self.version()
 
     def version(self) -> str:
         """``claude --version``, run once per instance, on first use."""
@@ -98,6 +120,7 @@ class ClaudeCode:
                     text=True,
                     timeout=60,
                     check=False,
+                    env=_environment(),
                 )
             except FileNotFoundError:
                 raise BackendError(f"{self.spec.id}: the claude executable was not found") from None
@@ -111,8 +134,7 @@ class ClaudeCode:
 
     def ask(self, req: Request) -> Answer:
         who = self.spec.id
-        if os.environ.get("SLURM_JOB_ID"):
-            raise BackendError(f"{who}: {REFUSAL}")
+        self._refuse_on_a_cluster_node()
         version = self.version()
         t0 = self._clock()
         with (
@@ -134,6 +156,7 @@ class ClaudeCode:
                     cwd=cwd,
                     timeout=self._timeout,
                     check=False,
+                    env=_environment(),
                 )
             except FileNotFoundError:
                 raise BackendError(f"{who}: the claude executable was not found") from None

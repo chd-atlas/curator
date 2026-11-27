@@ -2,8 +2,9 @@
 
 ``TransientError`` is worth another attempt after a pause (rate limit, server error, timeout,
 connection failure). ``BackendError`` is not (a refused request, a missing key, an unknown replay
-key). No message here carries a key; ``scrub`` removes the value of the key from any text a server
-sent back, because some servers echo the credential they refused.
+key); its subclass ``ConfigurationError`` (HTTP 401 or 403) stops the whole run. No message here
+carries a key; ``scrub`` removes the value of the key from any text a server sent back, because
+some servers echo the credential they refused.
 """
 
 from __future__ import annotations
@@ -32,6 +33,11 @@ class BackendError(Exception):
 
 class TransientError(Exception):
     """The call failed in a way another attempt may fix."""
+
+
+class ConfigurationError(BackendError):
+    """The site is misconfigured (a refused credential): no other request will fare better, so
+    the run stops."""
 
 
 @dataclass(frozen=True)
@@ -120,6 +126,8 @@ def call(
         raise TransientError(f"{who}: {type(exc).__name__} reaching the server") from None
     if status == 429 or status >= 500:
         raise TransientError(f"{who}: HTTP {status}")
+    if status in (401, 403):
+        raise ConfigurationError(f"{who}: HTTP {status}: {_message(raw, secret)}")
     if status >= 300 or status < 200:
         raise BackendError(f"{who}: HTTP {status}: {_message(raw, secret)}")
     try:
@@ -143,6 +151,17 @@ def _message(raw: bytes, secret: str | None) -> str:
     except ValueError:
         pass
     return scrub(text, secret)[:_ERROR_CHARS]
+
+
+def token_count(usage: Mapping[str, Any]) -> int:
+    """A usage's tokens: ``total_tokens`` when the backend reported one (openai_compat also
+    reports prompt and completion counts, which are parts of it); otherwise the sum of every
+    count (anthropic and claude_code report input, output and cache counts, which are
+    disjoint). The one rule for ``ask``'s summary line and ``report``."""
+    counts = {k: v for k, v in usage.items() if isinstance(v, int) and not isinstance(v, bool)}
+    if "total_tokens" in counts:
+        return counts["total_tokens"]
+    return sum(counts.values())
 
 
 def int_usage(raw: object, names: tuple[str, ...]) -> dict[str, int]:

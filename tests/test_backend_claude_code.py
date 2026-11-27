@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from chd_curator.backends import BackendError, Request, TransientError, make_backend
-from chd_curator.backends.claude_code import REFUSAL
+from chd_curator.backends.claude_code import CLUSTER_VARIABLES, REFUSAL
 from chd_curator.site import BackendSpec
 
 FAKES = Path(__file__).parent / "fakes"
@@ -45,7 +45,8 @@ def stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CLAUDE_STUB_PYTHON", sys.executable)
     monkeypatch.setenv("STUB_LOG", str(log))
     monkeypatch.setenv("STUB_REPLY", json.dumps(REPLY))
-    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    for name in CLUSTER_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
     return log
 
 
@@ -119,14 +120,31 @@ def test_runs_in_a_fresh_empty_directory_that_is_removed(stub: Path, tmp_path: P
     assert cwd.resolve() != Path.cwd().resolve()
 
 
+@pytest.mark.parametrize("variable", ["SLURM_JOB_ID", "LSB_JOBID", "PBS_JOBID"])
 def test_refuses_on_a_cluster_node_before_any_process(
-    stub: Path, monkeypatch: pytest.MonkeyPatch
+    stub: Path, monkeypatch: pytest.MonkeyPatch, variable: str
 ) -> None:
-    monkeypatch.setenv("SLURM_JOB_ID", "123")
-    with pytest.raises(BackendError, match="SLURM_JOB_ID is set") as exc:
+    """Slurm, LSF and PBS each set their job variable inside a job; the message names it."""
+    monkeypatch.setenv(variable, "123")
+    with pytest.raises(BackendError, match=f"{variable} is set") as exc:
         ask()
     assert REFUSAL in str(exc.value)
-    assert not stub.exists()
+    assert not stub.exists() and not Path(f"{stub}.version").exists()
+
+
+def test_the_claude_process_gets_no_api_key_or_auth_token(
+    stub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M9: with ANTHROPIC_API_KEY in its environment Claude Code silently bills the API
+    instead of the OAuth login. The stub logs its environment's names only."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "y")
+    ask()
+    for names in (json.loads(stub.read_text())["env_names"],
+                  json.loads(Path(f"{stub}.version_env").read_text())):  # fmt: skip
+        assert "ANTHROPIC_API_KEY" not in names and "ANTHROPIC_AUTH_TOKEN" not in names
+        assert "STUB_LOG" in names  # the rest of the environment still reaches it
+    assert os.environ["ANTHROPIC_API_KEY"] == "x"  # the caller's own environment is untouched
 
 
 def test_a_nonzero_exit_names_the_last_stderr_line(

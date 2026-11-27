@@ -1,7 +1,9 @@
-"""Logs argv, cwd and stdin to the file STUB_LOG names, then replies as scripted.
+"""Logs argv, cwd, stdin and its environment's variable NAMES (never a value) to the file
+STUB_LOG names, then replies as scripted.
 
 STUB_REPLY is the stdout text, STUB_EXIT the exit code, STUB_STDERR the stderr text and
-STUB_SLEEP seconds to wait first. The working directory's listing is logged too.
+STUB_SLEEP seconds to wait first; STUB_VERSION and STUB_VERSION_EXIT script `--version`. The
+working directory's listing is logged too.
 """
 
 import json
@@ -12,8 +14,10 @@ import time
 if sys.argv[1:] == ["--version"]:
     with open(os.environ["STUB_LOG"] + ".version", "a", encoding="utf-8") as vf:
         vf.write("x")
+    with open(os.environ["STUB_LOG"] + ".version_env", "w", encoding="utf-8") as ef:
+        json.dump(sorted(os.environ), ef)  # the names only, never a value
     sys.stdout.write(os.environ.get("STUB_VERSION", "9.9.9 (Claude Code)") + "\n")
-    sys.exit(0)
+    sys.exit(int(os.environ.get("STUB_VERSION_EXIT", "0")))
 argv = sys.argv[1:]
 system = ""
 system_path = ""
@@ -29,6 +33,7 @@ with open(os.environ["STUB_LOG"], "w", encoding="utf-8") as f:
     json.dump(
         {
             "argv": sys.argv[1:],
+            "env_names": sorted(os.environ),
             "cwd": cwd,
             "listing": sorted(os.listdir(cwd)),
             "stdin": stdin,

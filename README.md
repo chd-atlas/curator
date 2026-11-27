@@ -718,7 +718,7 @@ chd-curator check-site --site /path/to/site.yaml [--shadow-role triage-screen]
 ```
 
 Exit 0 when every role is configured and allowed (or shadowed); exit 2, one line per role, when not.
-Only the two triage roles may be shadowed.
+Only `triage-screen` may be shadowed: in shadow the check decides every hit.
 
 ### Asking a role's model
 
@@ -737,8 +737,14 @@ previous bytes, or no file), and retried
 at most twice with the errors appended. A model the register does not qualify, a repeated key and
 an input that does not fit the backend's context are refused, never truncated. Exit 0 when every
 request has an answer, 1 when one has an `error` row (unless `--allow-errors`), 2 for a bad
-argument or an unqualified model. The summary line counts requests the model answered, requests answered from the cache, requests
-with an error row (with their keys) and the sum of the usage the backend reported. It writes no approval.
+argument, an unqualified model (`--shadow` lifts that for `triage-screen` only) or a configuration
+that would fail every request (an unset `key_env` variable, a cluster job variable or a failing
+`claude --version` for `claude_code`, a missing replay `dir`), before any call. An HTTP 401 or 403
+stops the run: the answers file is written with an error row for every request not asked, and the
+exit is 2. An answer row records the backend's `meta`; an error row records the usage and seconds
+its attempts spent. The summary line counts requests the model answered, requests answered from
+the cache, requests with an error row (with their keys) and the tokens, counted as `report` counts
+them. It writes no approval.
 
 ### Writing the readers' and judge's requests
 
@@ -880,7 +886,7 @@ from `ask`'s rows, and core-hours (cpus x realtime) from the trace's `process`, 
 `realtime` columns. Per finding: `agreed` is `assemble.json`'s `verified`, `judged` its `judged`,
 `corrected by the owner` the findings whose latest decision in `decisions/*.json` is `fix`, and
 `normalised` the findings `normalise.json` placed. A role that ran on rules differing from its
-register entry's gets a warning. Tokens spent on failed attempts are not recorded by `ask`, so they are absent from the totals; a model with no register entry (a shadow run) gets a note, and decisions naming findings outside the run are listed and not counted. `chd-curator report` writes no approval.
+register entry's gets a warning. Tokens and seconds spent on failed attempts are counted (`ask` records them on the error row); a model with no register entry (a shadow run) gets a note, and decisions naming findings outside the run are listed and not counted. `chd-curator report` writes no approval.
 
 ## Container images
 

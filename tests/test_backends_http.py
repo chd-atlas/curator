@@ -392,3 +392,16 @@ def test_the_default_transport_never_sends_a_key_to_a_redirect_target(
     assert status == 302
     assert a.hits == [f"Bearer {KEY}", KEY]
     assert b.hits == [] and KEY not in str(info.value)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_refused_credential_is_a_configuration_error(status: int) -> None:
+    """R-SWA-44: no other request will fare better with the same key, so `ask` stops the run."""
+    from chd_curator.backends.base import ConfigurationError
+
+    b = make_backend(
+        spec("openai_compat", {"base_url": "http://h"}), post=FakePost((status, {}, b"no"))
+    )
+    with pytest.raises(ConfigurationError, match=f"HTTP {status}") as info:
+        b.ask(req())
+    assert isinstance(info.value, BackendError)

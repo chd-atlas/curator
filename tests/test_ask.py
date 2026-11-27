@@ -107,7 +107,8 @@ def test_a_cached_answer_is_returned_without_asking(tmp_path: Path) -> None:
     assert fake2.requests == []  # the second backend had no script left and was never called
     assert rows2[0]["attempts"] == 0 and rows2[0]["parsed"] == rows1[0]["parsed"]
     assert set(rows2[0]) == {
-        "key", "parsed", "attempts", "usage", "seconds", "model_key", "input_digest", "rules_digest"
+        "key", "parsed", "attempts", "usage", "seconds", "model_key", "input_digest",
+        "rules_digest", "meta",
     }  # fmt: skip
     path = next((cache / "triage-screen").iterdir())
     assert path.name == (
@@ -135,7 +136,8 @@ def test_three_invalid_answers_write_an_error_row_and_exit_1(tmp_path: Path) -> 
     b = spec({PMID: ["x", "y", "z", triage()]})
     summary, rows, fake = run_ask(tmp_path, b, [PMID])
     assert summary.failed == [PMID] and len(fake.requests) == 3
-    assert set(rows[0]) == {"key", "error", "attempts"} and rows[0]["attempts"] == 3
+    assert set(rows[0]) == {"key", "error", "attempts", "usage", "seconds"}
+    assert rows[0]["attempts"] == 3
     out = tmp_path / "answers.jsonl"
     site = tmp_path / "site.yaml"
     site.write_text(
@@ -729,3 +731,148 @@ def test_the_context_boundary_passes_at_equality_and_refuses_one_token_over(
     over = spec({PMID: [triage()]}, context=exact - 1, max_tokens=100)
     summary, rows, fake = run_ask(tmp_path, over, [PMID])
     assert summary.failed == [PMID] and fake.requests == []
+
+
+# ---- the fix wave: configuration exits 2, what a row records ------------------------------------
+
+
+class _Metered(Fake):
+    """The scripted fake, reporting usage, seconds and meta as a real backend does."""
+
+    def ask(self, req: Request) -> Answer:
+        got = super().ask(req)
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        return Answer(got.key, got.text, usage, 1.5, {"finish_reason": "stop", "n": len(got.text)})
+
+
+def test_an_answers_meta_reaches_its_row_and_the_cache(tmp_path: Path) -> None:
+    """M1: claude_code_version, adds_context, the model used and finish_reason are in `meta`."""
+    cache = tmp_path / "cache"
+    b = spec({PMID: [triage()]})
+    _, rows, _ = run_ask(tmp_path, b, [PMID], cache=cache, fake=_Metered(b))
+    meta = {"finish_reason": "stop", "n": len(triage())}
+    assert rows[0]["meta"] == meta
+    body = json.loads(next((cache / "triage-screen").iterdir()).read_text())
+    assert body["meta"] == meta
+    _, again, _ = run_ask(tmp_path, b, [PMID], cache=cache, fake=Fake(b))
+    assert again[0]["attempts"] == 0 and again[0]["meta"] == meta  # the answer's, from the cache
+
+
+def test_an_error_row_carries_the_usage_and_seconds_its_attempts_spent(tmp_path: Path) -> None:
+    """M2: a refused answer still cost tokens; the error row says how many."""
+    b = spec({PMID: ["x", "y", "z"]})
+    summary, rows, _ = run_ask(tmp_path, b, [PMID], fake=_Metered(b))
+    assert summary.failed == [PMID] and rows[0]["attempts"] == 3
+    usage = {"prompt_tokens": 30, "completion_tokens": 15, "total_tokens": 45}
+    assert rows[0]["usage"] == usage and rows[0]["seconds"] == 4.5
+
+
+def test_the_summary_counts_tokens_as_the_report_does(tmp_path: Path) -> None:
+    """M2 (sentences): openai_compat reports prompt, completion AND total; summing every count
+    doubled the figure. The summary and the report share one rule."""
+    from chd_curator import report
+    from chd_curator.backends.base import token_count
+
+    assert report.token_count is token_count  # one rule, shared
+    b = spec({PMID: [triage()]})
+    summary, rows, _ = run_ask(tmp_path, b, [PMID], fake=_Metered(b))
+    assert summary.tokens == 15 == token_count(rows[0]["usage"])
+    replies = tmp_path / "replies"
+    replies.mkdir()
+    (replies / "PMID_91000001.json").write_text(
+        json.dumps({"text": triage(), "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                                                "total_tokens": 15}})
+    )  # fmt: skip
+    site = tmp_path / "site.yaml"
+    site.write_text(
+        "roles:\n  triage-screen:\n    id: t\n    kind: replay\n    model: m\n"
+        f"    context_tokens: 100000\n    concurrency: 1\n    settings:\n      dir: {replies}\n"
+    )
+    out = runner.invoke(app, ["ask", "--role", "triage-screen", "--requests",
+                              str(requests_file(tmp_path, [PMID])), "--answers",
+                              str(tmp_path / "c.jsonl"), "--site", str(site),
+                              "--root", str(RULES_ROOT)])  # fmt: skip
+    assert out.exit_code == 0, out.output
+    assert out.output == "answered 1, from cache 0, failed 0, tokens 15\n"
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_an_unset_key_variable_exits_2_before_any_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    """R-SWA-44: a misconfigured site must not "fail every gene on content"."""
+    if value is None:
+        monkeypatch.delenv("CHD_TEST_KEY", raising=False)
+    else:
+        monkeypatch.setenv("CHD_TEST_KEY", value)
+    b = BackendSpec("t", "fake", "m", {"answers": {PMID: [triage()]}}, 100_000, 1, "CHD_TEST_KEY")
+    fake = Fake(b)
+    with pytest.raises(AskUsageError, match="CHD_TEST_KEY is not set"):
+        ask("triage-screen", requests_file(tmp_path, [PMID]), tmp_path / "a.jsonl", site_of(b),
+            [], RULES_ROOT, None, "schema", None, False, make=lambda _s: fake)  # fmt: skip
+    assert fake.requests == [] and not (tmp_path / "a.jsonl").exists()
+
+
+def test_a_replay_directory_that_does_not_exist_exits_2(tmp_path: Path) -> None:
+    b = BackendSpec("t", "replay", "m", {"dir": str(tmp_path / "nowhere")}, 100_000, 1, None)
+    with pytest.raises(AskUsageError, match="nowhere"):
+        ask("triage-screen", requests_file(tmp_path, [PMID]), tmp_path / "a.jsonl", site_of(b),
+            [], RULES_ROOT, None, "schema", None, False)  # fmt: skip
+    assert not (tmp_path / "a.jsonl").exists()
+
+
+@pytest.mark.parametrize("problem", ["SLURM_JOB_ID", "LSB_JOBID", "no claude", "version fails"])
+def test_claude_code_that_cannot_run_here_exits_2_before_any_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, problem: str
+) -> None:
+    import os
+    import sys
+
+    from chd_curator.register import load_register
+
+    fakes = HERE / "fakes"
+    log = tmp_path / "log.json"
+    path = (
+        os.environ["PATH"] if problem == "no claude" else f"{fakes}{os.pathsep}{os.environ['PATH']}"
+    )
+    if problem == "no claude":
+        path = os.pathsep.join(
+            p for p in path.split(os.pathsep) if not (Path(p) / "claude").exists()
+        )
+    monkeypatch.setenv("PATH", path)
+    monkeypatch.setenv("CLAUDE_STUB_PYTHON", sys.executable)
+    monkeypatch.setenv("STUB_LOG", str(log))
+    for name in ("SLURM_JOB_ID", "LSB_JOBID", "PBS_JOBID"):
+        monkeypatch.delenv(name, raising=False)
+    if problem.isupper():
+        monkeypatch.setenv(problem, "7")
+    if problem == "version fails":
+        monkeypatch.setenv("STUB_VERSION_EXIT", "1")
+    b = BackendSpec("cc", "claude_code", "claude-haiku-5-5", {}, 100_000, 1, None)
+    with pytest.raises(AskUsageError) as info:
+        ask("triage-check", requests_file(tmp_path, [PMID]), tmp_path / "a.jsonl",
+            site_of(b, "triage-check"), load_register(), RULES_ROOT, None, "schema", None,
+            False)  # fmt: skip
+    expected = {"no claude": "not found", "version fails": "--version failed"}.get(problem, problem)
+    assert expected in str(info.value)
+    assert not log.exists() and not (tmp_path / "a.jsonl").exists()
+
+
+def test_a_refused_credential_stops_the_run_and_exits_2(tmp_path: Path) -> None:
+    """R-SWA-44: HTTP 401/403 stop the run: no further call, the answers file holds the rows
+    so far and an error row for each request not asked."""
+    from chd_curator.backends.openai_compat import OpenAICompat
+    from fake_http import FakePost
+
+    b = BackendSpec("o", "openai_compat", "m", {"base_url": "http://h"}, 100_000, 1, None)
+    post = FakePost((401, {}, b'{"error": "invalid key"}'))
+    keys = ["PMID:1", "PMID:2", "PMID:3"]
+    with pytest.raises(AskUsageError, match="HTTP 401") as info:
+        ask("triage-screen", requests_file(tmp_path, keys), tmp_path / "a.jsonl", site_of(b),
+            [], RULES_ROOT, None, "schema", None, True,
+            make=lambda s: OpenAICompat(s, post))  # fmt: skip
+    assert len(post.calls) == 1 and "stopped" in str(info.value)
+    rows = [json.loads(x) for x in (tmp_path / "a.jsonl").read_text().splitlines()]
+    assert [r["key"] for r in rows] == keys and all("error" in r for r in rows)
+    assert "HTTP 401" in rows[0]["error"]
+    assert all(r["error"].startswith("not asked") and r["attempts"] == 0 for r in rows[1:])

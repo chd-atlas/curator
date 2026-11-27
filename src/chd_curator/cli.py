@@ -1865,13 +1865,16 @@ def ask_command(
     """Ask a role's model once per request, validate, retry at most twice, cache by input.
 
     Writes one answer row per request, in the requests' order, to `--answers`: `{key, parsed,
-    attempts, usage, seconds, model_key, input_digest, rules_digest}` or `{key, error,
-    attempts}`. Prints one summary line: requests the model answered, requests answered from
-    the cache, requests with an error row (their keys), and the sum of the usage counts the
-    backends reported. Exit 0 when every request has an answer (or with
-    `--allow-errors`); 1 when a request has an error row; 2 for a bad argument, request, site,
-    run or a model the register does not qualify for the role (unless `--shadow`, which only
-    triage-screen takes), before any call. Writes no approval: it writes answers, and with
+    attempts, usage, seconds, model_key, input_digest, rules_digest, meta}` or `{key, error,
+    attempts, usage, seconds}`. Prints one summary line: requests the model answered, requests
+    answered from the cache, requests with an error row (their keys), and the tokens (as
+    `report` counts them). Exit 0 when every request has an answer (or with `--allow-errors`); 1
+    when a request has an error row; 2 for a bad argument, request, site, run, a model the
+    register does not qualify for the role (unless `--shadow`, which only triage-screen takes)
+    or a configuration that would fail every request (an unset `key_env` variable; for
+    claude_code a cluster job variable or a failing `claude --version`; a missing replay
+    `dir`), before any call; and 2 when an HTTP 401 or 403 stopped the run, after writing an
+    error row for every request not asked. Writes no approval: it writes answers, and with
     `--validate check-batch` the batch's contract files under the run directory.
     """
     _require_root(root)
@@ -1897,7 +1900,7 @@ def ask_command(
         raise _fail(str(exc), 2) from None
     except OSError as exc:
         raise _fail(str(exc), 1) from None
-    tokens = sum(summary.usage.values())
+    tokens = summary.tokens
     failed = f"{len(summary.failed)} ({', '.join(summary.failed)})" if summary.failed else "0"
     extra = (", shadow: true" if shadow else "") + (f", run: {run}" if run else "")
     typer.echo(

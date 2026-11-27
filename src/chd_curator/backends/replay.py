@@ -29,6 +29,11 @@ class Replay:
         self._dir = Path(directory)
         self._seen: dict[str, str] = {}
 
+    def preflight(self) -> None:
+        """What ``ask`` checks before its first call: the directory exists."""
+        if not self._dir.is_dir():
+            raise BackendError(f"{self.spec.id}: settings.dir {self._dir} is not a directory")
+
     def ask(self, req: Request) -> Answer:
         name = file_name(req.key)
         other = self._seen.setdefault(name, req.key)

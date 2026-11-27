@@ -208,11 +208,13 @@ def test_failed_and_cached_answers_are_counted_apart(tmp_path: Path) -> None:
     rows = [
         row("a", {"input_tokens": 1, "output_tokens": 2}, 1.25),
         cached,
-        {"key": "x", "error": "e", "attempts": 3},
+        {"key": "x", "error": "e", "attempts": 3, "usage": {"input_tokens": 4}, "seconds": 2.0},
     ]
     f = answers_file(tmp_path / "e.jsonl", rows)
     (proc,) = _report(run, [("extract", f)], tmp_path / "out")["processes"]
-    assert (proc["answers"], proc["cached"], proc["failed"], proc["tokens"]) == (3, 1, 1, 3)
+    # An error row's attempts were spent too (M2): its tokens and seconds count.
+    assert (proc["answers"], proc["cached"], proc["failed"], proc["tokens"]) == (3, 1, 1, 7)
+    assert proc["seconds"] == 3.25
 
 
 TRACE_HEAD = "task_id\tname\tstatus\tprocess\tcpus\trealtime\n"
