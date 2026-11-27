@@ -82,8 +82,7 @@ A pipeline runs this step as one call, `src/chd_curator/workflow/roles/extract.m
      `with` is. A `with` group whose phase is `unclear` carries one identical `unclear.phase`
      entry on every member.
    - `phenotypes` only where the paper ties a defect to these carriers, each among the finding's.
-6. Choose among three ways to leave a value plain. `not_stated` is for a paper silent
-   about the value. `unclear` with its reason when the paper says something one value
+6. Choose among three ways to leave a value plain. `not_stated` as the rules give it. `unclear` with its reason when the paper says something one value
    cannot hold (heterozygous in 2 carriers, homozygous in 1) or two incompatible things:
    only `zygosity` (`heterozygous`, `homozygous`, `hemizygous`, `not_stated`, `unclear`) and
    `phase` take it. Set the field to `unclear` and give `unclear.<field>` a `reason` and a

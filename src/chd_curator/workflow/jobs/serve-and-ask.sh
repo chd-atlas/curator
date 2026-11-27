@@ -45,7 +45,8 @@
 #   --reasoning on|off   the server's default, `auto`, can turn thinking on under a template that
 #                        is meant to run without it; the mode is always stated.
 #   liveness via /proc   a server that exited and is not yet reaped is a zombie; `kill -0` says it
-#                        is alive. The benchmark's client waited its whole 1,200 s on one.
+#                        is alive. The benchmark's client, which had no liveness check, waited its whole 1,200 s
+#                        on a server that had exited.
 
 server_alive() {
   # Succeeds only for a live process: a missing one and a zombie (state Z, or X) are dead.

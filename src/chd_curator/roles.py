@@ -14,7 +14,7 @@ A role file is ``workflow/roles/<role>.md``::
     cites:
       - <a heading of curator-rules.md, without its hashes>
     schema: <name of workflow/schemas/<name>.answer.json>
-    backfill_schema: <the schema a backfill run's call uses; readers only>
+    backfill_schema: <the schema a backfill run's call uses; readers and the judge>
     ---
     ## Task
     ...

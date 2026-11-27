@@ -53,7 +53,7 @@ def test_allowed_accepts_pass_and_reference_and_refuses_fail_and_absent() -> Non
     for kind in ("replay", "fake"):
         got = allowed("extract", _b(kind=kind), [])
         assert got is not None and got.verdict == "reference"
-        assert "answers come from recorded files" in got.note
+        assert "answers are recorded or scripted" in got.note
 
 
 def test_two_entries_for_one_role_and_key_are_refused(tmp_path: Path) -> None:

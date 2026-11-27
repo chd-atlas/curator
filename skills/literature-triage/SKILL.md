@@ -26,13 +26,14 @@ Triage reads an abstract and applies a short rule list.
    (`Published Erratum`), a review (`Review`, `Systematic Review`) or a preprint
    (`Preprint`) even when the abstract does not; the rules' reason table decides, not the type alone.
 2. Decide each PMID from its title and abstract, then edit its entry in the YAML by hand.
-   No command writes a decision. Change only `decision` and the fields below; never change
-   `pmid` or `search`.
-3. Decide as the role file `src/chd_curator/workflow/roles/triage-check.md` directs. It is
-   the capable tier's task, which you fill; the local tier's is
+   No command of this skill writes a decision (`triage-apply` applies a pipeline run's).
+   Change only `decision` and the fields below; never change `pmid` or `search`.
+3. Decide as the role file `src/chd_curator/workflow/roles/triage-check.md` directs (a path in
+   curator's repository and in the installed package; no command prints it). It is the capable
+   tier's task, which you fill; the local tier's is
    `src/chd_curator/workflow/roles/triage-screen.md`. The rules both cite, the include rule,
    the reason table and the treatment of a paper that cannot be read, are in the `## Triage`
-   section of the rules file, and nowhere else. A decision is written as:
+   section of the rules file. A decision is written as:
 
    ```yaml
    - pmid: PMID:10000001

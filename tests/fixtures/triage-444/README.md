@@ -15,6 +15,6 @@ model wording or reasoning is kept.
 Built from the benchmark's `gold.json` and `results/ds-think1/answers.jsonl` by a script kept
 outside this repository.
 
-The benchmark was scored per gene, not pooled: each gene's hybrid is scored on its own hits with
-the audit seeded `"<seed>:<gene>"` (for example `run-a:TBX5`). The 82, 93 and 86 figures are sums
+The benchmark was scored pooled over the 444 hits; the test scores per gene: each gene's hybrid
+is scored on its own hits with the audit seeded `"<seed>:<gene>"` (for example `run-a:TBX5`). The 82, 93 and 86 figures are sums
 of per-hit quantities over the three genes.

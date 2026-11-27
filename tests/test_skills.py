@@ -471,7 +471,7 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
     # R-SWA-4: this rule is stated once, in the rules file, and the skill only points at it.
     assert "`not_stated` only when the paper is silent" in " ".join(_rules().read_text().split())
     assert "`not_stated` only when the paper is silent" not in flat
-    assert "`not_stated` is for a paper silent about the value" in flat
+    assert "`not_stated` as the rules give it" in flat
     assert "chd-curator normalise <SYMBOL>" in extract
     assert "chd-atlas literature frame <SYMBOL>" in extract
     assert "--settled-by <full_text|authors|expert|atlas_model>" in extract

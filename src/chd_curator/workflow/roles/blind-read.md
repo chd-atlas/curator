@@ -14,8 +14,8 @@ You read one batch of papers for one gene from scratch and write down what each 
 about it, as findings. You write as if no other reading existed: the manifest may show the
 findings as curated (in a backfill), which you read as the record, but you are never given
 another reader's answer, and you do not look for one. You receive a manifest of the batch
-and the text of each paper (its full text where one was reached, else its abstract, with
-any supplement). You have no tools: read only what is given.
+and the text of each paper (its full text and its abstract, each where the manifest names
+one, with any supplement), and the registries. You have no tools: read only what is given.
 
 Answer with one JSON object only, no prose around it.
 

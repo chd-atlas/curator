@@ -16,7 +16,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # A shallow clone resolves the server's embedded web-UI version to "b1" and fetches the wrong
-# assets, so the version is pinned with HF_UI_VERSION (as build.sbatch does). The tag is checked
+# assets, so the version is pinned with HF_UI_VERSION (as llama-build.sbatch does). The tag is checked
 # against the commit it was measured at; a moved tag fails the build.
 ENV HF_UI_VERSION=${LLAMA_TAG}
 RUN git clone --depth 1 --branch "${LLAMA_TAG}" https://github.com/ggml-org/llama.cpp /opt/llama-cpp \

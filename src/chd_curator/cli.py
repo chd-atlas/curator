@@ -1693,7 +1693,7 @@ def check_site(
 
     Exit 0 when each of the five roles is configured and allowed (or shadowed); exit 2, one line
     per failing role, when not. A site config that does not load exits 2 with the reason. Reads
-    only; the pipeline's start-up check calls it.
+    only: run it before `ask` or a pipeline to see which role a site would have refused.
     """
     for role in shadow_role:
         if role not in _SHADOWABLE:
@@ -1766,7 +1766,7 @@ def triage_requests_command(
     root: Path = typer.Option(Path("."), help="Atlas checkout root."),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
-    """Write one `ask` request per pending triage entry: `{key: PMID:n, inputs: {gene, hit}}`.
+    """Write one `ask` request per pending triage entry: `{key: PMID:n, gene, inputs: {gene, hit}}`.
 
     `hit` is the block `abstracts` prints for that PMID, fetched from PubMed (network). Exit 1
     for PubMed failing or a missing literature file, 2 for a bad argument or a symbol the atlas
@@ -1804,7 +1804,8 @@ def triage_combine_command(
 
     A hit goes to the check when the screen excluded it in a risky class (not_chd,
     no_finding_in_gene), when it is in the audit sample (10% of each other class, at least 5,
-    seeded by `--run`) or when the screen's answer is missing, an error or unparseable. An audit
+    seeded by `--run`), when the screen's answer is missing, an error or unparseable, or when it
+    excluded a thin hit (PubMed has no record or no abstract for it). An audit
     miss escalates its class. Hits the check still owes are listed under `awaiting_check` and
     written to `--out-requests`. The hybrid reads only the check answers for hits it sent; with
     `--shadow` the check decides every hit it answered. `--gene` is written into the file even

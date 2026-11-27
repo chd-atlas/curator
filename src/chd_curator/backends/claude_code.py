@@ -25,7 +25,8 @@ account's email address, before the user text. No flag in this version removes t
 ``--exclude-dynamic-system-prompt-sections`` is ignored with a custom system prompt and ``--bare``
 never reads the OAuth login. So a ``claude_code`` call is not byte-identical across runs, nor to
 an API provider's input; ``meta`` says so (``adds_context``). The guard against the account context
-reaching an answer is Task A6's refusal of any answer containing an email address its input lacks.
+reaching an answer is ``ask``'s refusal (``_foreign_email``) of any answer containing an email
+address its input lacks.
 
 Claude Code cannot set a temperature or a token cap, so ``meta`` records ``temperature: null``.
 The call runs in a fresh empty directory, removed afterwards, so no checkout's CLAUDE.md or

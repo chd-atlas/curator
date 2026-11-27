@@ -153,8 +153,9 @@ def load_register(path: Path | None = None) -> list[Entry]:
 def allowed(role: str, b: BackendSpec, register: list[Entry]) -> Entry | None:
     """The entry that lets ``b`` fill ``role`` (verdict pass or reference), else ``None``.
 
-    A test backend (``replay``, ``fake``) answers from recorded files, not from a model, so it
-    needs no entry; it gets a synthetic reference one.
+    A test backend (``replay``, ``fake``) answers from recorded files (``replay``) or from
+    ``settings.answers`` in the site config (``fake``), not from a model, so it needs no entry;
+    it gets a synthetic reference one.
     """
     key = model_key(b)
     if b.kind in _TEST_KINDS:
@@ -167,7 +168,7 @@ def allowed(role: str, b: BackendSpec, register: list[Entry]) -> Entry | None:
             rules_digest="",
             date="",
             scores={},
-            note="test backend: answers come from recorded files, not a model",
+            note="test backend: answers are recorded or scripted, not a model's",
         )
     for e in register:
         if e.role == role and e.model_key == key and e.verdict in ("pass", "reference"):

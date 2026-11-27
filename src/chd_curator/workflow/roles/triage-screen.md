@@ -13,9 +13,8 @@ no tools and no other context: decide from what is printed, never from memory of
 
 Answer with one JSON object only, no prose around it, with the keys of the answer schema:
 `pmid` (the hit's PMID, as given), `decision` (`included` or `excluded`), `reason` (`none`
-for an included hit, otherwise the one reason from the rules' table that fits) and `why`
-(one sentence naming what in the abstract decided it). Where you cannot answer, or are not
-sure, answer `included` with `none` and say so in `why`.
+for an included hit, otherwise the one reason that fits, from those the answer schema lists) and `why`
+(one sentence naming what in the abstract decided it; for the reason `other` it is written as the exclusion's note, so make it the note the rules require for that exclusion).
 
 ## Inputs
 

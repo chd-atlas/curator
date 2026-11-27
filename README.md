@@ -12,7 +12,7 @@ An agent never approves: a named person does, in the atlas, with `chd-atlas lite
 ## Install
 
 ```bash
-uv tool install git+https://github.com/chd-atlas/curator@v0.0.1
+uv tool install git+https://github.com/chd-atlas/curator@v0.1.0
 ```
 
 Then, in Claude Code:
@@ -31,12 +31,15 @@ measured here). On an older version, add the marketplace first:
 
 ## Run
 
-Run from the root of an atlas checkout. `search`, `abstracts`, `texts`, `diff`, `normalise`, `synthesis`
-and `review-page` ask the atlas about the gene by running its CLI, `<root>/.venv/bin/chd-atlas`
+Run from the root of an atlas checkout. `search`, `abstracts`, `texts`, `diff`, `normalise`, `synthesis`,
+`batch`, `merge`, `compare`, `assemble`, `check-batch`, `read-requests`, `triage-requests`,
+`triage-apply`, `review-page`, `archive-state` and `qualify triage` (with `ask --validate check-batch`)
+ask the atlas about the gene by running its CLI, `<root>/.venv/bin/chd-atlas`
 unless `--atlas-cli` or `CHD_ATLAS_CLI` names another; `add-publication`, `quotes` and
-`review-decisions` do not. `search`, `add-publication`, `diff`, `normalise`, `synthesis`,
-`review-page` and `review-decisions` read the JSON Schemas the atlas exports into
-`<root>/schemas/`. The records curator writes into `curation/` are checked against them first, and
+`review-decisions` do not. `search`, `add-publication`, `diff`, `normalise`, `synthesis`, `batch`,
+`merge`, `compare`, `assemble`, `check-batch` (and `ask --validate check-batch`), `triage-apply`,
+`review-page`, `review-decisions`, `archive-decisions` and `archive-state` read the JSON Schemas the
+atlas exports into `<root>/schemas/`. The records curator writes into `curation/` are checked against them first, and
 so is the decisions file `review-decisions` writes; `quotes.json` and `review.html` are not atlas
 records and no schema checks them. curator never imports the atlas. The skills read the atlas checkout's
 `curator/curator-rules.md`. Their hand-off commands, `.venv/bin/chd-atlas validate` and
@@ -710,8 +713,10 @@ roles:
 A model may fill a role only if `src/chd_curator/workflow/qualification.yaml` records it as `pass`
 or `reference` for that role; `fail` and absent are refused. The key is the kind, the model and a
 hash of every setting that is not transport (base_url, timeout_seconds, dir), so a changed
-temperature is a different, unqualified model. `extract` and `blind-read` must be different models.
-`replay` and `fake` backends answer from recorded files and need no entry. The example's screen model is a placeholder that is not in the register, so its triage-screen role runs shadowed (`--shadow-role triage-screen`) until a model qualifies. An `anthropic` backend needs its own register entry before `ask` accepts it; today's reference entries are all claude_code.
+setting is a different, unqualified model. The settings are the recorded identity of the
+configuration, not what the backend sends: the HTTP backends always send temperature 0 (and
+the openai_compat backend seed 0), and a local server's flags, server_args, are what `serve-and-ask.sh` runs. A role the local server runs (`serve-and-ask.sh`) also needs settings.server_args; the example's screen, which points at a remote base_url, has none. `extract` and `blind-read` must be different models.
+replay (recorded files) and fake (answers scripted in the site config's settings.answers) backends need no entry. The example's screen model is a placeholder that is not in the register, so its triage-screen role runs shadowed (`--shadow-role triage-screen`) until a model qualifies. An `anthropic` backend needs its own register entry before `ask` accepts it; today's reference entries are all claude_code.
 
 ```bash
 chd-curator check-site --site /path/to/site.yaml [--shadow-role triage-screen]
@@ -786,8 +791,8 @@ chd-curator triage-combine --gene TBX5 --requests screen-req.jsonl --screen scre
 chd-curator triage-apply TBX5 --decisions decisions.json --root /path/to/atlas
 ```
 
-`triage-requests` writes one request per pending hit (`inputs.gene`, and `inputs.hit`, the block
-`abstracts` prints; it asks PubMed). `triage-combine` sends to the check every screen exclusion
+`triage-requests` writes one request per pending hit (`{key, gene, inputs: {gene, hit}}`, `hit`
+being the block `abstracts` prints; it asks PubMed). `triage-combine` sends to the check every screen exclusion
 in a risky class (`not_chd`, `no_finding_in_gene`), an audit sample of every other class (10%,
 at least 5, all when fewer, seeded by `--run`) and every hit the screen did not answer (no row,
 an error row or an unparseable answer: never read as an exclusion), and every exclusion of a hit
@@ -811,7 +816,7 @@ pending entry, and (exit 2) a file changed since it was read. None of the three 
 
 ```bash
 chd-curator qualify triage TBX5 --screen screen-ans.jsonl --check check-ans.jsonl --run r1 \
-    --gold-root /path/to/atlas
+    --gold-root /path/to/atlas --site /path/to/site.yaml
 ```
 
 A model fills `triage-screen` only after it passes in its place in the hybrid. `qualify triage`
@@ -858,7 +863,8 @@ checkout's digests of the three files and of each text folder, and its HEAD comm
 into the atlas only when the three files still have the digests the run started from, the run
 folder does not exist, no text folder changed in the atlas since the run started (one still at its
 base digest is replaced by the package's, so a re-fetched text integrates) and no supplied PDF
-differs, naming every file that fails and copying nothing otherwise. An existing `--dest` or `--out` exits 2. The copy itself is not atomic across files: an
+differs. It checks in stages (the three files, then what is not a file, the run folder, the
+texts) and stops at the first stage that fails, naming that stage's files and copying nothing. An existing `--dest` or `--out` exits 2. The copy itself is not atomic across files: an
 I/O error part-way leaves a partial run folder, and `integrate` says so and names it.
 
 The package's JSON file holds, in this order of meaning: format 1, the symbol, the run id, the
@@ -880,7 +886,7 @@ bash "$script" --site site.yaml --role triage-screen --model-file model.gguf -- 
   --requests req.jsonl --answers answers.jsonl --root /path/to/atlas
 ```
 
-The server's flags are the site role's `settings.server_args` (a string, or a list of words), which
+The server's flags are the site role's settings.server_args (a string, or a list of words), which
 are part of the model key the register qualifies, so the flags that run are the flags qualified; a
 `--server-args` given as well must be the same flags. `serve-and-ask.sh` refuses (exit 2, before
 starting anything) a role with no such flags, a differing `--server-args`, and flags without
@@ -922,7 +928,9 @@ Two images are built from this repository (`Dockerfile`, `Dockerfile.llama`) for
 
 The atlas code is never baked in. Mount an atlas checkout and set `CHD_ATLAS_SRC=<checkout>/src`
 for each task. `CHD_ATLAS_CLI` is preset to the image's `chd-atlas` wrapper, which runs the
-checkout's code in the atlas venv, so the code and the data it reads always match.
+checkout's code in the atlas venv, so the code and the data it reads always match. The image and
+the wrapper set `PYTHONDONTWRITEBYTECODE=1`, so a task writes no `__pycache__` into the mounted
+checkout.
 
 `ATLAS_COMMIT` defaults to a pinned atlas commit, written in the `Dockerfile` and in
 `.github/workflows/image.yml` (CI checks that they agree) and changed only by a deliberate edit.
@@ -930,9 +938,9 @@ A tag build always uses it; a pull request build uses the atlas `dev` tip. The c
 recorded in each image's label `org.chd-atlas.atlas-commit`, and a tag build prints it beside the
 digests. The label `org.opencontainers.image.revision` holds the curator commit.
 
-The image has no `git`, so an atlas command run in it records a source commit of null. Nothing
-curator runs there needs git: the atlas commit `package` records comes from `base`, run on the host
-checkout.
+The image has no `git`, so an atlas command run in it records a source commit of null, and
+`review-page`, which asks git for the atlas commit, shows none inside it. The atlas commit
+`package` records comes from `base`, run on the host checkout.
 
 Every pull request builds both images and checks them without pushing. Pushing a tag `v<version>`
 publishes both under that tag and prints their digests; the workflow refuses a tag that differs

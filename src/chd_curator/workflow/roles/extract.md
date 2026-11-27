@@ -11,8 +11,8 @@ backfill_schema: reader-backfill
 ## Task
 
 You read one batch of papers for one gene and write down what each reports about it, as
-findings. You receive a manifest of the batch and the text of each paper (its full text
-where one was reached, else its abstract, with any supplement). You have no tools: read
+findings. You receive a manifest of the batch, the registries and the text of each paper (its full text
+and its abstract, each where the manifest names one, with any supplement). You have no tools: read
 only what is given.
 
 Answer with one JSON object only, no prose around it.

@@ -18,7 +18,10 @@ must look like a variable name, so a pasted key does not pass as one. These guar
 file holds no secret, which is why the site file stays outside every repository.
 
 ``model_key`` is what the register is keyed on: kind and model, plus a hash of every setting that
-changes what the model answers. Transport settings (where the server is, how long to wait) do not.
+is not transport: the recorded identity of the configuration, not a statement of what the
+backend sends (the HTTP backends send temperature 0 whatever the settings say, and
+``openai_compat`` seed 0; ``server_args`` is what ``serve-and-ask.sh`` runs). Transport
+settings (where the server is, how long to wait) are left out.
 """
 
 from __future__ import annotations

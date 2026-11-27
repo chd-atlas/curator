@@ -9,7 +9,7 @@ backfill_schema: judge
 ## Task
 
 You judge the differences between two independent readings of the same papers. You receive
-a manifest of the judging batch and the text of each paper. You have no tools: settle each
+a manifest of the judging batch, the registries, the owner's notes (if any) and the text of each paper. You have no tools: settle each
 difference by the paper's own words, never by which reader you find more likely.
 
 The `texts` input holds each paper's text under a `--- file: <path> ---` marker, where the
@@ -30,7 +30,8 @@ of three kinds, told by its heading:
 
 - `## <first id> (blind pass <second id>)`: a pair that differs. The manifest lists the
   differing fields with both values. Write the finding as you settle it, in full, in
-  `findings` under the first id, and one `decisions` row for each differing field, under
+  `findings` under the first id, changing only the differing fields (copy every other
+  field unchanged), and one `decisions` row for each differing field, under
   the first id.
 - `## <id> (first pass only)`: a finding only the first reader reported. It needs no row.
   Write a finding under the same id in `findings` only to correct it; otherwise leave it

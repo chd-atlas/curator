@@ -2,8 +2,9 @@
 
 ``workflow/jobs/`` holds three scripts that run a local model beside ``chd-curator ask``:
 ``serve-and-ask.sh``, ``llama-build.sbatch`` and ``cluster-ask.sbatch``. ``chd-curator job-script
-<name>`` prints where a script is installed. The helpers below keep YAML parsing and port
-choice out of bash; the script runs them as ``python -m chd_curator.jobs <helper> ...``.
+<name>`` prints where a script is installed. The helpers below keep YAML parsing, port
+choice, the site's server flags and the local-usage sidecar out of bash; the script runs them as
+``python -m chd_curator.jobs <helper> ...``.
 """
 
 from __future__ import annotations
