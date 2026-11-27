@@ -879,20 +879,32 @@ register entry's gets a warning. Tokens spent on failed attempts are not recorde
 
 Two images are built from this repository (`Dockerfile`, `Dockerfile.llama`) for pipeline tasks:
 
-- `ghcr.io/chd-atlas/curator:<tag>` holds `chd-curator` (entry point) in `/opt/curator-venv` and the
-  atlas command line's dependencies in `/opt/atlas-venv`, resolved from the atlas's `uv.lock` at the
-  build argument `ATLAS_COMMIT`.
+- `ghcr.io/chd-atlas/curator:<tag>` holds `chd-curator` in `/opt/curator-venv` (on `PATH`) and the
+  atlas command line's dependencies in `/opt/atlas-venv`, resolved from the atlas's `uv.lock` at
+  the build argument `ATLAS_COMMIT`. It sets no entry point, so a pipeline runs its task command
+  as is; the default command prints `chd-curator`'s help.
 - `ghcr.io/chd-atlas/curator-llama:<tag>` is the first image plus `llama-server`, built from
   llama.cpp tag `b12246` (commit checked at build time) with runtime CPU detection, for a
   `llama-server` inside one task (`serve-and-ask.sh`).
 
-The atlas code is never baked in. Mount an atlas checkout and set `CHD_ATLAS_SRC=<checkout>/src`:
-the image's `chd-atlas` wrapper (also `CHD_ATLAS_CLI`) runs the checkout's code in the atlas
-venv, so the code and the data it reads always match.
+The atlas code is never baked in. Mount an atlas checkout and set `CHD_ATLAS_SRC=<checkout>/src`
+for each task. `CHD_ATLAS_CLI` is preset to the image's `chd-atlas` wrapper, which runs the
+checkout's code in the atlas venv, so the code and the data it reads always match.
 
-Every pull request builds both images and checks them without pushing; pushing a tag `v*`
-publishes both under that tag and prints their digests. Pin a pipeline to a digest, not a tag.
-The images are built only in CI (no container runtime on the authors' workstation).
+`ATLAS_COMMIT` defaults to a pinned atlas commit, written in the `Dockerfile` and in
+`.github/workflows/image.yml` (CI checks that they agree) and changed only by a deliberate edit.
+A tag build always uses it; a pull request build uses the atlas `dev` tip. The commit used is
+recorded in each image's label `org.chd-atlas.atlas-commit`, and a tag build prints it beside the
+digests. The label `org.opencontainers.image.revision` holds the curator commit.
+
+The image has no `git`, so an atlas command run in it records a source commit of null. Nothing
+curator runs there needs git: the atlas commit `package` records comes from `base`, run on the host
+checkout.
+
+Every pull request builds both images and checks them without pushing. Pushing a tag `v<version>`
+publishes both under that tag and prints their digests; the workflow refuses a tag that differs
+from `pyproject.toml`'s version. Pin a pipeline to a digest, not a tag. The images are built only
+in CI (no container runtime on the authors' workstation).
 
 ## Develop
 
