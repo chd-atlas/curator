@@ -55,7 +55,8 @@ COPY docker/chd-atlas /usr/local/bin/chd-atlas
 RUN chmod 0755 /usr/local/bin/chd-atlas
 
 ENV PATH=/opt/curator-venv/bin:$PATH \
-    CHD_ATLAS_CLI=/usr/local/bin/chd-atlas
+    CHD_ATLAS_CLI=/usr/local/bin/chd-atlas \
+    PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /work
 # No ENTRYPOINT: a pipeline runs each task as a command (a bash wrapper), which an ENTRYPOINT would

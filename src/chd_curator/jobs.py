@@ -9,6 +9,7 @@ choice out of bash; the script runs them as ``python -m chd_curator.jobs <helper
 from __future__ import annotations
 
 import io
+import json
 import socket
 import sys
 import urllib.error
@@ -53,6 +54,36 @@ def local_site_text(site: Path, role: str, base_url: str) -> str:
     return out.getvalue()
 
 
+def server_args_of(site: Path, role: str) -> str:
+    """The llama-server flags of the site's ``role``: its ``settings.server_args``, a string or a
+    list of strings (joined with spaces; an element holding whitespace is refused, since the
+    script word-splits the flags). They are not a transport setting, so they are part of the
+    role's ``model_key`` and the register qualifies exactly the flags that run (R-SWA-55)."""
+    loaded = load_site(site)
+    if role not in loaded.roles:
+        raise SiteError(f"{site} has no role {role!r}")
+    raw = loaded.roles[role].settings.get("server_args")
+    if isinstance(raw, str) and raw.split():
+        return " ".join(raw.split())
+    if (
+        isinstance(raw, list)
+        and raw
+        and all(isinstance(a, str) and a and not any(c.isspace() for c in a) for a in raw)
+    ):
+        return " ".join(raw)
+    raise SiteError(
+        f"roles.{role}.settings.server_args must be the llama-server flags, a string or a list "
+        "of single words"
+    )
+
+
+def local_usage_json(cpus: int, seconds: float, job_id: str | None) -> str:
+    """The sidecar ``serve-and-ask.sh`` writes beside the answers (``<answers>.local-usage.json``):
+    what the local model's server held, for ``report --local-usage``."""
+    body = {"cpus": cpus, "seconds": round(seconds, 3), "job_id": job_id or None}
+    return json.dumps(body, sort_keys=True) + "\n"
+
+
 def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -75,6 +106,15 @@ def main(argv: list[str]) -> int:
             print(free_port())
         case ["health", url]:
             return 0 if healthy(url) else 1
+        case ["server-args", site, role]:
+            try:
+                print(server_args_of(Path(site), role))
+            except SiteError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+        case ["local-usage", out, cpus, seconds, job_id]:
+            text = local_usage_json(int(cpus), float(seconds), job_id)
+            write_bytes_atomically(Path(out), text.encode("utf-8"))
         case ["site", site, role, base_url, out]:
             try:
                 write_bytes_atomically(
@@ -84,7 +124,11 @@ def main(argv: list[str]) -> int:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
         case _:
-            print("usage: jobs.py port | health URL | site SITE ROLE BASE_URL OUT", file=sys.stderr)
+            print(
+                "usage: jobs.py port | health URL | site SITE ROLE BASE_URL OUT | "
+                "server-args SITE ROLE | local-usage OUT CPUS SECONDS JOB_ID",
+                file=sys.stderr,
+            )
             return 2
     return 0
 

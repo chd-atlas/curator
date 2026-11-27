@@ -875,16 +875,19 @@ exits 2 and lists the three), and each is run as `bash <path>`:
 
 ```bash
 script="$(chd-curator job-script serve-and-ask.sh)"
-bash "$script" --site site.yaml --role triage-screen \
-  --model-file model.gguf --server-args "--load-mode none --reasoning off" -- \
+bash "$script" --site site.yaml --role triage-screen --model-file model.gguf -- \
   --requests req.jsonl --answers answers.jsonl --root /path/to/atlas
 ```
 
-`serve-and-ask.sh` refuses (exit 2, before starting anything) server flags without `--load-mode none`
-and an explicit `--reasoning on|off`. It starts the server on a free local port, waits for `/health`
+The server's flags are the site role's `settings.server_args` (a string, or a list of words), which
+are part of the model key the register qualifies, so the flags that run are the flags qualified; a
+`--server-args` given as well must be the same flags. `serve-and-ask.sh` refuses (exit 2, before
+starting anything) a role with no such flags, a differing `--server-args`, and flags without
+`--load-mode none` and an explicit `--reasoning on|off`. It starts the server on a free local port, waits for `/health`
 while the server process lives (a zombie counts as dead), runs `chd-curator ask` against a generated
 one-role site that differs from yours only in `settings.base_url` (so the register's key for the model is unchanged), stops
-the server, and exits with `ask`'s code. `llama-build.sbatch` builds the server on a node without
+the server, writes `<answers>.local-usage.json` beside the answers (the CPUs the task held, the
+seconds the server ran, the job id), and exits with `ask`'s code. `llama-build.sbatch` builds the server on a node without
 internet from a clone made beforehand; `cluster-ask.sbatch` wraps `serve-and-ask.sh` for one Slurm
 job. Each script's header lists the environment variables it reads. No script names a partition,
 account or path: those come from `sbatch` options and the environment. `chd-curator job-script` writes
@@ -892,12 +895,14 @@ nothing and no approval.
 
 ### Reporting a run
 
-`chd-curator report --run-dir <run folder> --answers <role>=<answers file> ... [--trace <Nextflow trace>] --out-dir <dir>`
+`chd-curator report --run-dir <run folder> --answers <role>=<answers file> ... [--trace <Nextflow trace>] [--local-usage <sidecar> ...] --out-dir <dir>`
 writes `report.json` and `report.md` and prints one summary line, for example `8 findings: 1 agreed,
 7 judged, 0 corrected by the owner; 14% of tokens local`. Per process (`--answers` may repeat for a
 role) it states the tier (`triage-screen` is local, every other role capable), seconds and tokens
-from `ask`'s rows, and core-hours (cpus x realtime) from the trace's `process`, `cpus` and
-`realtime` columns. Per finding: `agreed` is `assemble.json`'s `verified`, `judged` its `judged`,
+from `ask`'s rows, and wall time from the trace's `process` and `realtime` columns. The trace
+never gives core-hours, since a task's CPUs times its realtime is not a model's work; the local
+tier's core-hours come only from the `--local-usage` sidecars `serve-and-ask.sh` writes, and read
+"not measured" without one. Per finding: `agreed` is `assemble.json`'s `verified`, `judged` its `judged`,
 `corrected by the owner` the findings whose latest decision in `decisions/*.json` is `fix`, and
 `normalised` the findings `normalise.json` placed. A role that ran on rules differing from its
 register entry's gets a warning. Tokens and seconds spent on failed attempts are counted (`ask` records them on the error row); a model with no register entry (a shadow run) gets a note, and decisions naming findings outside the run are listed and not counted. `chd-curator report` writes no approval.

@@ -12,8 +12,9 @@
 # `chd-curator job-script cluster-ask.sbatch`. Run directly with bash it behaves the same.
 #
 # Environment (exported before sbatch; sbatch passes it on):
-#   ASK_SITE, ASK_ROLE, MODEL_FILE, SERVER_ARGS   required; the same as serve-and-ask.sh's
-#                        --site, --role, --model-file and --server-args
+#   ASK_SITE, ASK_ROLE, MODEL_FILE   required; the same as serve-and-ask.sh's --site, --role
+#                        and --model-file (the server's flags are the site role's server_args)
+#   SERVER_ARGS          optional; passed as --server-args, which must equal the site's flags
 #   LLAMA_SERVER         the llama-server built by llama-build.sbatch (default: on PATH)
 #   CHD_CURATOR          the chd-curator executable (default: on PATH)
 #   CLUSTER_MODULES      space-separated modules to load first (optional)
@@ -23,7 +24,6 @@ set -uo pipefail
 : "${ASK_SITE:?ASK_SITE: path to the site config}"
 : "${ASK_ROLE:?ASK_ROLE: the role to answer}"
 : "${MODEL_FILE:?MODEL_FILE: path to the .gguf}"
-: "${SERVER_ARGS:?SERVER_ARGS: llama-server flags, with --load-mode none and --reasoning on|off}"
 
 if [[ -n "${CLUSTER_MODULES:-}" ]]; then
   module purge
@@ -34,8 +34,10 @@ unset PYTHONPATH
 export SERVE_THREADS="${SERVE_THREADS:-${SLURM_CPUS_PER_TASK:-$(nproc)}}"
 
 script="$("${CHD_CURATOR:-chd-curator}" job-script serve-and-ask.sh)" || exit 2
+extra=()
+[[ -n "${SERVER_ARGS:-}" ]] && extra=(--server-args "$SERVER_ARGS")
 bash "$script" --site "$ASK_SITE" --role "$ASK_ROLE" --model-file "$MODEL_FILE" \
-  --server-args "$SERVER_ARGS" -- "$@"
+  ${extra[@]+"${extra[@]}"} -- "$@"
 rc=$?
 echo "CLUSTER_ASK_EXIT=$rc"
 exit "$rc"

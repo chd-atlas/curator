@@ -2,14 +2,23 @@
 # Start a local llama-server, answer one batch of requests with `chd-curator ask`, stop the server.
 #
 #   serve-and-ask.sh --site <site.yaml> --role <role> --model-file <gguf> \
-#                    --server-args "<llama-server flags>" -- <arguments for chd-curator ask>
+#                    [--server-args "<llama-server flags>"] -- <arguments for chd-curator ask>
 #
 # `--role` and the `ask` arguments follow `chd-curator ask`; this script adds `--role` and `--site`
 # itself (a generated one-role site), so do not repeat them after `--`. The generated site is the
 # given site's entry for the role with ONLY `settings.base_url` replaced, so the answers carry the
-# same `model_key` as the site you wrote. Exit code: `ask`'s; 2 for a bad argument, before anything
-# starts; 1 when the server dies or is not healthy in time (the reason and the log's tail go to
-# stderr). The server is always stopped (TERM, then KILL after a grace period).
+# same `model_key` as the site you wrote. The server's flags are the role's
+# `settings.server_args` (a string, or a list of words), which are part of that `model_key`, so the
+# flags the register qualifies are the flags that run; `--server-args`, when given, must be the
+# same flags. Exit code: `ask`'s; 2 for a bad argument (a site role with no `server_args`, a
+# `--server-args` that differs), before anything starts; 1 when the server dies or is not healthy
+# in time (the reason and the log's tail go to stderr). The server is always stopped (TERM, then
+# KILL after a grace period).
+#
+# Beside the answers file it writes `<answers>.local-usage.json`, `{cpus, seconds, job_id}`: the
+# CPUs the task held (SLURM_CPUS_ON_NODE, else SLURM_CPUS_PER_TASK, else nproc), the seconds from
+# the server's start to its stop, and the job id (SLURM_JOB_ID, else LSB_JOBID, else null).
+# `chd-curator report --local-usage` reads it: a local model's core-hours come only from it.
 #
 # Run it as `bash "$(chd-curator job-script serve-and-ask.sh)" ...`; it does not rely on its mode.
 # Linux only: a server's state is read from /proc.
@@ -91,8 +100,14 @@ stop_server() {
 
 usage_error() {
   echo "serve-and-ask.sh: $1" >&2
-  echo "usage: serve-and-ask.sh --site SITE --role ROLE --model-file GGUF --server-args \"FLAGS\" -- ASK_ARGS" >&2
+  echo "usage: serve-and-ask.sh --site SITE --role ROLE --model-file GGUF [--server-args \"FLAGS\"] -- ASK_ARGS" >&2
   exit 2
+}
+
+now_ms() {
+  local ns
+  ns="$(date +%s%N)"
+  echo $(( ns / 1000000 ))
 }
 
 server_log_tail() {
@@ -116,11 +131,6 @@ main() {
   [[ -n "$site" ]] || usage_error "--site is required"
   [[ -n "$role" ]] || usage_error "--role is required"
   [[ -n "$model" ]] || usage_error "--model-file is required"
-  (( have_args )) || usage_error "--server-args is required"
-  [[ " $server_args " =~ [[:space:]]--load-mode[[:space:]=]none[[:space:]] ]] \
-    || usage_error "--server-args must contain '--load-mode none' (see the header)"
-  [[ " $server_args " =~ [[:space:]]--reasoning[[:space:]=](on|off)[[:space:]] ]] \
-    || usage_error "--server-args must state '--reasoning on' or '--reasoning off', never auto"
 
   local cli="${CHD_CURATOR:-chd-curator}" py="${CHD_CURATOR_PYTHON:-}" first exe
   if [[ -z "$py" ]]; then
@@ -129,6 +139,33 @@ main() {
     [[ -n "$exe" ]] && IFS= read -r first < "$exe" 2>/dev/null
     if [[ "$first" =~ ^#!.*python ]]; then py="${first#\#!}"; py="${py%% *}"; else py="python3"; fi
   fi
+
+  # The flags that run are the site's: they are part of the model_key the register qualifies.
+  local site_args
+  site_args="$("$py" -m chd_curator.jobs server-args "$site" "$role")" \
+    || usage_error "the site's $role role needs settings.server_args (see the header)"
+  if (( have_args )); then
+    local -a given=() used=()
+    read -ra given <<< "$server_args"
+    read -ra used <<< "$site_args"
+    [[ "${given[*]-}" == "${used[*]-}" ]] \
+      || usage_error "--server-args \"$server_args\" differs from the site's settings.server_args \"$site_args\""
+  fi
+  server_args="$site_args"
+  [[ " $server_args " =~ [[:space:]]--load-mode[[:space:]=]none[[:space:]] ]] \
+    || usage_error "settings.server_args must contain '--load-mode none' (see the header)"
+  [[ " $server_args " =~ [[:space:]]--reasoning[[:space:]=](on|off)[[:space:]] ]] \
+    || usage_error "settings.server_args must state '--reasoning on' or '--reasoning off', never auto"
+
+  local answers="" i
+  for (( i = 0; i < ${#ask_args[@]}; i++ )); do
+    case "${ask_args[i]}" in
+      --answers) answers="${ask_args[i+1]:-}" ;;
+      --answers=*) answers="${ask_args[i]#--answers=}" ;;
+    esac
+  done
+  local cpus="${SLURM_CPUS_ON_NODE:-${SLURM_CPUS_PER_TASK:-$(nproc)}}"
+  local job_id="${SLURM_JOB_ID:-${LSB_JOBID:-}}"
 
   WORKDIR="${SERVE_WORKDIR:-}"
   local own_workdir=0
@@ -149,6 +186,8 @@ main() {
   "$py" -m chd_curator.jobs site "$site" "$role" "http://127.0.0.1:$port/v1" "$WORKDIR/site.yaml" || return 2
 
   local slots="${SERVE_SLOTS:-4}" ctx="${SERVE_CTX_PER_SLOT:-8192}" threads="${SERVE_THREADS:-$(nproc)}"
+  local started_ms
+  started_ms="$(now_ms)"
   # shellcheck disable=SC2086  # the flags are one word-split string by design
   "${LLAMA_SERVER:-llama-server}" -m "$model" -c $(( slots * ctx )) -np "$slots" -t "$threads" \
     --host 127.0.0.1 --port "$port" $server_args > "$WORKDIR/server.log" 2>&1 &
@@ -181,6 +220,12 @@ main() {
   local rc=$?
   ASK_PID=""
   stop_server
+  local held_ms=$(( $(now_ms) - started_ms ))
+  if [[ -n "$answers" ]]; then
+    "$py" -m chd_curator.jobs local-usage "$answers.local-usage.json" "$cpus" \
+      "$(( held_ms / 1000 )).$(printf '%03d' $(( held_ms % 1000 )))" "$job_id" \
+      || echo "serve-and-ask.sh: could not write $answers.local-usage.json" >&2
+  fi
   if (( rc == 0 && own_workdir )); then rm -rf "$WORKDIR"; fi
   return "$rc"
 }

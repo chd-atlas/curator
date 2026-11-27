@@ -1,6 +1,6 @@
 """``chd-curator report``: what a run cost, on which tier, and how each finding was settled.
 
-``write_report`` reads four things and writes ``report.json`` (keys sorted) and ``report.md``,
+``write_report`` reads five things and writes ``report.json`` (keys sorted) and ``report.md``,
 each atomically.
 
 **Answers** (``--answers <role>=<path>``, one or more per role; rows of ``chd-curator ask``).
@@ -21,9 +21,17 @@ text, ``1h 30m``, ``36s``, ``350ms``, ``1d 2h``, or a bare integer of millisecon
 trace writes it); ``status`` is read when present, and a ``CACHED`` task spent nothing and is
 skipped; a ``realtime`` of ``-`` on any other task refuses the report (exit 2, naming the line). A
 missing ``process``, ``cpus`` or ``realtime`` column, or a realtime or cpus that does not
-parse, is refused (exit 2) naming it. ``core_hours`` of a role is the sum of
-``cpus x realtime`` in hours over its tasks; a process no role carries is listed in
-``trace_unmatched_processes`` and counted nowhere.
+parse, is refused (exit 2) naming it. ``wall_seconds`` of a role is the sum of ``realtime`` over
+its tasks; a process no role carries is listed in ``trace_unmatched_processes`` and counted
+nowhere. The trace never gives core-hours (R-SWA-48): a task's ``cpus x realtime`` is not a
+model's work (a capable model runs elsewhere; a cluster-routed local model's task only polls).
+
+**Local usage** (``--local-usage``, one or more sidecars ``serve-and-ask.sh`` wrote beside its
+answers, ``{cpus, seconds, job_id}``). The local tier's ``core_hours`` is the sum of
+``cpus x seconds`` in hours over them, and ``local_core_hours`` says the same; with none it is
+null, the Markdown says "not measured" and a note says why. A capable role's ``core_hours`` is
+always null. A sidecar whose ``cpus`` is not a positive integer, whose ``seconds`` is not a
+non-negative number, or whose ``job_id`` is not a string or null is refused (exit 2) naming it.
 
 **Findings.** Each count names the file and field that decides it, in the run folder
 (``<root>/local/literature/runs/<SYMBOL>/<run id>/``):
@@ -161,6 +169,7 @@ def _process(
         "failed": failed,
         "seconds": round(seconds, 3),
         "tokens": tokens,
+        "wall_seconds": None,
         "core_hours": None,
     }
     return entry, stale, unqualified
@@ -183,7 +192,7 @@ def _seconds(text: str) -> float | None:
 
 
 def _read_trace(path: Path) -> tuple[dict[str, float], list[str]]:
-    """Core-hours per role, and the process names no role carries (sorted)."""
+    """Wall seconds per role, and the process names no role carries (sorted)."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError) as exc:
@@ -221,8 +230,39 @@ def _read_trace(path: Path) -> tuple[dict[str, float], list[str]]:
         if role is None:
             unmatched.add(process)
         else:
-            hours[role] = hours.get(role, 0.0) + int(cpus_text) * secs / 3600
+            hours[role] = hours.get(role, 0.0) + secs
     return hours, sorted(unmatched)
+
+
+def _local_core_hours(paths: Sequence[Path]) -> float | None:
+    """The sum of ``cpus x seconds`` in hours over the sidecars, or None with none given."""
+    if not paths:
+        return None
+    total = 0.0
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            raise ReportError(f"{path}: cannot be read as JSON: {exc}") from None
+        cpus = data.get("cpus") if isinstance(data, dict) else None
+        secs = data.get("seconds") if isinstance(data, dict) else None
+        if (
+            not isinstance(data, dict)
+            or set(data) != {"cpus", "seconds", "job_id"}
+            or isinstance(cpus, bool)
+            or not isinstance(cpus, int)
+            or cpus < 1
+            or isinstance(secs, bool)
+            or not isinstance(secs, int | float)
+            or secs < 0
+            or not isinstance(data["job_id"], str | None)
+        ):
+            raise ReportError(
+                f"{path}: not a local-usage sidecar ({{cpus: a positive integer, seconds: a "
+                "non-negative number, job_id: a string or null}})"
+            )
+        total += cpus * secs / 3600
+    return total
 
 
 def _owner_decisions(p: RunPaths) -> dict[str, str]:
@@ -282,14 +322,19 @@ def _markdown(report: Mapping[str, Any]) -> str:
         "",
         "## Processes",
         "",
-        "| process | tier | answers | cached | failed | seconds | tokens | core-hours |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| process | tier | answers | cached | failed | seconds | tokens | wall seconds | "
+        "core-hours |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for p in report["processes"]:
-        hours = "-" if p["core_hours"] is None else f"{p['core_hours']:.3f}"
+        if p["core_hours"] is not None:
+            hours = f"{p['core_hours']:.3f}"
+        else:
+            hours = "not measured" if p["tier"] == "local" else "-"
+        wall = "-" if p["wall_seconds"] is None else f"{p['wall_seconds']:g}"
         lines.append(
             f"| {p['role']} | {p['tier']} | {p['answers']} | {p['cached']} | {p['failed']} "
-            f"| {p['seconds']} | {p['tokens']} | {hours} |"
+            f"| {p['seconds']} | {p['tokens']} | {wall} | {hours} |"
         )
     t = report["tokens"]
     lines += ["", f"Tokens: {t['local']} local, {t['capable']} capable, {t['total']} in all."]
@@ -313,6 +358,7 @@ def write_report(
     out_dir: Path,
     *,
     register: Sequence[Entry] | None = None,
+    local_usage: Sequence[Path] = (),
 ) -> tuple[Path, Path]:
     """Write ``report.json`` and ``report.md`` into ``out_dir`` (created) and return their paths.
 
@@ -346,21 +392,35 @@ def write_report(
                     f"({stale} answers)"
                 )
     unmatched: list[str] = []
+
+    def entry_of(role: str) -> dict[str, Any]:
+        if role not in processes:
+            processes[role] = {
+                "role": role,
+                "tier": _tier(role),
+                "answers": 0,
+                "cached": 0,
+                "failed": 0,
+                "seconds": 0.0,
+                "tokens": 0,
+                "wall_seconds": None,
+                "core_hours": None,
+            }
+        return processes[role]
+
     if trace is not None:
-        hours, unmatched = _read_trace(trace)
-        for role, h in hours.items():
-            if role not in processes:
-                processes[role] = {
-                    "role": role,
-                    "tier": _tier(role),
-                    "answers": 0,
-                    "cached": 0,
-                    "failed": 0,
-                    "seconds": 0.0,
-                    "tokens": 0,
-                    "core_hours": None,
-                }
-            processes[role]["core_hours"] = round(h, 4)
+        walls, unmatched = _read_trace(trace)
+        for role, wall in walls.items():
+            entry_of(role)["wall_seconds"] = round(wall, 3)
+    local_hours = _local_core_hours(local_usage)
+    if local_hours is not None:
+        for role in LOCAL_ROLES:
+            entry_of(role)["core_hours"] = round(local_hours, 4)
+    elif any(role in processes for role in LOCAL_ROLES):
+        notes.append(
+            "note: local core-hours not measured (no --local-usage sidecar); the trace gives "
+            "wall time only"
+        )
     try:
         record = load_assemble(paths)
         normalised = _placed(paths)
@@ -409,6 +469,7 @@ def write_report(
         "processes": ordered,
         "tokens": {"local": local, "capable": capable, "total": local + capable},
         "trace_unmatched_processes": unmatched,
+        "local_core_hours": None if local_hours is None else round(local_hours, 4),
         "summary": _summary(findings, local, local + capable),
         "warnings": warnings,
         "notes": notes,

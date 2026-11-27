@@ -105,7 +105,14 @@ def row(
 
 
 def _report(run_dir: Path, answers: list[tuple[str, Path]], out: Path, **kw: Any) -> dict[str, Any]:
-    write_report(run_dir, answers, kw.pop("trace", None), out, register=kw.pop("register", []))
+    write_report(
+        run_dir,
+        answers,
+        kw.pop("trace", None),
+        out,
+        register=kw.pop("register", []),
+        local_usage=kw.pop("local_usage", ()),
+    )
     return json.loads((out / "report.json").read_text("utf-8"))
 
 
@@ -220,9 +227,11 @@ def test_failed_and_cached_answers_are_counted_apart(tmp_path: Path) -> None:
 TRACE_HEAD = "task_id\tname\tstatus\tprocess\tcpus\trealtime\n"
 
 
-def test_core_hours_come_from_cpus_times_realtime_of_the_matching_process(tmp_path: Path) -> None:
-    """BLIND_READ: 4 cpus x 1h 30m = 6 h, plus 2 cpus x 30m 36s = 1.02 h: 7.02. EXTRACT: 1 x
-    36 s = 0.01. A CACHED task spent none; a process no role carries is named, not summed in."""
+def test_the_trace_gives_wall_time_per_process_and_never_core_hours(tmp_path: Path) -> None:
+    """R-SWA-48: a task's cpus x realtime is not a model's work (a capable model runs elsewhere;
+    a cluster-routed local model's task polls the scheduler). BLIND_READ: 1h 30m + 30m 36s =
+    7,236 s; EXTRACT: 36 s. A CACHED task spent none; a process no role carries is named, not
+    summed in."""
     trace = tmp_path / "trace.txt"
     trace.write_text(
         TRACE_HEAD
@@ -237,10 +246,54 @@ def test_core_hours_come_from_cpus_times_realtime_of_the_matching_process(tmp_pa
     blind = answers_file(tmp_path / "b.jsonl", [row("a", {"input_tokens": 1}, 1)])
     report = _report(run, [("blind-read", blind)], tmp_path / "out", trace=trace)
     by_role = {p["role"]: p for p in report["processes"]}
-    assert by_role["blind-read"]["core_hours"] == pytest.approx(7.02)
-    assert by_role["extract"]["core_hours"] == pytest.approx(0.01)
+    assert by_role["blind-read"]["wall_seconds"] == pytest.approx(7236)
+    assert by_role["extract"]["wall_seconds"] == pytest.approx(36)
+    assert by_role["blind-read"]["core_hours"] is None and by_role["extract"]["core_hours"] is None
     assert by_role["extract"]["answers"] == 0
     assert report["trace_unmatched_processes"] == ["FETCH_TEXTS"]
+
+
+def _sidecar(path: Path, cpus: Any, seconds: Any, job_id: Any = None) -> Path:
+    path.write_text(json.dumps({"cpus": cpus, "seconds": seconds, "job_id": job_id}), "utf-8")
+    return path
+
+
+def test_local_core_hours_come_only_from_the_sidecars(tmp_path: Path) -> None:
+    """4 cpus x 1,800 s = 2 h, plus 2 x 900 s = 0.5 h: 2.5, whatever the trace says of the
+    screen's task (8 cpus x 1 h there); with no sidecar the local tier is "not measured"."""
+    run = make_run(tmp_path / "root", verified=[1])
+    screen = answers_file(tmp_path / "s.jsonl", [row("a", {"total_tokens": 5}, 1)])
+    trace = tmp_path / "trace.txt"
+    trace.write_text(TRACE_HEAD + "1\tS (1)\tCOMPLETED\tTRIAGE_SCREEN\t8\t1h\n", "utf-8")
+    cars = [_sidecar(tmp_path / "a.json", 4, 1800.0, "11"), _sidecar(tmp_path / "b.json", 2, 900)]
+    report = _report(
+        run, [("triage-screen", screen)], tmp_path / "out", trace=trace, local_usage=cars
+    )
+    (local,) = report["processes"]
+    assert local["core_hours"] == pytest.approx(2.5) and local["wall_seconds"] == 3600
+    assert report["local_core_hours"] == pytest.approx(2.5)
+    assert "| 2.500 |" in (tmp_path / "out" / "report.md").read_text("utf-8")
+    bare = _report(run, [("triage-screen", screen)], tmp_path / "o2", trace=trace)
+    assert bare["processes"][0]["core_hours"] is None and bare["local_core_hours"] is None
+    md = (tmp_path / "o2" / "report.md").read_text("utf-8")
+    assert "not measured" in md
+    assert any("not measured" in n for n in bare["notes"])
+    for bad in (
+        _sidecar(tmp_path / "c.json", 0, 1),
+        _sidecar(tmp_path / "d.json", 1, -1),
+        _sidecar(tmp_path / "e.json", True, 1),
+    ):
+        with pytest.raises(ReportError, match=bad.name):
+            write_report(run, [], None, tmp_path / "o3", register=[], local_usage=[bad])
+    result = runner.invoke(
+        app,
+        ["report", "--run-dir", str(run), "--answers", f"triage-screen={screen}",
+         "--local-usage", str(cars[0]), "--local-usage", str(cars[1]),
+         "--out-dir", str(tmp_path / "o4")],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    written = json.loads((tmp_path / "o4" / "report.json").read_text("utf-8"))
+    assert written["local_core_hours"] == pytest.approx(2.5)
 
 
 def test_a_trace_missing_columns_or_with_an_unreadable_realtime_is_refused(tmp_path: Path) -> None:

@@ -1932,17 +1932,23 @@ def report_command(
         [], "--answers", help="<role>=<answers file>; repeat for each role and file."
     ),
     trace: Path | None = typer.Option(None, "--trace", help="A Nextflow trace file."),
+    local_usage: list[Path] = typer.Option(
+        [], "--local-usage", help="A sidecar serve-and-ask.sh wrote beside its answers; repeatable."
+    ),
     out_dir: Path = typer.Option(..., "--out-dir", help="Where report.json and report.md go."),
 ) -> None:
     """Report a run's tiers, cost and how each finding was settled.
 
-    Tokens and seconds come from the answers files (`ask`'s rows), core-hours (cpus x realtime)
-    from the trace, and the findings' counts from the run folder: `agreed` and `judged` from
+    Tokens and seconds come from the answers files (`ask`'s rows), wall time per process from
+    the trace (never core-hours: a task's cpus x realtime is not a model's work), the local
+    tier's core-hours only from `--local-usage` sidecars ("not measured" without one), and the
+    findings' counts from the run folder: `agreed` and `judged` from
     assemble.json, `corrected by the owner` from decisions/*.json, `normalised` from
     normalise.json. Writes report.json and report.md, and prints the summary line. A role whose
     answers carry rules that differ from its register entry's gets a warning. Exit 2 for an
     unreadable or malformed input, an unknown role, a trace lacking process, cpus or realtime,
-    or a folder that is not a run. Writes no approval.
+    a sidecar that is not `{cpus, seconds, job_id}`, or a folder that is not a run. Writes no
+    approval.
     """
     pairs: list[tuple[str, Path]] = []
     for item in answers:
@@ -1951,7 +1957,9 @@ def report_command(
             raise _fail(f"--answers {item!r} is not <role>=<path>", 2)
         pairs.append((role, Path(path)))
     try:
-        json_path, _ = report_module.write_report(run_dir, pairs, trace, out_dir)
+        json_path, _ = report_module.write_report(
+            run_dir, pairs, trace, out_dir, local_usage=local_usage
+        )
     except (report_module.ReportError, register_mod.RegisterError) as exc:
         raise _fail(str(exc), 2) from None
     except OSError as exc:

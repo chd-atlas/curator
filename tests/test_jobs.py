@@ -73,14 +73,16 @@ def _no_stub_survives(tmp_path: Path) -> Iterator[None]:
             os.kill(int(pidfile.read_text()), signal.SIGKILL)
 
 
-def _site(tmp_path: Path) -> Path:
+def _site(tmp_path: Path, server_args: str | None = GOOD_ARGS) -> Path:
     path = tmp_path / "site.yaml"
+    flags = "" if server_args is None else f"      server_args: {json.dumps(server_args)}\n"
     path.write_text(
         "roles:\n"
         "  triage-screen:\n    id: local\n    kind: openai_compat\n    model: stub-model\n"
         "    context_tokens: 100000\n    concurrency: 2\n"
         "    settings:\n      base_url: http://placeholder.invalid/v1\n      json_schema: true\n"
-        "  judge:\n    id: other\n    kind: fake\n    model: m\n"
+        + flags
+        + "  judge:\n    id: other\n    kind: fake\n    model: m\n"
         "    context_tokens: 1000\n    concurrency: 1\n"
     )
     return path
@@ -102,13 +104,17 @@ def _run(
     tmp_path: Path,
     env: dict[str, str],
     *,
-    server_args: str = GOOD_ARGS,
+    site_args: str | None = GOOD_ARGS,
+    given: str | None = None,
     requests: int = 3,
 ) -> subprocess.CompletedProcess[str]:
+    """`site_args` go in the site role's `settings.server_args` (None: none there); `given`, when
+    set, is passed as `--server-args`."""
     answers = tmp_path / "answers.jsonl"
+    extra = [] if given is None else ["--server-args", given]
     return subprocess.run(
-        ["bash", str(SERVE), "--site", str(_site(tmp_path)), "--role", "triage-screen",
-         "--model-file", str(tmp_path / "m.gguf"), "--server-args", server_args, "--",
+        ["bash", str(SERVE), "--site", str(_site(tmp_path, site_args)), "--role", "triage-screen",
+         "--model-file", str(tmp_path / "m.gguf"), *extra, "--",
          "--requests", str(_requests(tmp_path, requests)), "--answers", str(answers),
          "--root", str(RULES_ROOT), "--shadow"],
         env=env, capture_output=True, text=True, timeout=90,
@@ -229,16 +235,68 @@ def test_a_zombie_counts_as_a_dead_server(tmp_path: Path) -> None:
         "--load-mode none --reasoning auto",
         "--no-mmap --reasoning off",  # the spelling the benchmark's llama.cpp rejected
         "",
+        None,  # the site states no flags at all
     ],
 )
 def test_the_script_refuses_server_args_without_load_mode_or_reasoning(
-    tmp_path: Path, kit: dict[str, str], server_args: str
+    tmp_path: Path, kit: dict[str, str], server_args: str | None
 ) -> None:
-    done = _run(tmp_path, kit, server_args=server_args)
+    """The flags checked are the flags that run: the site role's `settings.server_args`."""
+    done = _run(tmp_path, kit, site_args=server_args)
     assert done.returncode == 2
-    assert "--load-mode none" in done.stderr or "--reasoning" in done.stderr
+    assert any(w in done.stderr for w in ("--load-mode none", "--reasoning", "server_args"))
     assert not (tmp_path / "stub.pid").exists(), "the server was started"
     assert not (tmp_path / "answers.jsonl").exists()
+
+
+def test_the_server_runs_the_sites_flags_and_a_differing_server_args_is_refused(
+    tmp_path: Path, kit: dict[str, str]
+) -> None:
+    """R-SWA-55: `server_args` is part of the model_key the register qualifies, so the flags
+    that run must be the site's; a `--server-args` naming others exits 2 before any start."""
+    differ = _run(tmp_path, kit, given="--load-mode none --reasoning on --jinja")
+    assert differ.returncode == 2 and "differs" in differ.stderr
+    assert not (tmp_path / "stub.pid").exists()
+    same = _run(tmp_path, kit, given="  --load-mode none   --reasoning off --jinja ", requests=1)
+    assert same.returncode == 0, same.stdout + same.stderr
+    flags = (tmp_path / "stub.args").read_text()
+    assert "--load-mode none --reasoning off --jinja" in flags
+    (tmp_path / "stub.pid").unlink()
+    (tmp_path / "answers.jsonl").unlink()
+    site = _site(tmp_path)  # a list of words is the same flags as the string
+    site.write_text(site.read_text().replace(
+        f"server_args: {json.dumps(GOOD_ARGS)}", f"server_args: {json.dumps(GOOD_ARGS.split())}"
+    ))  # fmt: skip
+    listed = subprocess.run(
+        ["bash", str(SERVE), "--site", str(site), "--role", "triage-screen",
+         "--model-file", str(tmp_path / "m.gguf"), "--",
+         "--requests", str(_requests(tmp_path, 1)), "--answers", str(tmp_path / "answers.jsonl"),
+         "--root", str(RULES_ROOT), "--shadow"],
+        env=kit, capture_output=True, text=True, timeout=90,
+    )  # fmt: skip
+    assert listed.returncode == 0, listed.stdout + listed.stderr
+
+
+def test_the_script_writes_what_the_local_model_held_beside_the_answers(
+    tmp_path: Path, kit: dict[str, str]
+) -> None:
+    """R-SWA-48: a local model's core-hours come only from this sidecar."""
+    for name in ("SLURM_CPUS_ON_NODE", "SLURM_CPUS_PER_TASK", "SLURM_JOB_ID", "LSB_JOBID"):
+        kit.pop(name, None)
+    kit.update(SLURM_CPUS_PER_TASK="3", SLURM_JOB_ID="4242")
+    done = _run(tmp_path, kit, requests=1)
+    assert done.returncode == 0, done.stdout + done.stderr
+    usage = json.loads((tmp_path / "answers.jsonl.local-usage.json").read_text())
+    assert set(usage) == {"cpus", "seconds", "job_id"}
+    assert (usage["cpus"], usage["job_id"]) == (3, "4242")
+    assert isinstance(usage["seconds"], float) and 0 < usage["seconds"] < 90
+    kit.pop("SLURM_CPUS_PER_TASK")
+    kit.pop("SLURM_JOB_ID")
+    (tmp_path / "stub.pid").unlink()
+    again = _run(tmp_path, kit, requests=1)
+    assert again.returncode == 0, again.stdout + again.stderr
+    usage = json.loads((tmp_path / "answers.jsonl.local-usage.json").read_text())
+    assert (usage["cpus"], usage["job_id"]) == (os.cpu_count(), None)
 
 
 def test_usage_errors_exit_2_before_starting_anything(tmp_path: Path, kit: dict[str, str]) -> None:
@@ -255,7 +313,9 @@ def test_only_the_base_url_changes_in_the_generated_site(tmp_path: Path) -> None
     data = YAML(typ="safe").load(text)
     assert set(data["roles"]) == {"triage-screen"}
     entry = data["roles"]["triage-screen"]
-    assert entry["settings"] == {"base_url": "http://127.0.0.1:9/v1", "json_schema": True}
+    assert entry["settings"] == {
+        "base_url": "http://127.0.0.1:9/v1", "json_schema": True, "server_args": GOOD_ARGS
+    }  # fmt: skip
     out = tmp_path / "gen.yaml"
     out.write_text(text)
     old = load_site(_site(tmp_path)).roles["triage-screen"]
@@ -389,3 +449,32 @@ def test_an_empty_ask_argument_list_is_not_an_unbound_variable(
     )  # fmt: skip
     assert "unbound variable" not in done.stderr
     assert done.returncode == 2  # ask's own usage error: it got no arguments
+
+
+# ---- the image's atlas wrapper ------------------------------------------------------------------
+
+
+def test_the_image_atlas_wrapper_writes_no_bytecode_into_the_mounted_checkout(
+    tmp_path: Path,
+) -> None:
+    """M10: the wrapper runs the mounted atlas `src`; Python must not leave `__pycache__` in
+    it. The wrapper is run with this interpreter in place of the image's atlas venv."""
+    wrapper = (HERE.parent / "docker" / "chd-atlas").read_text()
+    assert wrapper.count("/opt/atlas-venv/bin/python") == 1
+    local = tmp_path / "chd-atlas"
+    local.write_text(wrapper.replace("/opt/atlas-venv/bin/python", sys.executable))
+    src = tmp_path / "src" / "chd_atlas"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text("")
+    (src / "helper.py").write_text("FLAG = 1\n")
+    (src / "cli.py").write_text(
+        "import sys\n\ndef app():\n    from chd_atlas import helper\n"
+        "    print(sys.dont_write_bytecode, helper.FLAG)\n"
+    )
+    env = {"PATH": os.environ["PATH"], "CHD_ATLAS_SRC": str(src.parent)}
+    done = subprocess.run(["sh", str(local)], env=env, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == ["True", "1"]
+    assert not list(src.parent.rglob("__pycache__"))
+    dockerfile = (HERE.parent / "Dockerfile").read_text()
+    assert re.search(r"^\s*PYTHONDONTWRITEBYTECODE=1\b", dockerfile, re.M)

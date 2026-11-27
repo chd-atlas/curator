@@ -11,5 +11,7 @@ if [ ! -d "$CHD_ATLAS_SRC/chd_atlas" ]; then
     exit 2
 fi
 PYTHONPATH="$CHD_ATLAS_SRC${PYTHONPATH:+:$PYTHONPATH}"
-export PYTHONPATH
+# The checkout is mounted from the host: never leave __pycache__ in its src.
+PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH PYTHONDONTWRITEBYTECODE
 exec /opt/atlas-venv/bin/python -c 'from chd_atlas.cli import app; app()' "$@"
