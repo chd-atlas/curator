@@ -1,0 +1,15 @@
+#!/bin/sh
+# The atlas's command line, run from the atlas checkout mounted into the container.
+# The image holds the atlas's dependencies (/opt/atlas-venv) and never its code, so the code and
+# the data it reads always come from the same checkout.
+#
+#   CHD_ATLAS_SRC   the mounted checkout's src directory, e.g. /atlas/src (required)
+set -eu
+: "${CHD_ATLAS_SRC:?set CHD_ATLAS_SRC to <atlas checkout>/src}"
+if [ ! -d "$CHD_ATLAS_SRC/chd_atlas" ]; then
+    echo "chd-atlas: $CHD_ATLAS_SRC/chd_atlas does not exist; mount the atlas checkout" >&2
+    exit 2
+fi
+PYTHONPATH="$CHD_ATLAS_SRC${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec /opt/atlas-venv/bin/python -c 'from chd_atlas.cli import app; app()' "$@"

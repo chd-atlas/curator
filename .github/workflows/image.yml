@@ -1,0 +1,115 @@
+name: image
+
+# curator's two container images:
+#   curator        chd-curator, its dependencies and the atlas command line's dependencies
+#                  (never the atlas code, which always comes from the mounted checkout)
+#   curator-llama  curator plus llama.cpp, for a llama-server inside one pipeline task
+#
+# Every pull request builds and checks both and pushes nothing. Pushing a `v*` tag publishes both
+# to ghcr.io and prints their digests.
+
+on:
+  pull_request:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  ATLAS_REPO_URL: https://github.com/chd-atlas/chd-atlas.github.io
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # The atlas's dependencies are resolved from its uv.lock at its `dev` tip, as ci.yml tests
+      # against `dev`. The commit is printed so the build can be reproduced.
+      - name: Resolve the atlas commit
+        run: |
+          commit="$(git ls-remote "$ATLAS_REPO_URL" refs/heads/dev | cut -f1)"
+          test -n "$commit"
+          echo "ATLAS_COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "atlas dev tip: $commit"
+
+      - name: Build curator
+        run: docker build --build-arg ATLAS_COMMIT="$ATLAS_COMMIT" -t curator:ci .
+
+      - name: Check curator
+        run: |
+          docker run --rm curator:ci --help
+          docker run --rm --entrypoint /opt/atlas-venv/bin/python curator:ci \
+            -c "import polars, pydantic; print(polars.__version__, pydantic.VERSION)"
+          # The atlas code is never baked in.
+          baked="$(docker run --rm --entrypoint find curator:ci / -xdev -name 'chd_atlas*' -not -path '/proc/*')"
+          test -z "$baked" || { echo "atlas code is baked into the image: $baked" >&2; exit 1; }
+          docker image ls curator:ci
+
+      - name: Build curator-llama
+        run: docker build -f Dockerfile.llama --build-arg CURATOR_IMAGE=curator:ci -t curator-llama:ci .
+
+      - name: Check curator-llama
+        run: |
+          help="$(docker run --rm --entrypoint llama-server curator-llama:ci --help 2>&1 || true)"
+          head -n 5 <<<"$help"
+          for flag in --load-mode --reasoning; do
+            grep -q -e "$flag" <<<"$help" || { echo "llama-server --help does not list $flag" >&2; exit 1; }
+          done
+          docker run --rm --entrypoint llama-server curator-llama:ci --version 2>&1 | tail -n 3
+          docker image ls curator-llama:ci
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ github.ref_name }}
+      CURATOR: ghcr.io/chd-atlas/curator
+      CURATOR_LLAMA: ghcr.io/chd-atlas/curator-llama
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the atlas commit
+        run: |
+          commit="$(git ls-remote "$ATLAS_REPO_URL" refs/heads/dev | cut -f1)"
+          test -n "$commit"
+          echo "ATLAS_COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "atlas dev tip: $commit"
+
+      - name: Build and check curator
+        run: |
+          docker build --build-arg ATLAS_COMMIT="$ATLAS_COMMIT" -t "$CURATOR:$TAG" .
+          docker run --rm "$CURATOR:$TAG" --help
+          docker run --rm --entrypoint /opt/atlas-venv/bin/python "$CURATOR:$TAG" \
+            -c "import polars, pydantic"
+
+      - name: Build and check curator-llama
+        run: |
+          docker build -f Dockerfile.llama --build-arg CURATOR_IMAGE="$CURATOR:$TAG" -t "$CURATOR_LLAMA:$TAG" .
+          help="$(docker run --rm --entrypoint llama-server "$CURATOR_LLAMA:$TAG" --help 2>&1 || true)"
+          for flag in --load-mode --reasoning; do
+            grep -q -e "$flag" <<<"$help" || { echo "llama-server --help does not list $flag" >&2; exit 1; }
+          done
+
+      - name: Push and print the digests
+        run: |
+          for image in "$CURATOR" "$CURATOR_LLAMA"; do
+            docker push "$image:$TAG"
+            docker image inspect --format '{{index .RepoDigests 0}}' "$image:$TAG"
+          done

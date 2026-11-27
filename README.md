@@ -875,6 +875,25 @@ from `ask`'s rows, and core-hours (cpus x realtime) from the trace's `process`, 
 `normalised` the findings `normalise.json` placed. A role that ran on rules differing from its
 register entry's gets a warning. Tokens spent on failed attempts are not recorded by `ask`, so they are absent from the totals; a model with no register entry (a shadow run) gets a note, and decisions naming findings outside the run are listed and not counted. `chd-curator report` writes no approval.
 
+## Container images
+
+Two images are built from this repository (`Dockerfile`, `Dockerfile.llama`) for pipeline tasks:
+
+- `ghcr.io/chd-atlas/curator:<tag>` holds `chd-curator` (entry point) in `/opt/curator-venv` and the
+  atlas command line's dependencies in `/opt/atlas-venv`, resolved from the atlas's `uv.lock` at the
+  build argument `ATLAS_COMMIT`.
+- `ghcr.io/chd-atlas/curator-llama:<tag>` is the first image plus `llama-server`, built from
+  llama.cpp tag `b12246` (commit checked at build time) with runtime CPU detection, for a
+  `llama-server` inside one task (`serve-and-ask.sh`).
+
+The atlas code is never baked in. Mount an atlas checkout and set `CHD_ATLAS_SRC=<checkout>/src`:
+the image's `chd-atlas` wrapper (also `CHD_ATLAS_CLI`) runs the checkout's code in the atlas
+venv, so the code and the data it reads always match.
+
+Every pull request builds both images and checks them without pushing; pushing a tag `v*`
+publishes both under that tag and prints their digests. Pin a pipeline to a digest, not a tag.
+The images are built only in CI (no container runtime on the authors' workstation).
+
 ## Develop
 
 curator's tests run against a real atlas checkout and stop if any of these is unset:
