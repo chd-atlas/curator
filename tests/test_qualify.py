@@ -16,9 +16,12 @@ import pytest
 from ruamel.yaml import YAML
 from typer.testing import CliRunner
 
+from chd_curator import qualify as qualify_mod
+from chd_curator.atlas import Digests, FindingDigests
 from chd_curator.cli import app
-from chd_curator.qualify import score_triage, triage_gold
-from chd_curator.triage import RISKY, audit_sample, read_answers, trusted_exclusions
+from chd_curator.qualify import QualifyError, score_triage, triage_gold
+from chd_curator.register import load_register
+from chd_curator.triage import NO_ABSTRACT, RISKY, audit_sample, read_answers, trusted_exclusions
 
 FIXTURE = Path(__file__).parent / "fixtures" / "triage-444"
 runner = CliRunner()
@@ -159,15 +162,50 @@ def test_the_benchmark_fixture_fails_without_the_check_over_the_risky_classes() 
     assert score_triage(gold, screen, excl, "run-a").verdict == "FAIL"
 
 
+# ------------------------------------------------------------------ thin hits
+
+
+def test_a_thin_hit_is_checked_whatever_class_the_screen_gave_it() -> None:
+    """`triage-combine` never lets the screen's word be final on a hit PubMed had no abstract
+    for; the scorer passes the same `thin` set, so the same hit is owed to the check."""
+    gold = gold_of(**{str(n): 0 for n in range(100, 140)}, **{"1": 3})
+    screen = {k: exc(k, "not_human_genetics") for k in gold}
+    seed = next(
+        s
+        for s in map(str, range(50))
+        if "PMID:1" not in audit_sample(trusted_exclusions(screen, RISKY), s)
+    )
+    audit = audit_sample(trusted_exclusions(screen, RISKY), seed)
+    check = {k: exc(k, "not_human_genetics") if k in audit else inc(k) for k in gold}
+    assert score_triage(gold, screen, check, seed).verdict == "FAIL"
+    found = score_triage(gold, screen, check, seed, thin={"PMID:1"})
+    assert (found.verdict, found.missed, found.sent_to_check) == ("PASS", [], 1)
+    unanswered = {k: v for k, v in check.items() if k != "PMID:1"}
+    owed = score_triage(gold, screen, unanswered, seed, thin={"PMID:1"})
+    assert (owed.verdict, owed.missed, owed.owed) == ("INCOMPLETE", [], ["PMID:1"])
+
+
 # ------------------------------------------------------------------ the gold and the CLI
 
 
-def _atlas(tmp_path: Path) -> Path:
+def _digests(*void: str) -> Digests:
+    ids = ["CHDA:LIT:0000001", "CHDA:LIT:0000002", "CHDA:LIT:0000003"]
+    rows = tuple(FindingDigests(i, "f", "s", i != ids[2], False, i in void) for i in ids)
+    return Digests("HGNC:1", "ABC1", "x", rows)
+
+
+@pytest.fixture(autouse=True)
+def _no_void(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qualify_mod, "digests", lambda root, symbol, cli: _digests())
+
+
+def _atlas(tmp_path: Path, triage: list[Any] | None = None) -> Path:
     lit = tmp_path / "curation" / "literature"
     lit.mkdir(parents=True)
     record = {
         "gene": "HGNC:1",
-        "triage": [
+        "triage": triage
+        or [
             {"pmid": "PMID:1", "search": 1, "decision": "included"},
             {"pmid": "PMID:2", "search": 1, "decision": "included"},
             {"pmid": "PMID:3", "search": 1, "decision": "excluded", "reason": "not_chd"},
@@ -185,7 +223,7 @@ def _atlas(tmp_path: Path) -> Path:
 
 
 def test_triage_gold_counts_approved_findings_per_hit(tmp_path: Path) -> None:
-    gold = triage_gold(_atlas(tmp_path), "ABC1")
+    gold = triage_gold(_atlas(tmp_path), "ABC1", Path("atlas-cli"))
     assert gold == {
         "PMID:1": {"decision": "included", "reason": "none", "findings": 2},
         "PMID:2": {"decision": "included", "reason": "none", "findings": 0},
@@ -193,40 +231,164 @@ def test_triage_gold_counts_approved_findings_per_hit(tmp_path: Path) -> None:
     }  # a pending hit is not gold
 
 
-def _rows(path: Path, answers: Mapping[str, dict[str, Any]]) -> None:
+def test_a_void_approval_is_not_an_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One valid and one void approval (the atlas's own `approval_void`, LIT015) for one PMID."""
+    monkeypatch.setattr(
+        qualify_mod, "digests", lambda root, symbol, cli: _digests("CHDA:LIT:0000002")
+    )
+    gold = triage_gold(_atlas(tmp_path), "ABC1", Path("atlas-cli"))
+    assert gold["PMID:1"]["findings"] == 1
+
+
+@pytest.mark.parametrize(
+    ("entry", "named"),
+    [({"search": 1, "decision": "included"}, "triage[1]"), ("PMID:9", "triage[1]")],
+)
+def test_a_malformed_triage_entry_is_named_by_its_index(
+    tmp_path: Path, entry: Any, named: str
+) -> None:
+    root = _atlas(tmp_path, [{"pmid": "PMID:1", "decision": "included"}, entry])
+    with pytest.raises(QualifyError, match=r"triage\[1\]"):
+        triage_gold(root, "ABC1", Path("atlas-cli"))
+
+
+def test_a_proposed_entry_states_the_bias_the_spec_requires(tmp_path: Path) -> None:
+    result, _ = _run(tmp_path)
+    entry = _entry(result)
+    assert (
+        "Bias: today's gold was produced by the current Claude models plus the owner's "
+        "corrections, so it favours them." in entry["note"]
+    )
+
+
+def _rows(path: Path, answers: Mapping[str, dict[str, Any]], **extra: str) -> None:
     path.write_text(
-        "".join(json.dumps({"key": k, "parsed": v}) + "\n" for k, v in answers.items()),
+        "".join(json.dumps({"key": k, "parsed": v, **extra}) + "\n" for k, v in answers.items()),
         encoding="utf-8",
     )
 
 
-def test_the_cli_prints_the_score_and_a_register_entry_and_writes_nothing(
+SITE = "roles:\n  triage-screen:\n    id: s\n    kind: fake\n    model: m1\n"
+SITE += "    settings: {temperature: 0, base_url: http://host.example}\n"
+SITE += "    context_tokens: 100\n    concurrency: 1\n"
+RULES = "sha256:" + "a" * 64
+KEY = "fake:m1@" + __import__("hashlib").sha256(b'{"temperature":0}').hexdigest()[:12]
+
+
+def _run(
     tmp_path: Path,
-) -> None:
+    screen_rows: Mapping[str, dict[str, Any]] | None = None,
+    check_rows: Mapping[str, dict[str, Any]] | None = None,
+    extra: list[str] | None = None,
+    **meta: str,
+) -> tuple[Any, Path]:
     root = _atlas(tmp_path / "atlas")
-    screen, check = tmp_path / "screen.jsonl", tmp_path / "check.jsonl"
+    screen, check, site = (
+        tmp_path / "screen.jsonl",
+        tmp_path / "check.jsonl",
+        tmp_path / "site.yaml",
+    )
+    site.write_text(SITE, encoding="utf-8")
+    meta = {"model_key": KEY, "rules_digest": RULES, **meta}
     _rows(
         screen,
-        {"PMID:1": inc("PMID:1"), "PMID:2": inc("PMID:2"), "PMID:3": exc("PMID:3", "not_chd")},
+        screen_rows
+        or {"PMID:1": inc("PMID:1"), "PMID:2": inc("PMID:2"), "PMID:3": exc("PMID:3", "not_chd")},
+        **meta,
     )
-    _rows(check, {"PMID:3": exc("PMID:3", "not_chd")})
+    _rows(check, check_rows or {"PMID:3": exc("PMID:3", "not_chd")})
+    args = ["qualify", "triage", "ABC1", "--screen", str(screen), "--check", str(check)]
+    args += ["--run", "r1", "--gold-root", str(root), "--site", str(site), *(extra or [])]
+    return runner.invoke(app, args), tmp_path
+
+
+def _entry(result: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = _yaml.load(result.output[result.output.index("entries:") :])["entries"][
+        0
+    ]
+    return entry
+
+
+def test_the_cli_prints_a_register_entry_the_loader_accepts_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    result, _ = _run(tmp_path)
     before = sorted(p.name for p in tmp_path.rglob("*"))
-    result = runner.invoke(
-        app,
-        ["qualify", "triage", "ABC1", "--screen", str(screen), "--check", str(check),
-         "--run", "r1", "--gold-root", str(root)],
-    )  # fmt: skip
     assert result.exit_code == 0, result.output
-    assert "PASS" in result.output
-    assert sorted(p.name for p in tmp_path.rglob("*")) == before
-    entry = _yaml.load(result.output[result.output.index("entries:") :])["entries"][0]
+    assert "PASS" in result.output and "thin-hit routing was not applied" in result.output
+    entry = _entry(result)
     assert (entry["role"], entry["verdict"], entry["gold"]) == ("triage-screen", "pass", "ABC1")
     assert entry["scores"]["missed"] == 0 and entry["scores"]["with_findings"] == 1
+    assert entry["model_key"] == KEY and entry["rules_digest"] == RULES
+    assert entry["backend"] == {"kind": "fake", "model": "m1", "settings": {"temperature": 0}}
+    path = tmp_path / "register.yaml"
+    path.write_text(result.output[result.output.index("entries:") :], encoding="utf-8")
+    assert [e.model_key for e in load_register(path)] == [KEY]  # no transport key, no error
+    assert sorted(p.name for p in tmp_path.rglob("*")) == sorted([*before, "register.yaml"])
 
-    # a missing check file is a usage error (exit 2), not a partial run
-    bad = runner.invoke(
-        app,
-        ["qualify", "triage", "ABC1", "--screen", str(screen),
-         "--check", str(tmp_path / "no.jsonl"), "--run", "r1", "--gold-root", str(root)],
-    )  # fmt: skip
-    assert bad.exit_code == 2  # the check file does not exist: usage
+
+def test_a_screen_not_made_by_this_sites_model_is_warned_about(tmp_path: Path) -> None:
+    result, _ = _run(tmp_path, model_key="fake:other")
+    assert result.exit_code == 0
+    assert "fake:other" in result.stderr and KEY in result.stderr
+
+
+def test_screen_answers_that_disagree_on_the_rules_exit_2(tmp_path: Path) -> None:
+    result, _ = _run(tmp_path, rules_digest="")
+    assert result.exit_code == 2 and "rules_digest" in result.output
+    screen = tmp_path / "screen.jsonl"
+    rows = screen.read_text(encoding="utf-8").splitlines()
+    rows[0] = rows[0].replace(RULES, "sha256:" + "b" * 64)
+    screen.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    again = runner.invoke(app, _args(tmp_path))
+    assert again.exit_code == 2 and "rules_digest" in again.output
+
+
+def _args(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "qualify", "triage", "ABC1", "--screen", str(tmp_path / "screen.jsonl"),
+        "--check", str(tmp_path / "check.jsonl"), "--run", "r1",
+        "--gold-root", str(tmp_path / "atlas"), "--site", str(tmp_path / "site.yaml"), *extra,
+    ]  # fmt: skip
+
+
+def test_an_incomplete_run_exits_1_and_proposes_no_entry(tmp_path: Path) -> None:
+    result, _ = _run(tmp_path, check_rows={"PMID:1": inc("PMID:1")})  # PMID:3 is owed
+    assert result.exit_code == 1
+    assert "INCOMPLETE" in result.output and "PMID:3" in result.output
+    assert "entries:" not in result.output
+
+
+def test_a_screen_answer_outside_the_genes_hits_exits_2(tmp_path: Path) -> None:
+    rows = {"PMID:1": inc("PMID:1"), "PMID:99": inc("PMID:99")}
+    result, _ = _run(tmp_path, screen_rows=rows)
+    assert result.exit_code == 2 and "PMID:99" in result.output
+
+
+def test_a_missing_check_file_is_a_usage_error(tmp_path: Path) -> None:
+    _run(tmp_path)
+    (tmp_path / "check.jsonl").unlink()
+    assert runner.invoke(app, _args(tmp_path)).exit_code == 2
+
+
+def test_requests_are_read_for_thin_hits_and_their_absence_is_said(tmp_path: Path) -> None:
+    """The routing itself is pinned by the scorer test above; here the CLI reads the file, says
+    nothing about routing being skipped when it has one, and refuses an unreadable one."""
+    thin = {
+        "key": "PMID:1",
+        "gene": "ABC1",
+        "inputs": {
+            "gene": "ABC1",
+            "hit": f"PMID:1 · 2020 · T\nPublication types: x\n{NO_ABSTRACT}",
+        },
+    }
+    requests = tmp_path / "req.jsonl"
+    without, _ = _run(tmp_path)
+    requests.write_text(json.dumps(thin) + "\n", encoding="utf-8")
+    given = runner.invoke(app, _args(tmp_path, "--requests", str(requests)))
+    assert given.exit_code == 0 and "not applied" not in given.output
+    assert "thin-hit routing was not applied" in without.output
+    missing = runner.invoke(app, _args(tmp_path, "--requests", str(tmp_path / "no.jsonl")))
+    assert missing.exit_code == 2

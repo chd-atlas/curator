@@ -2081,14 +2081,14 @@ def job_script_command(
         ) from None
 
 
-def _answers_meta(path: Path, field: str) -> str:
-    """The one value of `field` across an answers file's rows, or "" when absent or mixed."""
+def _answers_values(path: Path, field: str) -> set[str]:
+    """The distinct non-empty values of `field` over an answers file's rows."""
     found: set[str] = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         row = json.loads(line) if line.strip() else {}
         if isinstance(row, dict) and isinstance(row.get(field), str) and row[field]:
             found.add(row[field])
-    return next(iter(found)) if len(found) == 1 else ""
+    return found
 
 
 @qualify_app.command("triage")
@@ -2097,37 +2097,64 @@ def qualify_triage_command(
     screen: Path = typer.Option(..., "--screen", help="The screen's answers JSONL."),
     check: Path = typer.Option(..., "--check", help="The capable check's answers JSONL."),
     run: str = typer.Option(..., "--run", help="The run id (seeds the audit)."),
+    site: Path = typer.Option(..., "--site", help="The site config YAML (its triage-screen role)."),
     gold_root: Path = typer.Option(
         Path("."), "--gold-root", help="The atlas checkout holding the approved curation."
     ),
+    requests: Path | None = typer.Option(
+        None, "--requests", help="The triage requests JSONL: applies thin-hit routing."
+    ),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
     """Score a triage configuration against a gene's approved curation; propose a register entry.
 
     The gold is `triage_gold`: each decided hit's final decision and the count of approved
-    findings citing it. The hybrid is `triage-combine`'s (the check over the risky classes, the
-    audit sample seeded by `--run`, every unanswered hit). PASS means no paper with approved
+    findings citing it (an approval the atlas reports void is not counted). The `--screen`
+    answers must cover exactly the gene's decided hits: a key outside them exits 2, because the
+    score is defined over the gold's hits. The hybrid is `triage-combine`'s (the check over the
+    risky classes, the audit sample seeded by `--run`, every unanswered hit); with `--requests`,
+    a hit PubMed had no record or abstract for is checked too, as `triage-combine` does, and
+    without it a line says thin-hit routing was not applied. PASS means no paper with approved
     findings is lost. Prints the score and, for a PASS or FAIL, the register entry to propose
-    (YAML). Exit 0 for PASS and FAIL, 1 for INCOMPLETE (the check owes hits; no entry), 2 for
-    an unreadable answers file, a key the gold lacks or an unreadable gold. Writes nothing:
-    no register entry, no approval.
+    (YAML), its `backend` and `model_key` taken from `--site`'s `triage-screen` role. Exit 0 for
+    PASS and FAIL, 1 for INCOMPLETE (the check owes hits; no entry), 2 for an unreadable file,
+    site or gold, or screen answers carrying no single `rules_digest`. Warns on stderr when the
+    answers' `model_key` is not the site's. Writes nothing: no register entry, no approval.
     """
     if not gold_root.is_dir():
         raise _fail(f"--gold-root {gold_root} is not a directory", 2)
     try:
-        gold = qualify_module.triage_gold(gold_root, symbol)
+        spec = load_site(site).roles.get("triage-screen")
+        if spec is None:
+            raise _fail(f"{site} has no triage-screen role", 2)
+        gold = qualify_module.triage_gold(gold_root, symbol, _atlas_cli(gold_root, atlas_cli))
         keys = set(gold)
         answered = triage_module.read_answers(screen, keys)
         checked = triage_module.read_answers(check, keys)
-        meta = (_answers_meta(screen, "model_key"), _answers_meta(check, "model_key"))
-        rules = _answers_meta(screen, "rules_digest")
-    except qualify_module.QualifyError as exc:
-        raise _fail(str(exc), 2) from None
-    except triage_module.TriageUsageError as exc:
+        thin = (
+            triage_module.thin_keys(triage_module.read_request_rows(requests))
+            if requests is not None
+            else set()
+        )
+        rules = _answers_values(screen, "rules_digest")
+        keys_seen = _answers_values(screen, "model_key")
+    except (qualify_module.QualifyError, triage_module.TriageUsageError, SiteError) as exc:
         raise _fail(str(exc), 2) from None
     except (OSError, ValueError) as exc:
         raise _fail(str(exc), 2) from None
+    if len(rules) != 1:
+        found = ", ".join(sorted(rules)) or "none"
+        raise _fail(f"the screen answers must carry one rules_digest; found: {found}", 2)
+    computed = model_key(spec)
+    if keys_seen - {computed}:
+        typer.echo(
+            f"warning: the screen answers carry model_key {', '.join(sorted(keys_seen))}, "
+            f"not {computed}, the site's triage-screen: they were not produced by this "
+            "site's configuration",
+            err=True,
+        )
     score = qualify_module.score_triage(
-        gold, {key: answered.get(key, {}) for key in sorted(keys)}, checked, run
+        gold, {key: answered.get(key, {}) for key in sorted(keys)}, checked, run, thin=thin
     )
     typer.echo(
         f"{score.verdict}: {score.with_findings} hit(s) with approved findings, "
@@ -2137,20 +2164,23 @@ def qualify_triage_command(
         f"{score.audit} audited, {len(score.owed)} still owed"
         + (f" ({', '.join(score.owed)})" if score.owed else "")
     )
+    if requests is None:
+        typer.echo("thin-hit routing was not applied (no --requests given)")
     if score.verdict == "INCOMPLETE":
         raise typer.Exit(code=1)
+    check_keys = _answers_values(check, "model_key")
     entry = qualify_module.proposed_entry(
         symbol,
         gold,
         score,
         seed=run,
-        screen_model_key=meta[0],
-        check_model_key=meta[1] or "unknown",
-        rules_digest=rules,
+        spec=spec,
+        check_model_key=", ".join(sorted(check_keys)) or "unknown",
+        rules_digest=next(iter(rules)),
     )
     out = io.StringIO()
     yaml_out = YAML()
     yaml_out.default_flow_style = False
     yaml_out.dump({"entries": [entry]}, out)
-    typer.echo("Proposed register entry (not written; fill `backend` from the site config):")
+    typer.echo("Proposed register entry (not written):")
     typer.echo(out.getvalue().rstrip())

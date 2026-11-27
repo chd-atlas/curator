@@ -801,9 +801,15 @@ by `--run`, every unanswered hit). The verdict is PASS when no hit with approved
 lost, FAIL otherwise (the lost PMIDs are named), and INCOMPLETE when the check owes hits it has not
 answered. The score line gives the hits with approved findings, how many the screen included alone,
 how many hits went to the check before the audit and how many were audited. For a PASS or FAIL it
-prints the register entry to propose, as YAML, with `backend` left for the curator. Exit 0 for PASS
-and FAIL, 1 for INCOMPLETE, 2 for an unreadable file or gold. It writes nothing: no register entry,
-no approval.
+prints the register entry to propose, as YAML (its backend and model key from `--site`'s
+`triage-screen` role, transport settings left out; its rules digest from the answers, which must
+carry exactly one; a warning on stderr when the answers' model key is not the site's). A finding
+whose approval the atlas reports void is not counted. The screen's answers must cover exactly the
+gene's decided triage hits: a key outside them exits 2, because the score is defined over the
+gold's hits. Give `--requests` (the file `triage-requests` wrote) to route a hit PubMed had no
+record or abstract for to the check, as `triage-combine` does; without it a line says thin-hit
+routing was not applied. Exit 0 for PASS and FAIL, 1 for INCOMPLETE, 2 for an unreadable file, site
+or gold. It writes nothing: no register entry, no approval.
 
 ### Running a writing step in a scratch root
 
