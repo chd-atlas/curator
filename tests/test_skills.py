@@ -296,6 +296,7 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "package",
         "integrate",
         "job-script",
+        "report",
     }
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS

@@ -46,6 +46,7 @@ from chd_curator import merge as merge_module
 from chd_curator import package as package_module
 from chd_curator import redact as redact_mod
 from chd_curator import register as register_mod
+from chd_curator import report as report_module
 from chd_curator import requests as requests_module
 from chd_curator import scratch as scratch_module
 from chd_curator import texts as texts_module
@@ -1898,6 +1899,42 @@ def ask_command(
     )
     if summary.failed and not allow_errors:
         raise typer.Exit(code=1)
+
+
+@app.command("report")
+def report_command(
+    run_dir: Path = typer.Option(
+        ..., "--run-dir", help="The run folder: <root>/local/literature/runs/<SYMBOL>/<run id>."
+    ),
+    answers: list[str] = typer.Option(
+        [], "--answers", help="<role>=<answers file>; repeat for each role and file."
+    ),
+    trace: Path | None = typer.Option(None, "--trace", help="A Nextflow trace file."),
+    out_dir: Path = typer.Option(..., "--out-dir", help="Where report.json and report.md go."),
+) -> None:
+    """Report a run's tiers, cost and how each finding was settled.
+
+    Tokens and seconds come from the answers files (`ask`'s rows), core-hours (cpus x realtime)
+    from the trace, and the findings' counts from the run folder: `agreed` and `judged` from
+    assemble.json, `corrected by the owner` from decisions/*.json, `normalised` from
+    normalise.json. Writes report.json and report.md, and prints the summary line. A role whose
+    answers carry rules that differ from its register entry's gets a warning. Exit 2 for an
+    unreadable or malformed input, an unknown role, a trace lacking process, cpus or realtime,
+    or a folder that is not a run. Writes no approval.
+    """
+    pairs: list[tuple[str, Path]] = []
+    for item in answers:
+        role, sep, path = item.partition("=")
+        if not sep or not role or not path:
+            raise _fail(f"--answers {item!r} is not <role>=<path>", 2)
+        pairs.append((role, Path(path)))
+    try:
+        json_path, _ = report_module.write_report(run_dir, pairs, trace, out_dir)
+    except (report_module.ReportError, register_mod.RegisterError) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(json.loads(json_path.read_text(encoding="utf-8"))["summary"])
 
 
 @app.command("scratch-root")

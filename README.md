@@ -838,6 +838,18 @@ job. Each script's header lists the environment variables it reads. No script na
 account or path: those come from `sbatch` options and the environment. `chd-curator job-script` writes
 nothing and no approval.
 
+### Reporting a run
+
+`chd-curator report --run-dir <run folder> --answers <role>=<answers file> ... [--trace <Nextflow trace>] --out-dir <dir>`
+writes `report.json` and `report.md` and prints one summary line, for example `8 findings: 1 agreed,
+7 judged, 0 corrected by the owner; 14% of tokens local`. Per process (`--answers` may repeat for a
+role) it states the tier (`triage-screen` is local, every other role capable), seconds and tokens
+from `ask`'s rows, and core-hours (cpus x realtime) from the trace's `process`, `cpus` and
+`realtime` columns. Per finding: `agreed` is `assemble.json`'s `verified`, `judged` its `judged`,
+`corrected by the owner` the findings whose latest decision in `decisions/*.json` is `fix`, and
+`normalised` the findings `normalise.json` placed. A role that ran on rules differing from its
+register entry's gets a warning. `chd-curator report` writes no approval.
+
 ## Develop
 
 curator's tests run against a real atlas checkout and stop if any of these is unset:
