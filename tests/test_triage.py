@@ -19,7 +19,19 @@ from typer.testing import CliRunner
 
 from chd_curator import cli
 from chd_curator.cli import app
-from chd_curator.triage import RISKY, audit_sample, combine, to_check
+from chd_curator.triage import (
+    NO_ABSTRACT,
+    NO_RECORD,
+    RISKY,
+    apply_decisions,
+    audit_sample,
+    awaiting,
+    combine,
+    escalated_classes,
+    hit_block,
+    to_check,
+    valid_answer,
+)
 from fake_pubmed import FakePubMed, papers
 
 runner = CliRunner()
@@ -180,9 +192,13 @@ def _combine(tmp_path: Path, *args: str) -> Any:
     )
 
 
-def _setup(tmp_path: Path, reasons: dict[str, str]) -> None:
+def _setup(tmp_path: Path, reasons: dict[str, str], hits: dict[str, str] | None = None) -> None:
     _write(
-        tmp_path / "req.jsonl", [{"key": k, "inputs": {"gene": "G", "hit": "h"}} for k in reasons]
+        tmp_path / "req.jsonl",
+        [
+            {"key": k, "gene": "G", "inputs": {"gene": "G", "hit": (hits or {}).get(k, "h")}}
+            for k in reasons
+        ],
     )
     _write(tmp_path / "screen.jsonl", [{"key": k, "parsed": exc(k, r)} for k, r in reasons.items()])
 
@@ -322,11 +338,17 @@ def root(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _decisions(path: Path, decisions: dict[str, Any], awaiting: list[str] | None = None) -> Path:
+def _decisions(
+    path: Path,
+    decisions: dict[str, Any],
+    awaiting: list[str] | None = None,
+    gene: str = "TBX5",
+) -> Path:
     path.write_text(
         json.dumps(
             {
                 "format": 1,
+                "gene": gene,
                 "run": "R",
                 "shadow": False,
                 "escalated": [],
@@ -460,3 +482,203 @@ def test_triage_apply_changes_only_pending_entries_and_refuses_a_changed_file(
             "{pmid: 'PMID:9', search: 1, decision: excluded, reason: review_article}",
         )
     )
+
+
+# ------------------------------------------------------------------- fix round 1
+
+
+_FIXTURES: list[tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], set[str], set[str]]] = [
+    # (screen, check, audit, thin)
+    ({"A": {}, "B": inc("B"), "C": exc("C", "not_chd"), "D": exc("D", "other")}, {}, {"D"}, set()),
+    ({"A": exc("A", "other"), "B": exc("B", "review_article")}, {}, {"A"}, {"B"}),
+    (
+        {"A": exc("A", "other"), "B": exc("B", "other"), "C": exc("C", "review_article")},
+        {"A": inc("A")},
+        {"A", "C"},
+        set(),
+    ),
+    ({"A": inc("A"), "B": {}}, {"B": exc("B", "other")}, set(), {"A"}),
+]
+
+
+@pytest.mark.parametrize("screen,check,audit,thin", _FIXTURES)
+def test_the_hits_awaiting_are_exactly_those_to_check_less_the_answered(
+    screen: dict[str, dict[str, Any]],
+    check: dict[str, dict[str, Any]],
+    audit: set[str],
+    thin: set[str],
+) -> None:
+    """`combine`, `awaiting` and `to_check` read one rule: what the check must still answer.
+    Every hit is decided or awaiting, never both, never neither."""
+    escalated = escalated_classes(screen, check, audit)
+    wanted = to_check(screen, RISKY, audit, escalated, thin)
+    owed = set(awaiting(screen, check, RISKY, audit, thin))
+    decided = set(combine(screen, check, RISKY, audit, thin))
+
+    assert owed == {k for k in wanted if not check.get(k)}
+    assert owed | decided == set(screen) and not owed & decided
+
+
+def test_a_hit_with_no_pubmed_record_or_no_abstract_never_stands_on_the_screens_word() -> None:
+    assert NO_RECORD in hit_block("1", "2005", None)
+    assert hit_block("1", "2005", ("T", "", [])).splitlines()[-1] == NO_ABSTRACT
+    screen = {"PMID:1": exc("PMID:1", "other"), "PMID:2": exc("PMID:2", "other")}
+
+    assert to_check(screen, RISKY, set()) == set()
+    assert to_check(screen, RISKY, set(), thin={"PMID:2"}) == {"PMID:2"}
+    assert awaiting(screen, {}, RISKY, set(), {"PMID:2"}) == ["PMID:2"]
+    assert list(combine(screen, {}, RISKY, set(), {"PMID:2"})) == ["PMID:1"]
+
+
+@pytest.mark.parametrize(
+    "thin_block",
+    [hit_block("0", "2005", None), hit_block("0", "2005", ("Title", "", ["Journal Article"]))],
+    ids=["no-record", "no-abstract"],
+)
+def test_triage_combine_sends_a_thin_hit_to_the_check_whatever_the_screen_said(
+    tmp_path: Path, thin_block: str
+) -> None:
+    keys = [f"PMID:{n}" for n in range(1, 8)]
+    audit = audit_sample({"other": keys}, "R")
+    unaudited = sorted(set(keys) - audit)
+    assert len(unaudited) == 2
+    _setup(tmp_path, dict.fromkeys(keys, "other"), {unaudited[0]: thin_block})
+    out_req = tmp_path / "r.jsonl"
+
+    result = _combine(
+        tmp_path, "--screen", str(tmp_path / "screen.jsonl"), "--out-requests", str(out_req)
+    )
+
+    assert result.exit_code == 0, result.output
+    owed = [json.loads(x)["key"] for x in out_req.read_text().splitlines()]
+    assert owed == sorted([*audit, unaudited[0]])
+    assert unaudited[1] in json.loads((tmp_path / "d.json").read_text())["decisions"]
+
+
+def test_an_unhashable_reason_is_an_unparseable_answer_not_a_crash() -> None:
+    bad = {"pmid": "PMID:1", "decision": "excluded", "reason": ["not_chd"], "why": "w"}
+    assert valid_answer(bad, "PMID:1") is False
+
+
+def test_a_check_error_row_leaves_an_audited_hit_and_a_risky_hit_awaiting(tmp_path: Path) -> None:
+    keys = [f"PMID:{n}" for n in range(1, 7)]
+    reasons = {**dict.fromkeys(keys, "review_article"), "PMID:50": "not_chd"}
+    _setup(tmp_path, reasons)
+    audit = sorted(audit_sample({"review_article": keys}, "R"))
+    errors = _write(
+        tmp_path / "c.jsonl",
+        [{"key": audit[0], "error": "gave up", "attempts": 3}]
+        + [{"key": "PMID:50", "error": "gave up", "attempts": 3}],
+    )
+
+    result = _combine(tmp_path, "--screen", str(tmp_path / "screen.jsonl"), "--check", str(errors))
+
+    assert result.exit_code == 0, result.output
+    document = json.loads((tmp_path / "d.json").read_text())
+    assert {audit[0], "PMID:50"} <= set(document["awaiting_check"])
+    assert not {audit[0], "PMID:50"} & set(document["decisions"])
+
+
+def test_two_classes_can_escalate_in_one_run(tmp_path: Path) -> None:
+    a = [f"PMID:{n}" for n in range(1, 7)]
+    b = [f"PMID:{n}" for n in range(11, 17)]
+    _setup(tmp_path, {**dict.fromkeys(a, "review_article"), **dict.fromkeys(b, "other")})
+    audited = sorted(audit_sample({"review_article": a, "other": b}, "R"))
+    hit_a = next(k for k in audited if k in a)
+    hit_b = next(k for k in audited if k in b)
+    check = _write(
+        tmp_path / "c.jsonl",
+        [{"key": k, "parsed": inc(k) if k in (hit_a, hit_b) else exc(k, "other")} for k in audited],
+    )
+
+    result = _combine(tmp_path, "--screen", str(tmp_path / "screen.jsonl"), "--check", str(check))
+
+    assert result.exit_code == 0, result.output
+    document = json.loads((tmp_path / "d.json").read_text())
+    assert document["escalated"] == ["other", "review_article"]
+    assert document["awaiting_check"] == sorted(set(a + b) - set(audited))
+
+
+def test_shadow_with_a_hit_the_check_did_not_answer_leaves_it_awaiting(tmp_path: Path) -> None:
+    _setup(tmp_path, {"PMID:1": "not_chd", "PMID:2": "review_article"})
+    check = _write(tmp_path / "c.jsonl", [{"key": "PMID:1", "parsed": inc("PMID:1")}])
+    out_req = tmp_path / "r.jsonl"
+
+    result = _combine(
+        tmp_path,
+        "--screen",
+        str(tmp_path / "screen.jsonl"),
+        "--check",
+        str(check),
+        "--shadow",
+        "--out-requests",
+        str(out_req),
+    )
+
+    assert result.exit_code == 0, result.output
+    document = json.loads((tmp_path / "d.json").read_text())
+    assert document["awaiting_check"] == ["PMID:2"] and list(document["decisions"]) == ["PMID:1"]
+    assert [json.loads(x)["key"] for x in out_req.read_text().splitlines()] == ["PMID:2"]
+    assert document["gene"] == "G"
+
+
+def _file(root: Path) -> Path:
+    return root / "curation" / "literature" / "TBX5.yaml"
+
+
+def test_apply_rechecks_what_it_can_and_refuses_the_rest(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    good = {"decision": "included", "reason": "none", "why": "w", "tier": "check"}
+    cases = {
+        "a risky exclusion on the screen's word": (
+            {"PMID:5": {**good, "decision": "excluded", "reason": "not_chd", "tier": "screen"}},
+            "TBX5",
+            "PMID:5",
+        ),
+        "another gene's file": ({"PMID:5": good}, "GATA4", "GATA4"),
+        "no gene": ({"PMID:5": good}, "", "gene"),
+        "an other exclusion with no why": (
+            {"PMID:5": {**good, "decision": "excluded", "reason": "other", "why": ""}},
+            "TBX5",
+            "PMID:5",
+        ),
+        "a good key beside a bad one": (
+            {"PMID:5": good, "PMID:6": good},  # PMID:6 is not pending
+            "TBX5",
+            "PMID:6",
+        ),
+    }
+    for what, (decisions, gene, named) in cases.items():
+        result = _apply(stub_atlas, root, _decisions(tmp_path / "d.json", decisions, gene=gene))
+        assert result.exit_code == 1 and named in result.output, what
+        assert _file(root).read_text() == LITERATURE, what
+
+
+def test_apply_takes_a_shadow_file_and_its_check_decisions(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    decision = {"decision": "included", "reason": "none", "why": "w", "tier": "check"}
+    shadow = {"PMID:5": {**decision, "hybrid": {**decision, "tier": "screen"}}}
+    path = _decisions(tmp_path / "d.json", shadow)
+    document = json.loads(path.read_text())
+    document["shadow"] = True
+    path.write_text(json.dumps(document))
+
+    result = _apply(stub_atlas, root, path)
+
+    assert result.exit_code == 0, result.output
+    assert "{pmid: 'PMID:5', search: 1, decision: included}" in _file(root).read_text()
+
+
+def test_a_schema_refusal_and_a_changed_file_are_told_apart(root: Path) -> None:
+    from jsonschema import Draft202012Validator
+
+    from chd_curator.triage import TriageError
+
+    decisions = {"PMID:5": {"decision": "included", "reason": "none", "why": "w", "tier": "check"}}
+    with pytest.raises(TriageError) as schema:
+        apply_decisions(root, "TBX5", decisions, Draft202012Validator({"not": {}}))
+    assert "does not satisfy its schema" in str(schema.value)
+    assert "changed since it was read" not in str(schema.value)
+    assert _file(root).read_text() == LITERATURE

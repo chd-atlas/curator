@@ -46,6 +46,8 @@ REASONS: Final = frozenset(
     }
 )
 DECISIONS_FORMAT: Final = 1
+NO_RECORD: Final = "(PubMed returned no record for this PMID)"
+NO_ABSTRACT: Final = "(no abstract in PubMed)"
 
 
 class TriageError(Exception):
@@ -59,13 +61,13 @@ class TriageUsageError(TriageError):
 def hit_block(pmid: str, year: str, found: tuple[str, str, Sequence[str]] | None) -> str:
     """The block `abstracts` prints for one PMID (digits), without its trailing blank line."""
     if found is None:
-        return f"PMID:{pmid} · {year} · (PubMed returned no record for this PMID)"
+        return f"PMID:{pmid} · {year} · {NO_RECORD}"
     title, abstract, types = found
     return "\n".join(
         [
             f"PMID:{pmid} · {year} · {title}",
             f"Publication types: {'; '.join(types) or '(none in PubMed)'}",
-            abstract or "(no abstract in PubMed)",
+            abstract or NO_ABSTRACT,
         ]
     )
 
@@ -134,15 +136,37 @@ def trusted_exclusions(
 
 
 def to_check(
-    screen: Mapping[str, dict[str, Any]], risky: frozenset[str], audit: set[str]
+    screen: Mapping[str, dict[str, Any]],
+    risky: frozenset[str],
+    audit: set[str],
+    escalated: set[str] | frozenset[str] = frozenset(),
+    thin: set[str] | frozenset[str] = frozenset(),
 ) -> set[str]:
-    """Risky-class screen exclusions, the audit sample and every unanswered key (an empty
-    answer). A screen inclusion is never sent: the check cannot lose it."""
+    """Every hit whose screen answer is not final: an unanswered key (an empty answer), an
+    exclusion in a risky or escalated class, an audited exclusion, and an exclusion of a `thin`
+    hit (PubMed has no record or no abstract: the house rules do not exclude a paper for that, so
+    the screen's reason, whatever it is, is never final). A screen inclusion is never sent: the
+    check cannot lose it. This is the one rule `combine` and `awaiting` read."""
     wanted = set(audit)
     for key, answer in screen.items():
-        if not answer or (is_excluded(answer) and answer["reason"] in risky):
+        if (
+            not answer
+            or is_excluded(answer)
+            and (answer["reason"] in risky or answer["reason"] in escalated or key in thin)
+        ):
             wanted.add(key)
     return wanted
+
+
+def thin_keys(rows: Mapping[str, Mapping[str, Any]]) -> set[str]:
+    """The requested keys whose `hit` block says PubMed had no record or no abstract."""
+    found = set()
+    for key, row in rows.items():
+        hit = (row.get("inputs") or {}).get("hit")
+        lines = hit.splitlines() if isinstance(hit, str) else []
+        if lines and (lines[0].endswith(NO_RECORD) or lines[-1] == NO_ABSTRACT):
+            found.add(key)
+    return found
 
 
 def escalated_classes(
@@ -166,16 +190,28 @@ def _decision(answer: Mapping[str, Any], tier: str) -> dict[str, str]:
     }
 
 
+def _owed(
+    screen: Mapping[str, dict[str, Any]],
+    check: Mapping[str, dict[str, Any]],
+    risky: frozenset[str],
+    audit: set[str] | frozenset[str],
+    thin: set[str] | frozenset[str],
+) -> set[str]:
+    escalated = escalated_classes(screen, check, set(audit))
+    return to_check(screen, risky, set(audit), escalated, thin)
+
+
 def combine(
     screen: Mapping[str, dict[str, Any]],
     check: Mapping[str, dict[str, Any]],
     risky: frozenset[str],
     audit: set[str] | frozenset[str] = frozenset(),
+    thin: set[str] | frozenset[str] = frozenset(),
 ) -> dict[str, dict[str, str]]:
     """One decision per hit that has one; a hit still needing the check has none (see
     `awaiting`). A hit is included if either tier includes it; when both exclude, the check's
-    reason stands; a trusted-class screen exclusion that was not audited stays the screen's."""
-    escalated = escalated_classes(screen, check, set(audit))
+    reason stands; a screen exclusion `to_check` does not name stays the screen's."""
+    needs = _owed(screen, check, risky, audit, thin)
     decided: dict[str, dict[str, str]] = {}
     for key in sorted(screen):
         s, c = screen[key], check.get(key) or {}
@@ -183,15 +219,9 @@ def combine(
             decided[key] = _decision(s, "screen")  # either tier including a hit includes it
         elif c:
             decided[key] = _decision(c, "check")
-        elif s and not _needs_check(s, risky, escalated, key in audit):
+        elif s and key not in needs:
             decided[key] = _decision(s, "screen")
     return decided
-
-
-def _needs_check(
-    s: Mapping[str, Any], risky: frozenset[str], escalated: set[str], audited: bool
-) -> bool:
-    return audited or s["reason"] in risky or s["reason"] in escalated
 
 
 def awaiting(
@@ -199,10 +229,10 @@ def awaiting(
     check: Mapping[str, dict[str, Any]],
     risky: frozenset[str],
     audit: set[str] | frozenset[str] = frozenset(),
+    thin: set[str] | frozenset[str] = frozenset(),
 ) -> list[str]:
-    """The hits `combine` could not decide: they need the check and it has not answered."""
-    decided = combine(screen, check, risky, audit)
-    return sorted(key for key in screen if key not in decided)
+    """The hits the check must still answer: `to_check`'s, less those it has answered."""
+    return sorted(key for key in _owed(screen, check, risky, audit, thin) if not check.get(key))
 
 
 def valid_answer(parsed: Any, key: str) -> bool:
@@ -213,7 +243,8 @@ def valid_answer(parsed: Any, key: str) -> bool:
         return False
     if parsed.get("decision") == "included":
         return True
-    return parsed.get("decision") == "excluded" and parsed.get("reason") in REASONS
+    reason = parsed.get("reason")
+    return parsed.get("decision") == "excluded" and isinstance(reason, str) and reason in REASONS
 
 
 def read_request_rows(path: Path) -> dict[str, dict[str, Any]]:
@@ -296,9 +327,13 @@ def combine_run(
     screen = {key: answered.get(key, {}) for key in sorted(keys)}
     check = merge_check_answers([(p, read_answers(p, keys)) for p in check_paths])
     audit = audit_sample(trusted_exclusions(screen, risky), run)
-    hybrid = combine(screen, check, risky, audit)
+    thin = thin_keys(rows)
+    genes = {row.get("gene") for row in rows.values()}
+    if len(genes) > 1:
+        raise TriageUsageError(f"{requests}: the requests name more than one gene: {genes!r}")
+    hybrid = combine(screen, check, risky, audit, thin)
     escalated = escalated_classes(screen, check, audit)
-    owed_hybrid = awaiting(screen, check, risky, audit)
+    owed_hybrid = awaiting(screen, check, risky, audit, thin)
     decisions: dict[str, Any]
     if shadow:
         decisions = {}
@@ -309,6 +344,7 @@ def combine_run(
         decisions, owed = dict(hybrid), owed_hybrid
     document = {
         "format": DECISIONS_FORMAT,
+        "gene": next(iter(genes)) if genes else None,
         "run": run,
         "shadow": shadow,
         "escalated": sorted(escalated),
@@ -328,8 +364,9 @@ def write_requests(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     write_bytes_atomically(path, payload.encode("utf-8"))
 
 
-def load_decisions(path: Path) -> dict[str, dict[str, Any]]:
-    """The decisions of a `triage-combine` file; refuses one still awaiting the check."""
+def load_decisions(path: Path, symbol: str) -> dict[str, dict[str, Any]]:
+    """The decisions of a `triage-combine` file for `symbol` (the approved symbol); refuses one
+    still awaiting the check (exit 1) and one written for another gene or none (exit 1)."""
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -339,6 +376,10 @@ def load_decisions(path: Path) -> dict[str, dict[str, Any]]:
     owed = document.get("awaiting_check")
     if not isinstance(owed, list) or not isinstance(document.get("decisions"), dict):
         raise TriageUsageError(f"{path}: `awaiting_check` or `decisions` is missing")
+    if document.get("gene") != symbol:
+        raise TriageError(
+            f"{path}: the decisions are for gene {document.get('gene')!r}, not {symbol!r}"
+        )
     if owed:
         raise TriageError(
             f"{path}: {len(owed)} hit(s) still await the check ({', '.join(map(str, owed))}); "
@@ -357,7 +398,16 @@ def apply_decisions(
 
     Only ``decision`` and, for an exclusion, ``reason`` (plus ``note`` = the answer's `why` when
     the reason is ``other``) are written; ``pmid`` and ``search`` are never touched. A key that
-    is not a pending entry is refused, and so is a file changed since it was read."""
+    is not a pending entry is refused, and so is a file changed since it was read.
+
+    What this re-checks itself, whatever the decisions file says: every key is a pending entry
+    of this file; an exclusion in a risky class carries tier ``check`` (a screen-tier one is
+    refused, naming the key); an exclusion has a known reason and an ``other`` has a ``why`` to
+    become its note; nothing is written unless every key passes; the file is unchanged since it
+    was read; and the schema accepts the result (`load_decisions` also checks the gene and that
+    nothing awaits the check). What rests on `combine` alone: that the audit was drawn, that the
+    check answered what `to_check` named, and that a thin hit was checked. A shadow file applies
+    like any other: its decisions are the check's."""
     path = literature_path(root, symbol)
     if not path.is_file():
         raise TriageError(f"{path} does not exist")
@@ -374,10 +424,19 @@ def apply_decisions(
             if key not in pending:
                 raise TriageError(f"{key}: is not a pending triage entry of {path}")
             d = decisions[key]
+            if (
+                d.get("decision") == "excluded"
+                and d.get("tier") == "screen"
+                and d.get("reason") in RISKY
+            ):
+                raise TriageError(f"{key}: a risky exclusion ({d['reason']}) needs the check")
             if d.get("decision") == "included":
                 changes.append(TriageChange(key, "pending", "included", None, None))
             elif d.get("decision") == "excluded" and d.get("reason") in REASONS:
-                note = str(d.get("why")) if d["reason"] == "other" else None
+                why = d.get("why")
+                if d["reason"] == "other" and not (isinstance(why, str) and why.strip()):
+                    raise TriageError(f"{key}: an `other` exclusion needs a why for its note")
+                note = why if d["reason"] == "other" else None
                 changes.append(TriageChange(key, "pending", "excluded", str(d["reason"]), note))
             else:
                 raise TriageError(f"{key}: not a decision that can be applied: {dict(d)!r}")

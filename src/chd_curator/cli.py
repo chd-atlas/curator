@@ -1824,7 +1824,7 @@ def triage_apply_command(
     _require_root(root)
     try:
         approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
-        loaded = triage_module.load_decisions(decisions)
+        loaded = triage_module.load_decisions(decisions, approved)
         count = triage_module.apply_decisions(root, approved, loaded)
     except AtlasError as exc:
         raise _fail(str(exc), 2) from None

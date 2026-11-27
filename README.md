@@ -773,7 +773,9 @@ chd-curator triage-apply TBX5 --decisions decisions.json --root /path/to/atlas
 `abstracts` prints; it asks PubMed). `triage-combine` sends to the check every screen exclusion
 in a risky class (`not_chd`, `no_finding_in_gene`), an audit sample of every other class (10%,
 at least 5, all when fewer, seeded by `--run`) and every hit the screen did not answer (no row,
-an error row or an unparseable answer: never read as an exclusion). A hit either tier includes
+an error row or an unparseable answer: never read as an exclusion), and every exclusion of a hit
+whose block says PubMed has no record or no abstract (never final on the screen's word). The decisions
+file names the gene; triage-apply refuses another gene's file and any risky exclusion at screen tier. A hit either tier includes
 is included; when both exclude, the check's reason stands. One audited exclusion the check
 includes escalates its class for the run: its remaining exclusions go to the check too
 (escalated, awaiting_check, and the rows still owed in `--out-requests`); run the check on
