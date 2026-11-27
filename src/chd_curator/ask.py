@@ -25,6 +25,9 @@ file written with an error row for every request not asked, then ``AskStopped`` 
   directory and put through ``check-batch``'s own logic; a refused answer leaves those paths
   as they were before the attempt (the previous bytes back, or the file removed), so merge
   never reads an invalid file.
+* **Attribution.** With ``check-batch``, every finding's ``extracted_by`` is set by code before
+  the answer is checked (``_attribute``; R-SWA-53), never taken from the model, and the row says
+  ``"attribution": "set by ask"``.
 * **Retry.** At most two, each with the errors appended verbatim to the ``user`` text. A
   transient backend error is not a retry: it backs off 5, 20, 60 s and then gives up.
 
@@ -67,10 +70,10 @@ from chd_curator.backends import (
 from chd_curator.backends.base import Backend, token_count
 from chd_curator.diff import DiffError
 from chd_curator.fs import write_bytes_atomically
-from chd_curator.records import RecordError
+from chd_curator.records import RecordError, literature_path
 from chd_curator.register import Entry, allowed
 from chd_curator.roles import ROLES, RoleError, RoleInput, assemble, canonical
-from chd_curator.run import RunFormatError, RunPaths, load_batches
+from chd_curator.run import RunFormatError, RunPaths, load_batches, load_pass
 from chd_curator.site import BackendSpec, Site, model_key
 from chd_curator.write import schema_error_lines
 
@@ -78,6 +81,10 @@ TRIAGE: Final = ("triage-screen", "triage-check")
 # Spec section 3: in shadow the check decides every hit; only the screen is recorded and scored.
 SHADOWABLE: Final = "triage-screen"
 PASS_OF: Final = {"extract": "extract", "blind-read": "verify", "judge": "judge"}
+# The skill each reader pass is, as phase 2's passes name it in `extracted_by`.
+SKILL_OF: Final = {"extract": "literature-extract", "blind-read": "literature-verify"}
+ATTRIBUTION: Final = "set by ask"
+_JUDGE_LOCAL: Final = re.compile(r"CHDA:LIT:07[0-9]{5}")
 BACKOFF_SECONDS: Final = (5, 20, 60)
 MAX_RETRIES: Final = 2
 DEFAULT_MAX_TOKENS: Final = 4096
@@ -280,6 +287,62 @@ def _yaml_bytes(obj: Any) -> bytes:
     return out.getvalue().encode("utf-8")
 
 
+def _judge_sources(c: _Ctx, r: _Req) -> tuple[dict[str, str], str | None]:
+    """``(final id -> the file's extracted_by, the blind pass's one extracted_by of this batch or
+    None)``: the attribution of the readings a judge's findings settle."""
+    path = literature_path(c.root, c.symbols[str(r.gene)])
+    try:
+        record = YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        record = {}
+    rows = record.get("findings") if isinstance(record, dict) else None
+    filed = {
+        str(f["id"]): str(f["extracted_by"])
+        for f in rows or []
+        if isinstance(f, dict) and isinstance(f.get("extracted_by"), str) and "id" in f
+    }
+    blind_path = (
+        RunPaths(c.root, str(r.gene), str(c.run_id)).verify / f"batch-{r.batch}.findings.yaml"
+    )
+    try:
+        names = (
+            {str(f.get("extracted_by")) for f in load_pass(blind_path)}
+            if blind_path.is_file()
+            else set()
+        )
+    except RunFormatError:
+        names = set()
+    return filed, next(iter(names)) if len(names) == 1 else None
+
+
+def _attribute(c: _Ctx, r: _Req, parsed: Any) -> tuple[Any, bool]:
+    """R-SWA-53: ``extracted_by`` set by code on every finding of a check-batch answer, whatever
+    the model wrote. A reader's (mode new) is ``agent:<SKILL_OF[role]>/<backend model>``. A
+    judge reads nothing new, so each finding keeps the attribution of the reading it settles: a
+    final id the run's literature file holds takes that finding's, a local ``07`` id (adopted
+    from the blind pass) the blind pass's of its batch; a finding neither names is left as
+    written, for check-batch to judge. A backfill reader's answer holds fields, not findings,
+    and is left alone. Returns the answer and whether anything was set."""
+    if c.validate != "check-batch" or not isinstance(parsed, dict):
+        return parsed, False
+    findings = parsed.get("findings")
+    if not isinstance(findings, list) or (c.role in SKILL_OF and r.mode != "new"):
+        return parsed, False
+    if c.role in SKILL_OF:
+        by = f"agent:{SKILL_OF[c.role]}/{c.spec.model}"
+        named = [{**f, "extracted_by": by} if isinstance(f, dict) else f for f in findings]
+        return {**parsed, "findings": named}, True
+    filed, blind = _judge_sources(c, r)
+    out: list[Any] = []
+    for f in findings:
+        fid = f.get("id") if isinstance(f, dict) else None
+        found = (
+            blind if isinstance(fid, str) and _JUDGE_LOCAL.fullmatch(fid) else filed.get(str(fid))
+        )
+        out.append({**f, "extracted_by": found} if found and isinstance(f, dict) else f)
+    return {**parsed, "findings": out}, True
+
+
 def _contract_files(c: _Ctx, r: _Req, parsed: Mapping[str, Any]) -> dict[Path, bytes]:
     """The files the answer is, at the paths ``check-batch`` and the next command read."""
     run = RunPaths(c.root, str(r.gene), str(c.run_id))
@@ -373,8 +436,9 @@ def _row(
     usage: Any,
     secs: Any,
     meta: Mapping[str, Any],
+    attributed: bool = False,
 ) -> Row:
-    return {
+    row = {
         "key": r.key,
         "parsed": parsed,
         "attempts": attempts,
@@ -385,6 +449,9 @@ def _row(
         "rules_digest": ri.rules_digest,
         "meta": dict(meta),
     }
+    if attributed:
+        row["attribution"] = ATTRIBUTION
+    return row
 
 
 def _error(r: _Req, message: str, p: _Progress) -> Row:
@@ -422,8 +489,9 @@ def _ask_one(c: _Ctx, r: _Req, ri: RoleInput) -> Row:
 def _run_one(c: _Ctx, r: _Req, ri: RoleInput, p: _Progress) -> Row:
     path = _cache_path(c, ri)
     hit, hit_meta = _read_cache(path)
+    hit, hit_set = _attribute(c, r, hit)
     if hit is not None and not _problems(c, r, ri, hit, [], ri.user):
-        return _row(r, ri, c, hit, 0, {}, 0.0, hit_meta)
+        return _row(r, ri, c, hit, 0, {}, 0.0, hit_meta, hit_set)
     transient = 0
     user = ri.user
     while True:
@@ -463,6 +531,7 @@ def _run_one(c: _Ctx, r: _Req, ri: RoleInput, p: _Progress) -> Row:
                 r, f"the backend answered for {answer.key!r}, which this request is not", p
             )
         parsed, errors = _parse(answer.text)
+        parsed, attributed = _attribute(c, r, parsed)
         if not errors:
             errors = _problems(c, r, ri, parsed, [answer.text], user)
         if not errors:
@@ -475,7 +544,7 @@ def _run_one(c: _Ctx, r: _Req, ri: RoleInput, p: _Progress) -> Row:
                     "meta": dict(answer.meta),
                 }
                 write_bytes_atomically(path, (canonical(body) + "\n").encode("utf-8"))
-            return _row(r, ri, c, parsed, p.attempts, p.usage, p.seconds, answer.meta)
+            return _row(r, ri, c, parsed, p.attempts, p.usage, p.seconds, answer.meta, attributed)
         if p.attempts > MAX_RETRIES:
             return _error(r, "the answer was refused after 3 attempts: " + "; ".join(errors), p)
         user = f"{ri.user}\n\n{_REFUSED}\n" + "\n".join(errors) + f"\n{_END_REFUSED}"

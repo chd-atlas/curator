@@ -438,10 +438,19 @@ def _answer_from(root: Path, folder: str) -> str:
     )
 
 
-def _reader_request(tmp_path: Path, **extra: Any) -> Path:
+MODEL_OF = {"extract": "claude-sonnet-5-5", "blind-read": "claude-opus-5-5", "judge": "m"}
+
+
+def _inputs(role: str = "extract") -> dict[str, str]:
+    """A reader's or the judge's inputs, as `read-requests` writes their keys."""
+    base = {"manifest": "m", "texts": "t", "registries": "r"}
+    return {**base, "owner_notes": "none"} if role == "judge" else base
+
+
+def _reader_request(tmp_path: Path, role: str = "extract", **extra: Any) -> Path:
     path = tmp_path / "rreq.jsonl"
-    row = {"key": "TBX5:01", "inputs": {"manifest": "m", "texts": "t"}, "gene": "TBX5",
-           "batch": "01", **extra}  # fmt: skip
+    row = {"key": "TBX5:01", "inputs": _inputs(role), "gene": "TBX5", "batch": "01",
+           **extra}  # fmt: skip
     path.write_text(json.dumps(row) + "\n")
     return path
 
@@ -454,11 +463,13 @@ def _ask_batch(
     role: str = "extract",
     **extra: Any,
 ) -> tuple[AskSummary, list[dict[str, Any]], Fake]:
-    b = BackendSpec("t", "fake", "m", {"answers": {"TBX5:01": answers}}, 10_000_000, 1, None)
+    model = MODEL_OF[role]  # the fixture's readers, so the code's attribution is the fixture's
+    b = BackendSpec("t", "fake", model, {"answers": {"TBX5:01": answers}}, 10_000_000, 1, None)
     fake = Fake(b)
     out = tmp_path / "ra.jsonl"
-    summary = ask(role, _reader_request(tmp_path, **extra), out, site_of(b, role), [], root, None,
-                  "check-batch", "r1", False, atlas_cli=cli, make=lambda _s: fake)  # fmt: skip
+    summary = ask(role, _reader_request(tmp_path, role, **extra), out, site_of(b, role), [],
+                  root, None, "check-batch", "r1", False, atlas_cli=cli,
+                  make=lambda _s: fake)  # fmt: skip
     return summary, [json.loads(x) for x in out.read_text().splitlines()], fake
 
 
@@ -574,8 +585,7 @@ def test_a_backfill_answer_is_written_as_the_backfill_pass_file(
 def _two_batch_requests(tmp_path: Path) -> Path:
     path = tmp_path / "two.jsonl"
     rows = [
-        {"key": f"TBX5:{n}", "inputs": {"manifest": "m", "texts": "t"}, "gene": "TBX5", "batch": n}
-        for n in ("01", "02")
+        {"key": f"TBX5:{n}", "inputs": _inputs(), "gene": "TBX5", "batch": n} for n in ("01", "02")
     ]
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
     return path
@@ -876,3 +886,56 @@ def test_a_refused_credential_stops_the_run_and_exits_2(tmp_path: Path) -> None:
     assert [r["key"] for r in rows] == keys and all("error" in r for r in rows)
     assert "HTTP 401" in rows[0]["error"]
     assert all(r["error"].startswith("not asked") and r["attempts"] == 0 for r in rows[1:])
+
+
+@pytest.mark.parametrize(
+    ("role", "folder", "skill"),
+    [("extract", "extract", "literature-extract"), ("blind-read", "verify", "literature-verify")],
+)
+def test_a_readers_attribution_is_set_by_code_whatever_the_model_wrote(
+    tmp_path: Path, atlas_root: Path, role: str, folder: str, skill: str
+) -> None:
+    """R-SWA-53: `extracted_by` names the skill the pass is and the backend's model; the
+    model's own guess (missing, or another name) never lands, since assemble copies the blind
+    pass's into `verified_by`."""
+    root = _reader_root(tmp_path, atlas_root)
+    answer = json.loads(_answer_from(root, folder))
+    del answer["findings"][0]["extracted_by"]
+    answer["findings"][1]["extracted_by"] = "agent:literature-extract/a-guess"
+    run = root / "local/literature/runs/TBX5/r1" / folder
+    for p in run.glob("batch-01.*"):
+        p.unlink()
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    summary, rows, _ = _ask_batch(tmp_path, root, cli, [json.dumps(answer)], role)
+    assert summary.failed == [], rows
+    expected = f"agent:{skill}/{MODEL_OF[role]}"
+    written = YAML_SAFE.load((run / "batch-01.findings.yaml").read_text())["findings"]
+    assert {f["extracted_by"] for f in written} == {expected}
+    assert {f["extracted_by"] for f in rows[0]["parsed"]["findings"]} == {expected}
+    assert rows[0]["attribution"] == "set by ask"
+
+
+def test_a_judges_findings_keep_the_attribution_of_the_reading_they_settle(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A judge reads nothing new: a finding it settles under a final id keeps the file's
+    finding's `extracted_by`, and one it adopts from the blind pass (a `07` id) the blind
+    pass's, as the phase-2 judge fixture records them, whatever the model wrote."""
+    from test_assemble import _ready
+
+    p = _ready(tmp_path, atlas_root, stub_atlas, monkeypatch)
+    shutil.copytree(RULES_ROOT / "curator", p.root / "curator")
+    findings = p.judging / "judge-01.findings.yaml"
+    decisions = p.judge / "judge-01.decisions.yaml"
+    before = YAML_SAFE.load(findings.read_text())["findings"]
+    guessed = [{**f, "extracted_by": "agent:literature-judge/a-guess"} for f in before]
+    answer = json.dumps({"findings": guessed, "decisions": YAML_SAFE.load(decisions.read_text())})
+    findings.unlink()
+    decisions.unlink()
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    summary, rows, _ = _ask_batch(tmp_path, p.root, cli, [answer], "judge")
+    assert summary.failed == [], rows
+    written = YAML_SAFE.load(findings.read_text())["findings"]
+    assert [f["extracted_by"] for f in written] == [f["extracted_by"] for f in before]
+    assert len({f["extracted_by"] for f in before}) == 2  # both kinds are exercised
+    assert rows[0]["attribution"] == "set by ask"

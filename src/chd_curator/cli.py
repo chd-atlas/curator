@@ -1727,25 +1727,31 @@ def read_requests_command(
     role: str = typer.Option(..., "--role", help="extract, blind-read or judge."),
     out: Path = typer.Option(..., "--out", help="The requests JSONL to write."),
     root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    decisions: Path | None = typer.Option(
+        None, "--decisions", help="The judge only: the owner's decisions file of a fix round."
+    ),
     atlas_cli: Path | None = _ATLAS_CLI_OPTION,
 ) -> None:
     """Write a run's batch (or judge) manifests, with the texts they name, as `ask` requests.
 
-    One row `{key, gene, batch, mode, inputs: {manifest, texts}}` per batch of batches.json
-    (extract and blind-read, identical rows) or per judging/judge-NN.md (judge); each text is
-    under a `--- file: <path as the manifest names it> ---` marker. Exit 1, nothing written, for
-    a named file that is missing, outside the root, not a .txt or not UTF-8; exit 2 for a bad
-    argument, a symbol the atlas refuses or a run with no batches.json. Writes no approval.
+    One row `{key, gene, batch, mode, inputs: {manifest, texts, registries}}` per batch of
+    batches.json (extract and blind-read, identical rows) or per judging/judge-NN.md (judge, with
+    `owner_notes` too: the `fix` notes of `--decisions` for the findings that manifest names, or
+    `none`); each text and registry is under a `--- file: <path> ---` marker. Exit 1, nothing
+    written, for a named file that is missing, outside the root, not a .txt or not UTF-8, or a
+    missing registry; exit 2 for a bad argument (an unusable `--decisions`, or one given for a
+    reader), a symbol the atlas refuses or a run with no batches.json. Writes no approval.
     """
     _require_root(root)
     if role not in ("extract", "blind-read", "judge"):
         raise _fail(f"--role {role!r} is not extract, blind-read or judge", 2)
     try:
-        target(root, symbol, _atlas_cli(root, atlas_cli))
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        notes = requests_module.fix_notes(decisions, approved) if decisions is not None else None
         count = requests_module.read_requests(
-            root, symbol, run, cast(requests_module.Role, role), out
+            root, symbol, run, cast(requests_module.Role, role), out, notes
         )
-    except (AtlasError, RunFormatError) as exc:
+    except (AtlasError, RunFormatError, requests_module.RequestsUsageError) as exc:
         raise _fail(str(exc), 2) from None
     except (requests_module.RequestsError, OSError) as exc:
         raise _fail(str(exc), 1) from None

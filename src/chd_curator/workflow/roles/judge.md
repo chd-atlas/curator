@@ -16,6 +16,15 @@ The `texts` input holds each paper's text under a `--- file: <path> ---` marker,
 path is exactly the one the manifest names (`text path`, `abstract path`, `supplement`): use
 the marker to find the text the manifest describes, and quote only from it.
 
+The `registries` input holds the atlas's cohort and phenotype registries under the same
+marker, by their paths in the atlas: where the cited rules send you to one of those files,
+read it there. Where they send you to anything else you are not given (the burden mirror, the
+transcript frame a command prints), leave that check to the code steps that follow.
+
+The `owner_notes` input is `none`, or one line per finding of this batch the owner sent back
+in review, `- <id>: <note>`: settle each such finding with its note in hand, writing it in
+`findings` under its id as the paper's own words support the note.
+
 The manifest's title line is `# Judging batch NN of run ...`. Each of its `## ` items is one
 of three kinds, told by its heading:
 
@@ -55,3 +64,11 @@ Manifest:
 Papers:
 
 {{texts}}
+
+Registries:
+
+{{registries}}
+
+Owner's notes:
+
+{{owner_notes}}

@@ -34,13 +34,17 @@ FIXTURE_ROOT = HERE / "fixtures" / "roles"
 RUN = HERE / "fixtures" / "run" / "local" / "literature" / "runs" / "TBX5" / "r1"
 JUDGE = HERE / "fixtures" / "run-judge"
 TRIAGE = {"gene": "TBX5", "hit": "PMID:91000001\nA title\nAn abstract."}
-READER = {"manifest": '{"papers": []}', "texts": "== PMID:91000001 ==\nSome text."}
+READER = {
+    "manifest": '{"papers": []}',
+    "texts": "== PMID:91000001 ==\nSome text.",
+    "registries": "--- file: curation/cohorts.yaml ---\ncohorts: []\n",
+}
 INPUTS: dict[str, dict[str, str]] = {
     "triage-screen": TRIAGE,
     "triage-check": TRIAGE,
     "extract": READER,
     "blind-read": READER,
-    "judge": READER,
+    "judge": {**READER, "owner_notes": "none"},
 }
 
 

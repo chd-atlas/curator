@@ -122,7 +122,7 @@ def test_one_row_per_judge_manifest(tmp_path: Path, atlas_root: Path) -> None:
 
 
 @pytest.mark.parametrize("role", ["extract", "judge"])
-@pytest.mark.parametrize("what", ["missing", "outside", "pdf"])
+@pytest.mark.parametrize("what", ["missing", "outside", "absolute", "pdf"])
 def test_a_bad_named_file_writes_nothing_and_names_it(
     tmp_path: Path, atlas_root: Path, role: str, what: str
 ) -> None:
@@ -131,6 +131,7 @@ def test_a_bad_named_file_writes_nothing_and_names_it(
     target = {
         "missing": f"{root}/local/literature/texts/91000002/nope.txt",
         "outside": f"{root}/../outside.txt",
+        "absolute": str(root.parent / "outside.txt"),
         "pdf": f"{root}/local/literature/texts/91000002/paper.pdf",
     }[what]
     (root / "local/literature/texts/91000002/paper.pdf").write_bytes(b"plain text under a pdf name")
@@ -195,3 +196,124 @@ def test_a_line_that_looks_like_a_file_but_is_not_a_known_form_is_refused(
         + "- title: Supplement and path: a note\n"
     )
     assert _command(p, out)[0] == 0
+
+
+# ---- the fix wave -------------------------------------------------------------------------------
+
+
+def test_a_text_linked_from_inside_the_root_is_read_through_the_link(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    """R-SWA-54: in a scratch root every pre-existing text is a link into the atlas, and the
+    resolved path is outside the root; containment is lexical, the read follows the link."""
+    p = _batched(tmp_path, atlas_root)
+    inside = p.root / "local/literature/texts/91000002/fulltext.txt"
+    elsewhere = tmp_path / "atlas-copy" / "fulltext.txt"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text("the atlas's copy, reached through a link\n")
+    inside.unlink()
+    inside.symlink_to(elsewhere)
+    out = tmp_path / "req.jsonl"
+    code, text = _requests(p, "extract", out)
+    assert code == 0, text
+    (row,) = _rows(out)
+    assert (
+        f"--- file: {inside} ---\nthe atlas's copy, reached through a link\n"
+        in (row["inputs"]["texts"])
+    )
+
+
+@pytest.mark.parametrize("role", ["extract", "blind-read", "judge"])
+def test_reader_and_judge_rows_carry_the_registries_the_rules_cite(
+    tmp_path: Path, atlas_root: Path, role: str
+) -> None:
+    """R-SWA-53: the cited rules send the reader to curation/cohorts.yaml and
+    curation/phenotypes.yaml, which a model with no tools cannot open."""
+    p = _batched(tmp_path, atlas_root)
+    _judge_manifest(p, "01", f"{p.root}/local/literature/texts/91000002/supplements/s1.txt")
+    out = tmp_path / "req.jsonl"
+    assert _requests(p, role, out)[0] == 0
+    (row,) = _rows(out)
+    expected = "\n".join(
+        f"--- file: {rel} ---\n{(p.root / rel).read_text()}"
+        for rel in ("curation/cohorts.yaml", "curation/phenotypes.yaml")
+    )
+    assert row["inputs"]["registries"] == expected
+    (p.root / "curation/phenotypes.yaml").unlink()
+    code, text = _requests(p, role, tmp_path / "again.jsonl")
+    assert code == 1 and "curation/phenotypes.yaml" in text
+
+
+def _decisions_file(path: Path, findings: list[dict[str, Any]], symbol: str = "TBX5") -> Path:
+    stamp = "2026-11-27T10:00:00Z"
+    path.write_text(
+        json.dumps(
+            {
+                "format": 1, "gene": "HGNC:11604", "symbol": symbol,
+                "page": {"built_on": stamp, "atlas_commit": None,
+                         "literature_sha256": "sha256:" + "a" * 64},
+                "reviewer": {"name": "E.A.M", "role": "owner"},
+                "session": {"started_at": stamp, "finished_at": stamp, "active_ms": 1},
+                "findings": [
+                    {"shown_digest": "sha256:" + "b" * 64, "active_ms": 1,
+                     "first_opened_at": stamp, "decided_at": stamp, **f}
+                    for f in findings
+                ],
+                "papers_seen": [], "triage": None,
+            }
+        )
+    )  # fmt: skip
+    return path
+
+
+def test_the_judge_rows_carry_the_owners_fix_notes_for_the_findings_they_cover(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    """R-SWA-45: a fix round starts at JUDGE with the owner's decisions; without the notes in
+    the judge's input, the judge answers the same question and a cache hit returns the same
+    answer, so the corrections vanish."""
+    p = _batched(tmp_path, atlas_root)
+    sup = f"{p.root}/local/literature/texts/91000002/supplements/s1.txt"
+    manifest = _judge_manifest(p, "01", sup)
+    manifest.write_text(
+        manifest.read_text()
+        .replace("## A (first pass only)", "## CHDA:LIT:0009002 (first pass only)")
+        .replace("## B (first pass only)", "## CHDA:LIT:0009003 (blind pass CHDA:LIT:0801002)")
+    )
+    plain = tmp_path / "plain.jsonl"
+    assert _requests(p, "judge", plain)[0] == 0
+    assert _rows(plain)[0]["inputs"]["owner_notes"] == "none"
+    decisions = _decisions_file(
+        tmp_path / "d.json",
+        [
+            {"id": "CHDA:LIT:0009003", "decision": "fix", "note": "screened is 2, see Table 1"},
+            {"id": "CHDA:LIT:0009002", "decision": "approve", "note": ""},
+            {"id": "CHDA:LIT:0009999", "decision": "fix", "note": "another batch's finding"},
+        ],
+    )
+    noted = tmp_path / "noted.jsonl"
+    result = runner.invoke(
+        app,
+        ["read-requests", "TBX5", "--run", "r1", "--role", "judge", "--root", str(p.root),
+         "--out", str(noted), "--decisions", str(decisions)],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    notes = _rows(noted)[0]["inputs"]["owner_notes"]
+    assert notes == "- CHDA:LIT:0009003: screened is 2, see Table 1"
+    digests = [
+        assemble("judge", atlas_root, _rows(path)[0]["inputs"]).digest for path in (plain, noted)
+    ]
+    assert digests[0] != digests[1]  # so a fix round is never answered from the cache
+    readers = runner.invoke(
+        app,
+        ["read-requests", "TBX5", "--run", "r1", "--role", "extract", "--root", str(p.root),
+         "--out", str(tmp_path / "x.jsonl"), "--decisions", str(decisions)],
+    )  # fmt: skip
+    assert readers.exit_code == 2 and "judge" in readers.output
+    other = _decisions_file(tmp_path / "o.json", [], symbol="GATA4")
+    refused = runner.invoke(
+        app,
+        ["read-requests", "TBX5", "--run", "r1", "--role", "judge", "--root", str(p.root),
+         "--out", str(tmp_path / "y.jsonl"), "--decisions", str(other)],
+    )  # fmt: skip
+    assert refused.exit_code == 2 and "GATA4" in refused.output

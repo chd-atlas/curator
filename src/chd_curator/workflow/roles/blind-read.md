@@ -23,6 +23,12 @@ The `texts` input holds each paper's text under a `--- file: <path> ---` marker,
 path is exactly the one the manifest names (`text path`, `abstract path`, `supplement`): use
 the marker to find the text the manifest describes, and quote only from it.
 
+The `registries` input holds the atlas's cohort and phenotype registries under the same
+marker, by their paths in the atlas: where the cited rules send you to one of those files,
+read it there. Where they send you to anything else you are not given (the burden mirror, the
+transcript frame a command prints), leave that check to the code steps that follow (merge,
+normalise), and name in your `report` what you could not check.
+
 When the manifest's title line (`# Batch NN of run ...`) gives `mode new`, answer with the
 keys of the answer schema:
 
@@ -57,3 +63,7 @@ Manifest:
 Papers:
 
 {{texts}}
+
+Registries:
+
+{{registries}}

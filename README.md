@@ -751,17 +751,26 @@ them. It writes no approval.
 
 ```bash
 chd-curator read-requests TBX5 --run r1 --role extract|blind-read|judge --root /path/to/atlas \
-    --out req.jsonl
+    --out req.jsonl [--decisions decisions.json]
 ```
 
 Writes the rows `ask --validate check-batch` takes, from the run folder: for `extract` and
 `blind-read` one row per batch of `batches.json` (the two roles get identical rows), for `judge`
 one per `judging/judge-NN.md`. `inputs.manifest` is the manifest's text; `inputs.texts` is every
 file the manifest names (`- text path:`, `- abstract path:`, `- supplement:`), once each, in order,
-each under `--- file: <path as the manifest names it> ---`. `gene` is the symbol as typed (it names
-the run directory) and `mode` is the run's, `new` for a `reread` run. Exit 1, nothing written, for
-a named file that is missing, outside the root, not a `.txt` or not UTF-8; exit 2 for a bad argument
-or a run with no `batches.json`. It writes no approval.
+each under `--- file: <path as the manifest names it> ---`; a path inside the root is read through
+any link (in a scratch root a text is a link into the atlas). `inputs.registries` holds
+`curation/cohorts.yaml` and `curation/phenotypes.yaml` under the same marker, since the cited
+rules send the reader there. A judge row also has `inputs.owner_notes`: with `--decisions` (the
+owner's decisions file of a fix round) the `fix` notes on the findings that manifest names, else
+`none`, so a fix round's judge input, and its cache key, carry the owner's corrections. `gene` is the
+symbol as typed (it names the run directory) and `mode` is the run's, `new` for a `reread` run.
+Exit 1, nothing written, for a named file that is missing, outside the root, not a `.txt` or not
+UTF-8, or a missing registry; exit 2 for a bad argument (a `--decisions` that cannot be used, or
+one given for a reader) or a run with no `batches.json`. It writes no approval. With
+`--validate check-batch`, `ask` sets each finding's `extracted_by` itself (a reader's names its
+skill and the backend's model; a judge's keeps the reading it settles) and marks the row
+`"attribution": "set by ask"`.
 
 ### Triaging a gene's hits with a screen and a check
 
