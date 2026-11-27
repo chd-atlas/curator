@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -169,3 +170,134 @@ def test_export_state_names_a_listed_text_that_is_missing(tmp_path: Path, atlas_
     assert result.exit_code == 1
     assert "91000002/fulltext.txt" in result.output
     assert not (tmp_path / "state").exists() or not any((tmp_path / "state").rglob("*.txt"))
+
+
+def _write_everywhere(work: Path) -> None:
+    """New files and directories at several depths of a scratch root."""
+    for rel in (
+        "local/new-top.txt",
+        "local/literature/new-mid.txt",
+        "local/literature/runs/TBX5/r1/new-deep.txt",
+        "local/literature/runs/TBX5/r2/sub/deeper/new.txt",
+        "local/literature/texts/91000002/new-in-text.txt",
+        "curation/new-curation.txt",
+        "curation/literature/new-lit.txt",
+    ):
+        target = work / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("new")
+
+
+def _tree(root: Path) -> dict[str, str]:
+    """Every entry's relative path (directories as '/') with file hashes, links followed."""
+    out = {str(p.relative_to(root)) + "/": "" for p in root.rglob("*") if p.is_dir()}
+    return {**out, **snapshot(root)}
+
+
+@pytest.mark.parametrize("name", ["local", "curation"])
+def test_a_top_level_directory_that_is_itself_a_link_is_mirrored_not_linked(
+    tmp_path: Path, atlas_root: Path, name: str
+) -> None:
+    """An atlas worktree here has `local` as a link to the main checkout's `local/`."""
+    atlas = make_atlas(tmp_path, atlas_root)
+    elsewhere = tmp_path / "elsewhere" / name
+    elsewhere.parent.mkdir()
+    os.rename(atlas / name, elsewhere)
+    (atlas / name).symlink_to(elsewhere)
+    before = (_tree(atlas), _tree(elsewhere))
+    assert scratch(atlas, tmp_path / "work")[0] == 0
+    assert not (tmp_path / "work" / name).is_symlink()
+    _write_everywhere(tmp_path / "work")
+    assert (_tree(atlas), _tree(elsewhere)) == before
+
+
+def test_a_directory_link_inside_a_mirrored_tree_is_mirrored_not_linked(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    atlas = make_atlas(tmp_path, atlas_root)
+    shared = tmp_path / "shared"
+    (shared / "deep").mkdir(parents=True)
+    (shared / "deep/kept.txt").write_text("kept")
+    (atlas / "local/literature/shared").symlink_to(shared)
+    before = (_tree(atlas), _tree(shared))
+    assert scratch(atlas, tmp_path / "work")[0] == 0
+    mirrored = tmp_path / "work/local/literature/shared"
+    assert mirrored.is_dir() and not mirrored.is_symlink()
+    assert (mirrored / "deep").is_dir() and not (mirrored / "deep").is_symlink()
+    assert (mirrored / "deep/kept.txt").read_text() == "kept"
+    (mirrored / "new.txt").write_text("new")
+    (mirrored / "deep/sub").mkdir()
+    (mirrored / "deep/sub/new.txt").write_text("new")
+    _write_everywhere(tmp_path / "work")
+    assert (_tree(atlas), _tree(shared)) == before
+
+
+def test_a_directory_link_loop_is_refused(tmp_path: Path, atlas_root: Path) -> None:
+    atlas = make_atlas(tmp_path, atlas_root)
+    (atlas / "local/literature/loop").symlink_to(atlas / "local/literature")
+    code, out = scratch(atlas, tmp_path / "work")
+    assert code == 2 and "loop" in out
+
+
+def test_writers_that_replace_a_file_link_never_write_through_it(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    """The run folder already exists as links (no --state). `write_batches` rewrites `batches.json`
+    (run.py's `_write_json`), and `write_evidence` an evidence file (`_write_yaml`), each
+    through a link to a file of the atlas."""
+    from chd_curator.run import Quote, RunPaths, load_batches, write_batches, write_evidence
+
+    atlas = make_atlas(tmp_path, atlas_root)
+    run = atlas / "local/literature/runs/TBX5/r1"
+    (run / "evidence").mkdir()
+    (run / "evidence/batch-01.yaml").write_text("CHDA:LIT:0009001: []\n")
+    before = _tree(atlas)
+    work = tmp_path / "work"
+    assert scratch(atlas, work)[0] == 0
+    wrun = work / "local/literature/runs/TBX5/r1"
+    for linked in ("batches.json", "evidence/batch-01.yaml"):
+        assert (wrun / linked).is_symlink()
+    paths = RunPaths(work, "TBX5", "r1")
+    plan = load_batches(paths)
+    write_batches(paths, replace(plan, batches=plan.batches[:1]))
+    assert not (wrun / "batches.json").is_symlink()
+    assert len(load_batches(paths).batches) == 1
+    write_evidence(
+        RunPaths(work, "TBX5", "r1"), "01", {"CHDA:LIT:0009002": [Quote("f", "q ü", "w")]}
+    )
+    assert (wrun / "evidence/batch-01.yaml").read_text() != "CHDA:LIT:0009001: []\n"
+    assert not (wrun / "evidence/batch-01.yaml").is_symlink()
+    assert _tree(atlas) == before
+
+
+def test_review_page_replaces_a_linked_page_and_never_writes_through_it(
+    tmp_path: Path, stub_atlas: Path, atlas_root: Path
+) -> None:
+    """The decisions fixture is a run that `review-page` can build; build it in the atlas
+    first, so the scratch root holds `review.html` as a link."""
+    from test_decisions import FIXTURE
+
+    atlas = tmp_path / "atlas"
+    shutil.copytree(FIXTURE, atlas, ignore=shutil.ignore_patterns("export"))
+    shutil.copytree(atlas_root / "schemas", atlas / "schemas")
+
+    def page(root: Path) -> None:
+        result = runner.invoke(
+            app,
+            ["review-page", "TBX5", "--run", "r1", "--reviewer", "E.A.M", "--root", str(root)]
+            + ["--atlas-cli", str(stub_atlas)],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+    page(atlas)
+    html = atlas / "local/literature/runs/TBX5/r1/review.html"
+    html.write_text("<old page>")
+    before = _tree(atlas)
+    work = tmp_path / "work"
+    assert scratch(atlas, work)[0] == 0
+    assert (work / "local/literature/runs/TBX5/r1/review.html").is_symlink()
+    page(work)
+    written = work / "local/literature/runs/TBX5/r1/review.html"
+    assert not written.is_symlink() and written.read_text() != "<old page>"
+    assert _tree(atlas) == before

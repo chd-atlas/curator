@@ -1353,7 +1353,7 @@ def review_page_command(
         )
     out = paths.dir / ("review.html" if role == "owner" else f"review-{name_slug}.html")
     try:
-        out.write_text(review_page.render(data), encoding="utf-8")
+        write_bytes_atomically(out, review_page.render(data).encode("utf-8"))
     except OSError as exc:
         raise _fail(f"{out}: cannot be written: {exc}", 1) from None
     typer.echo(str(out))
@@ -2009,6 +2009,9 @@ def integrate_command(
     present with different bytes. Exit 2 for an unreadable package. Writes the proposal as it
     stands, and no approval of its own: an approval in the proposal is the proposal's.
     """
-    code = package_module.integrate(package, atlas)
+    try:
+        code = package_module.integrate(package, atlas)
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
     if code:
         raise typer.Exit(code=code)

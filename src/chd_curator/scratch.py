@@ -9,8 +9,12 @@ Why the directories are real. A symlinked directory would let a new file land in
 and an atomic replace (``fs.py``) swaps a file link, never its target. So ``curation`` and
 ``local`` are mirrored as real directories all the way down with every file a link, and every
 other top-level entry is one link to its resolved path. A scratch root is therefore only as safe
-as the rule that a writer replaces files and never edits one in place; every curator write path
-goes through ``fs.write_bytes_atomically``, which is what ``tests/test_scratch.py`` exercises.
+as the rule that a writer replaces files and never edits one in place. Every curator write that
+can run in a scratch root goes through ``fs.write_bytes_atomically`` (it replaces a link, never
+writes through it); ``tests/test_scratch.py`` exercises ``merge``, ``write_batches``,
+``write_evidence`` and ``review-page`` on a root whose files are links. A directory that is
+itself a link (``local`` in an atlas worktree is one) is mirrored from its resolved target, so
+a root built over it still holds only real directories; a link loop is refused.
 """
 
 from __future__ import annotations
@@ -54,12 +58,19 @@ def copy_file(source: Path, target: Path) -> None:
     write_bytes_atomically(target, source.read_bytes())
 
 
-def _mirror(src: Path, dst: Path) -> None:
-    """Real directories, every file or link a link to its resolved target."""
+def _mirror(src: Path, dst: Path, active: tuple[Path, ...] = ()) -> None:
+    """Real directories all the way down, every file a link to its resolved target.
+
+    A directory link is followed and mirrored from its resolved target, never linked whole (a
+    link to a directory would let a new file land in its target). `active` holds the resolved
+    directories being mirrored above this one: reaching one again is a loop and is refused."""
+    resolved = src.resolve()
+    if resolved in active:
+        raise ScratchError(f"{src}: a directory link loop (it resolves to {resolved} again)", 2)
     dst.mkdir()
-    for entry in sorted(src.iterdir()):
-        if entry.is_dir() and not entry.is_symlink():
-            _mirror(entry, dst / entry.name)
+    for entry in sorted(resolved.iterdir()):
+        if entry.is_dir():
+            _mirror(entry, dst / entry.name, (*active, resolved))
         else:
             (dst / entry.name).symlink_to(entry.resolve())
 
@@ -87,7 +98,7 @@ def scratch_root(atlas: Path, dest: Path, symbol: str, state: Path | None) -> No
         raise ScratchError(f"--dest {dest} already exists", 2)
     dest.mkdir(parents=True)
     for entry in sorted(atlas.iterdir()):
-        if entry.name in _MIRRORED and entry.is_dir() and not entry.is_symlink():
+        if entry.name in _MIRRORED and entry.is_dir():  # a link to a directory too
             _mirror(entry, dest / entry.name)
         else:
             (dest / entry.name).symlink_to(entry.resolve())

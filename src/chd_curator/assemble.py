@@ -67,7 +67,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -75,6 +74,7 @@ from typing import Any, Final
 
 from chd_curator.compare import CompareError, differing_fields, read_second, stale_agreements
 from chd_curator.diff import DiffError, parse_findings_file
+from chd_curator.fs import write_bytes_atomically
 from chd_curator.merge import (
     PREFIX,
     Curated,
@@ -876,7 +876,7 @@ def commit(run: RunPaths, built: Assembled) -> None:
     if previous is None:
         run.assemble_prev.unlink(missing_ok=True)
     else:
-        shutil.copyfile(run.assemble, run.assemble_prev)
+        write_bytes_atomically(run.assemble_prev, run.assemble.read_bytes())
     first = replace(
         built.record,
         judged=previous.judged if previous else {},

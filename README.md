@@ -806,7 +806,14 @@ checkout's digests of the three files and its HEAD commit; `package` writes `pro
 `texts/`, `review.html` (when the run has one) and `package.json`; `integrate` copies the proposal
 into the atlas only when the three files still have the digests the run started from, the run
 folder does not exist and no text differs, naming every file that fails and copying nothing
-otherwise. An existing `--dest` or `--out` exits 2. None of the five writes an approval.
+otherwise. An existing `--dest` or `--out` exits 2. The copy itself is not atomic across files: an
+I/O error part-way leaves a partial run folder, and `integrate` says so and names it.
+
+The package's JSON file holds, in this order of meaning: format 1, the symbol, the run id, the
+base (the digests object that `base` printed), the atlas commit (the full HEAD commit `base`
+printed, null when the atlas is not a git checkout), the models (the list `--models` gave, empty
+when omitted) and the review (the name of the review page when the run folder holds one, null
+when it does not).
 
 ## Develop
 

@@ -5,6 +5,11 @@ an absent one staying absent), ``run/`` (the run folder), ``texts/`` (the texts 
 laid out as under ``local/literature/texts/`` plus ``supplied/`` for supplied PDFs),
 ``review.html`` when the run has one, and ``package.json`` written last.
 
+``package.json`` is ``{format: 1, symbol, run_id, base, atlas_commit, models, review}``: ``base``
+is the ``digests`` object ``base`` printed, ``atlas_commit`` the full HEAD commit it printed (null
+outside a git checkout), ``models`` the ``--models`` list ([] when omitted) and ``review`` is
+``"review.html"`` when the run folder holds a review page, else null.
+
 ``integrate`` writes nothing until every check has passed: (1) each of the three files in the
 checkout must still have the digest the run started from (every differing file is named), and
 each file the checkout holds must have a proposal; (2) the run folder must not exist; (3) a
@@ -132,7 +137,9 @@ def _texts_in(package: Path) -> list[tuple[Path, str]]:
 
 def integrate(package: Path, atlas: Path) -> int:
     """Bring `package` into `atlas`. Returns the exit code (0 ok, 1 refused, 2 usage); every
-    check runs before the first write, and a refusal names what it found."""
+    check runs before the first write, and a refusal names what it found. The copy itself is
+    not atomic across files: an I/O error part-way leaves a partial run folder (and possibly
+    texts or curated files), and the message says so and names the run folder."""
     try:
         return _integrate(package, atlas)
     except ScratchError as exc:
@@ -159,6 +166,13 @@ def _integrate(package: Path, atlas: Path) -> int:
     ]
     if problems:
         raise ScratchError("refused, nothing copied:\n" + "\n".join(problems), 1)
+    not_files = [
+        f"{rel}: exists and is not a file"
+        for rel in (*mutable_paths(symbol), *(t for _, t in _texts_in(package)))
+        if os.path.lexists(atlas / rel) and not (atlas / rel).is_file()
+    ]
+    if not_files:
+        raise ScratchError("refused, nothing copied:\n" + "\n".join(not_files), 1)
     run_target = RunPaths(atlas, symbol, run_id).dir
     if os.path.lexists(run_target):
         raise ScratchError(f"refused, nothing copied: {run_target} already exists", 1)
@@ -173,16 +187,24 @@ def _integrate(package: Path, atlas: Path) -> int:
             differing.append(f"{rel}: already present with different bytes")
     if differing:
         raise ScratchError("refused, nothing copied:\n" + "\n".join(differing), 1)
-    for source, rel in new:
-        copy_file(source, atlas / rel)
     run_files = [f for f in sorted((package / "run").rglob("*")) if f.is_file()]
-    for file in run_files:
-        copy_file(file, run_target / file.relative_to(package / "run"))
     copied = 0
-    for rel in mutable_paths(symbol):
-        if (proposal / rel).is_file():
-            copy_file(proposal / rel, atlas / rel)
-            copied += 1
+    try:
+        for source, rel in new:
+            copy_file(source, atlas / rel)
+        for file in run_files:
+            copy_file(file, run_target / file.relative_to(package / "run"))
+        for rel in mutable_paths(symbol):
+            if (proposal / rel).is_file():
+                copy_file(proposal / rel, atlas / rel)
+                copied += 1
+    except OSError as exc:
+        raise ScratchError(
+            f"{exc}; the copy is not atomic, so the atlas holds a partial integration "
+            f"(texts, run folder {run_target}, {copied} curated file(s)); inspect it with git "
+            "status and remove it before trying again",
+            1,
+        ) from None
     print(
         f"integrated {symbol}/{run_id}: {copied} curated file(s), {len(run_files)} run file(s), "
         f"{len(new)} new text file(s) ({len(texts) - len(new)} already present)"

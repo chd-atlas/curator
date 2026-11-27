@@ -118,3 +118,37 @@ def test_integrate_refuses_an_unusable_package(
     code, _ = integrate(pkg, atlas)
     assert code == 2
     assert snapshot(atlas) == before
+
+
+def test_integrate_refuses_a_text_target_that_is_a_directory(
+    packaged: tuple[Path, Path, Path],
+) -> None:
+    atlas, pkg, _ = packaged
+    target = atlas / "local/literature/texts/91000002/fulltext.txt"
+    target.unlink()
+    target.mkdir()
+    before = snapshot(atlas)
+    code, out = integrate(pkg, atlas)
+    assert code == 1 and "91000002/fulltext.txt" in out and "not a file" in out
+    assert "Traceback" not in out
+    assert snapshot(atlas) == before and not (atlas / RUN).exists()
+
+
+def test_integrate_reports_an_io_error_mid_copy_without_a_traceback(
+    packaged: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chd_curator import package as package_module
+
+    atlas, pkg, _ = packaged
+    real = package_module.copy_file
+    calls = {"n": 0}
+
+    def flaky(source: Path, target: Path) -> None:
+        calls["n"] += 1
+        if str(target).startswith(str(atlas / RUN)) and calls["n"] > 1:
+            raise OSError("disk full")
+        real(source, target)
+
+    monkeypatch.setattr(package_module, "copy_file", flaky)
+    code, out = integrate(pkg, atlas)
+    assert code == 1 and "disk full" in out and "partial" in out and RUN in out
