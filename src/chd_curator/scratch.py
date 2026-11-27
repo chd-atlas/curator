@@ -243,6 +243,32 @@ def base_digests(atlas: Path, symbol: str) -> dict[str, str | None]:
     }
 
 
+def tree_digest(directory: Path) -> str:
+    """The digest of a directory's files: sha256 over, for each file in the order of its path
+    relative to `directory` (POSIX form, sorted as strings), the UTF-8 bytes of
+    ``<relative path> NUL <sha256 hex of the file's bytes> LF``. Links to files are read through;
+    directories contribute nothing of their own, so an empty one changes nothing."""
+    files = sorted(
+        (f.relative_to(directory).as_posix(), f) for f in directory.rglob("*") if f.is_file()
+    )
+    outer = hashlib.sha256()
+    for rel, file in files:
+        outer.update(f"{rel}\0{sha256_of(file)}\n".encode())
+    return outer.hexdigest()
+
+
+def text_digests(atlas: Path) -> dict[str, str]:
+    """``local/literature/texts/<name>`` -> :func:`tree_digest` for each text directory of the
+    checkout (R-SWA-47), so ``integrate`` can tell a text re-fetched by the run from one the
+    atlas changed meanwhile."""
+    texts = atlas / TEXTS_DIR
+    return {
+        f"{TEXTS_DIR}/{d.name}": tree_digest(d)
+        for d in sorted(texts.iterdir() if texts.is_dir() else [])
+        if d.is_dir()
+    }
+
+
 def atlas_head(atlas: Path) -> str | None:
     """The checkout's full HEAD commit, or None when it is not a git checkout."""
     try:

@@ -2002,12 +2002,17 @@ def base_command(
     atlas: Path = typer.Option(..., "--atlas", help="The atlas checkout."),
     gene: str = typer.Option(..., "--gene", help="The approved symbol."),
 ) -> None:
-    """Print, as JSON, the sha256 of the gene's three mutable files (null when absent) and the
-    checkout's HEAD commit (null when it is not a git checkout). Writes nothing."""
+    """Print, as JSON, `digests` (the sha256 of the gene's three mutable files, null when
+    absent, and a tree digest of each text folder `local/literature/texts/<name>`, so
+    `integrate` can replace a text the run re-fetched) and the checkout's HEAD commit (null when
+    it is not a git checkout). Writes nothing."""
     if not atlas.is_dir():
         raise _fail(f"--atlas {atlas} is not a directory", 2)
     try:
-        digests_ = scratch_module.base_digests(atlas, gene)
+        digests_ = {
+            **scratch_module.base_digests(atlas, gene),
+            **scratch_module.text_digests(atlas),
+        }
     except OSError as exc:
         raise _fail(str(exc), 1) from None
     body = {"atlas_commit": scratch_module.atlas_head(atlas), "digests": digests_}
@@ -2021,28 +2026,37 @@ def package_command(
     run: str = typer.Option(..., "--run", help="The run id."),
     base: Path = typer.Option(..., "--base", help="The JSON `base` printed at the run's start."),
     out: Path = typer.Option(..., "--out", help="The package directory to create."),
-    models: Path | None = typer.Option(
-        None, "--models", help="A JSON file: a list of {role, model} objects."
+    answers: list[str] = typer.Option(
+        [], "--answers", help="<role>=<answers file> the run used; repeat for each."
     ),
 ) -> None:
     """Package a run's proposal: the three files, the run folder, its texts and `package.json`.
 
-    Exit 2 for an existing `--out` or an unreadable `--base` or `--models`; exit 1 for a missing
-    run folder or a text `texts.json` names that is missing. Writes no approval.
+    `models` in `package.json` is one `{role, model_key, verdict, rules_digest}` per distinct
+    model and rules of the `--answers` rows; `verdict` is the register's (`pass`, `fail`,
+    `reference`), `unqualified` with no entry, or `test-backend`. Exit 2 for an existing `--out`,
+    an unreadable `--base` or answers file, or an unknown role; exit 1 for a text `texts.json`
+    names that is missing, or a missing run folder. Writes no approval.
     """
+    pairs: list[tuple[str, Path]] = []
+    for item in answers:
+        role, sep, path = item.partition("=")
+        if not sep or not role or not path:
+            raise _fail(f"--answers {item!r} is not <role>=<path>", 2)
+        pairs.append((role, Path(path)))
     try:
         loaded = json.loads(base.read_text(encoding="utf-8"))
-        listed = json.loads(models.read_text(encoding="utf-8")) if models is not None else []
     except (OSError, ValueError) as exc:
-        raise _fail(f"cannot read --base or --models: {exc}", 2) from None
+        raise _fail(f"cannot read --base: {exc}", 2) from None
     if not isinstance(loaded, dict) or not isinstance(loaded.get("digests"), dict):
         raise _fail(f"{base}: not the JSON `chd-curator base` prints", 2)
-    if not isinstance(listed, list) or not all(isinstance(m, dict) for m in listed):
-        raise _fail(f"{models}: not a list of objects", 2)
     try:
+        listed = package_module.models_from_answers(pairs, register_mod.load_register())
         package_module.write_package(
             root, gene, run, loaded["digests"], out, listed, loaded.get("atlas_commit")
         )
+    except register_mod.RegisterError as exc:
+        raise _fail(str(exc), 2) from None
     except scratch_module.ScratchError as exc:
         raise _fail(str(exc), exc.code) from None
     except OSError as exc:
@@ -2058,9 +2072,11 @@ def integrate_command(
     """Bring a package into the atlas, only onto the base the run started from.
 
     Refuses (exit 1, nothing copied, every file named) when a mutable file of the checkout no
-    longer has the package's base digest, when the run folder already exists, or when a text is
-    present with different bytes. Exit 2 for an unreadable package. Writes the proposal as it
-    stands, and no approval of its own: an approval in the proposal is the proposal's.
+    longer has the package's base digest, when the run folder already exists, when a text folder
+    changed since the base (or appeared or went since), or when a supplied PDF is present with
+    different bytes. A text folder still at its base digest is replaced by the package's. Exit 2
+    for an unreadable package. Writes the proposal as it stands, and no approval of its own: an
+    approval in the proposal is the proposal's.
     """
     try:
         code = package_module.integrate(package, atlas)

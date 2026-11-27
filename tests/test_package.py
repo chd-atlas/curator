@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -53,15 +54,17 @@ def test_package_json_records_the_atlas_commit_and_the_models(
     base = base_json(atlas, tmp_path / "base.json")
     assert base["atlas_commit"] == head
     digests = base["digests"]
-    assert isinstance(digests, dict) and list(digests) == sorted(MUTABLE_TBX5)
+    folders = [f"local/literature/texts/{n}" for n in ("91000001", "91000002", "91000003")]
+    folders.append("local/literature/texts/91000004")
+    assert isinstance(digests, dict) and sorted(digests) == sorted([*MUTABLE_TBX5, *folders])
+    one = atlas / folders[1]
+    files = sorted((f.relative_to(one).as_posix(), f) for f in one.rglob("*") if f.is_file())
+    formula = "".join(f"{rel}\0{hashlib.sha256(f.read_bytes()).hexdigest()}\n" for rel, f in files)
+    assert digests[folders[1]] == hashlib.sha256(formula.encode()).hexdigest()
     scratch(atlas, tmp_path / "work")
     _pubmed(monkeypatch)
     merge(tmp_path / "work", stub_atlas)
-    models = tmp_path / "models.json"
-    models.write_text(json.dumps([{"role": "extract", "model": "m-1"}]))
-    code, out = package(
-        tmp_path / "work", tmp_path / "base.json", tmp_path / "pkg", "--models", str(models)
-    )
+    code, out = package(tmp_path / "work", tmp_path / "base.json", tmp_path / "pkg")
     assert code == 0, out
     meta = json.loads((tmp_path / "pkg/package.json").read_text())
     assert meta == {
@@ -70,7 +73,7 @@ def test_package_json_records_the_atlas_commit_and_the_models(
         "run_id": "r1",
         "base": digests,
         "atlas_commit": head,
-        "models": [{"role": "extract", "model": "m-1"}],
+        "models": [],
         "review": None,
     }
     work = snapshot(tmp_path / "work")
@@ -95,3 +98,52 @@ def test_a_git_free_atlas_has_a_null_commit_and_a_review_page_is_packaged(
     assert package(tmp_path / "work", tmp_path / "base.json", tmp_path / "pkg")[0] == 0
     assert (tmp_path / "pkg/review.html").read_text() == "<html>"
     assert json.loads((tmp_path / "pkg/package.json").read_text())["review"] == "review.html"
+
+
+def _answers(path: Path, *rows: dict[str, object]) -> Path:
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return path
+
+
+def test_the_models_are_the_ones_the_answers_used_with_their_register_verdicts(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    """R-SWA-49 (spec section 5: "the models and register entries used"): one entry per role,
+    model and rules the answers carry, its verdict from the register."""
+    atlas = make_atlas(tmp_path, atlas_root)
+    base_json(atlas, tmp_path / "base.json")
+    scratch(atlas, tmp_path / "work")
+    failed = "openai_compat:Qwen3-30B-A3B-Instruct-2507-Q4_K_M@ec071ed07538"  # a `fail` entry
+    screen = _answers(
+        tmp_path / "screen.jsonl",
+        {"key": "PMID:1", "model_key": failed, "rules_digest": "r1", "parsed": {}},
+        {"key": "PMID:2", "model_key": "openai_compat:mystery", "rules_digest": "r1"},
+        {"key": "PMID:3", "error": "HTTP 400", "attempts": 1},
+    )
+    extract = _answers(
+        tmp_path / "extract.jsonl",
+        {"key": "TBX5:01", "model_key": "claude_code:claude-sonnet-5-5", "rules_digest": "r2"},
+        {"key": "TBX5:02", "model_key": "claude_code:claude-sonnet-5-5", "rules_digest": "r2"},
+    )
+    judge = _answers(
+        tmp_path / "judge.jsonl", {"key": "TBX5:01", "model_key": "replay:m", "rules_digest": "r3"}
+    )
+    code, out = package(
+        tmp_path / "work", tmp_path / "base.json", tmp_path / "pkg",
+        "--answers", f"triage-screen={screen}", "--answers", f"extract={extract}",
+        "--answers", f"judge={judge}",
+    )  # fmt: skip
+    assert code == 0, out
+    assert json.loads((tmp_path / "pkg/package.json").read_text())["models"] == [
+        {"role": "extract", "model_key": "claude_code:claude-sonnet-5-5",
+         "verdict": "reference", "rules_digest": "r2"},
+        {"role": "judge", "model_key": "replay:m", "verdict": "test-backend",
+         "rules_digest": "r3"},
+        {"role": "triage-screen", "model_key": failed, "verdict": "fail", "rules_digest": "r1"},
+        {"role": "triage-screen", "model_key": "openai_compat:mystery",
+         "verdict": "unqualified", "rules_digest": "r1"},
+    ]  # fmt: skip
+    bad, message = package(
+        tmp_path / "work", tmp_path / "base.json", tmp_path / "pkg2", "--answers", f"x={judge}"
+    )
+    assert bad == 2 and "'x' is not a role" in message

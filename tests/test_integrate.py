@@ -5,6 +5,7 @@ Each refusal hashes every file of the target atlas (and its file list) before an
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -81,13 +82,82 @@ def test_integrate_refuses_an_existing_run_folder(packaged: tuple[Path, Path, Pa
     assert snapshot(atlas) == before
 
 
-def test_integrate_refuses_a_differing_text(packaged: tuple[Path, Path, Path]) -> None:
+def test_integrate_refuses_a_text_changed_in_the_atlas_since_the_base(
+    packaged: tuple[Path, Path, Path],
+) -> None:
     atlas, pkg, _ = packaged
     text = atlas / "local/literature/texts/91000002/fulltext.txt"
     text.write_text("a different copy of the paper")
     before = snapshot(atlas)
     code, out = integrate(pkg, atlas)
-    assert code == 1 and "91000002/fulltext.txt" in out
+    assert code == 1 and "local/literature/texts/91000002: changed" in out
+    assert snapshot(atlas) == before
+
+
+def _refetched(tmp_path: Path, atlas_root: Path, stub_atlas: Path, base_edit: str = "") -> Path:
+    """A package whose run re-fetched PMID:91000002's texts: a new full text, a new file, and
+    no longer a file the earlier fetch had. `base_edit` drops that folder from the base, as if
+    the atlas had not held it when the run started."""
+    atlas = make_atlas(tmp_path, atlas_root)
+    (atlas / "local/literature/texts/91000002/stale.txt").write_text("the earlier fetch's")
+    base = base_json(atlas, tmp_path / "base.json")
+    if base_edit == "absent at base":
+        digests = base["digests"]
+        assert isinstance(digests, dict)
+        del digests["local/literature/texts/91000002"]
+        (tmp_path / "base.json").write_text(json.dumps(base))
+    work = tmp_path / "work"
+    scratch(atlas, work)
+    folder = work / "local/literature/texts/91000002"
+    keep = {f.relative_to(folder): f.read_bytes() for f in folder.rglob("*") if f.is_file()}
+    shutil.rmtree(folder)  # `texts` replaces the folder whole
+    for rel, data in keep.items():
+        if rel.as_posix() != "stale.txt":
+            (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+            (folder / rel).write_bytes(data)
+    (folder / "fulltext.txt").write_text("the re-fetched full text")
+    (folder / "extra.txt").write_text("new")
+    shutil.copy(folder / "fulltext.txt", tmp_path / "expected.txt")
+    assert package(work, tmp_path / "base.json", tmp_path / "pkg")[0] == 0
+    shutil.rmtree(atlas / RUN)
+    return atlas
+
+
+def test_integrate_replaces_a_text_the_run_refetched_when_the_atlas_kept_its_base(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    """R-SWA-47: `texts` replaces a folder when a supplied PDF appears or with --refresh; such
+    a text could never integrate while every differing text was refused."""
+    atlas = _refetched(tmp_path, atlas_root, stub_atlas)
+    code, out = integrate(tmp_path / "pkg", atlas)
+    assert code == 0, out
+    folder = atlas / "local/literature/texts/91000002"
+    assert (folder / "fulltext.txt").read_text() == "the re-fetched full text"
+    assert (folder / "extra.txt").read_text() == "new"
+    assert not (folder / "stale.txt").exists()  # the folder is the package's, whole
+    assert (folder / "supplements/s1.txt").is_file()
+    assert "1 text folder(s) replaced" in out
+    assert not list(folder.parent.glob(".*"))  # no staging left behind
+
+
+@pytest.mark.parametrize("case", ["absent at base", "gone now", "absent in both"])
+def test_integrate_judges_a_text_folder_against_its_base(
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, case: str
+) -> None:
+    edit = "absent at base" if case != "gone now" else ""
+    atlas = _refetched(tmp_path, atlas_root, stub_atlas, edit)
+    folder = atlas / "local/literature/texts/91000002"
+    if case != "absent at base":
+        shutil.rmtree(folder)
+    before = snapshot(atlas)
+    code, out = integrate(tmp_path / "pkg", atlas)
+    if case == "absent in both":  # copied, as before
+        assert code == 0, out
+        assert (folder / "fulltext.txt").read_text() == "the re-fetched full text"
+        return
+    assert code == 1 and "local/literature/texts/91000002" in out
+    expected = "present now" if case == "absent at base" else "gone now"
+    assert expected in out
     assert snapshot(atlas) == before
 
 

@@ -818,7 +818,8 @@ chd-curator base --atlas /path/to/atlas --gene TBX5 > base.json
 chd-curator scratch-root --atlas /path/to/atlas --dest work --gene TBX5 [--state state-in ...]
 chd-curator merge TBX5 --run r1 --root work
 chd-curator export-state --root work --gene TBX5 --run r1 --dest state-out
-chd-curator package --root work --gene TBX5 --run r1 --base base.json --out pkg --models models.json
+chd-curator package --root work --gene TBX5 --run r1 --base base.json --out pkg \
+  --answers extract=extract.answers.jsonl --answers blind-read=blind.answers.jsonl
 chd-curator integrate pkg --atlas /path/to/atlas
 ```
 
@@ -831,17 +832,19 @@ mutable file the atlas has and a state lacks, exits 1 naming it. `export-state` 
 files, the run folder (when it exists) and the texts the run lists (when it has a `texts.json`) out
 as the state the next process starts from, and exits 1 naming any other file a step wrote under
 `curation/` or `local/`. `base` prints the
-checkout's digests of the three files and its HEAD commit; `package` writes `proposal/`, `run/`,
+checkout's digests of the three files and of each text folder, and its HEAD commit; `package` writes `proposal/`, `run/`,
 `texts/`, `review.html` (when the run has one) and `package.json`; `integrate` copies the proposal
 into the atlas only when the three files still have the digests the run started from, the run
-folder does not exist and no text differs, naming every file that fails and copying nothing
-otherwise. An existing `--dest` or `--out` exits 2. The copy itself is not atomic across files: an
+folder does not exist, no text folder changed in the atlas since the run started (one still at its
+base digest is replaced by the package's, so a re-fetched text integrates) and no supplied PDF
+differs, naming every file that fails and copying nothing otherwise. An existing `--dest` or `--out` exits 2. The copy itself is not atomic across files: an
 I/O error part-way leaves a partial run folder, and `integrate` says so and names it.
 
 The package's JSON file holds, in this order of meaning: format 1, the symbol, the run id, the
 base (the digests object that `base` printed), the atlas commit (the full HEAD commit `base`
-printed, null when the atlas is not a git checkout), the models (the list `--models` gave, empty
-when omitted) and the review (the name of the review page when the run folder holds one, null
+printed, null when the atlas is not a git checkout), the models (one role, model key, register
+verdict and rules digest per model the `--answers` files used; `unqualified` with no register
+entry, `test-backend` for a replay or fake backend; empty without `--answers`) and the review (the name of the review page when the run folder holds one, null
 when it does not).
 
 ### Running a local model beside `ask`
