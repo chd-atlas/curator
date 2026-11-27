@@ -8,6 +8,7 @@ ignored would drop a quote or a decision from the page without a sound.
 
 from __future__ import annotations
 
+import io
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from chd_curator.atlas import plain
+from chd_curator.fs import write_bytes_atomically
 from chd_curator.notation import NotationChange
 
 RUN_FORMAT: Final = 1
@@ -346,9 +348,8 @@ def _pmids(value: Any, path: Path, key: str) -> tuple[str, ...]:
 
 def _write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(obj, sort_keys=True, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
-    )
+    text = json.dumps(obj, sort_keys=True, ensure_ascii=False, indent=1) + "\n"
+    write_bytes_atomically(path, text.encode("utf-8"))
 
 
 def _write_yaml(path: Path, obj: Any) -> None:
@@ -357,8 +358,9 @@ def _write_yaml(path: Path, obj: Any) -> None:
     yaml.default_flow_style = False
     yaml.allow_unicode = True
     yaml.width = 1_000_000
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.dump(obj, handle)
+    buffer = io.StringIO()
+    yaml.dump(obj, buffer)
+    write_bytes_atomically(path, buffer.getvalue().encode("utf-8"))
 
 
 def load_evidence_file(path: Path) -> dict[str, tuple[Quote, ...]]:

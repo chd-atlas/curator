@@ -12,7 +12,7 @@ An agent never approves: a named person does, in the atlas, with `chd-atlas lite
 ## Install
 
 ```bash
-uv tool install git+https://github.com/chd-atlas/curator@v0.0.1
+uv tool install git+https://github.com/chd-atlas/curator@v0.1.0
 ```
 
 Then, in Claude Code:
@@ -31,12 +31,15 @@ measured here). On an older version, add the marketplace first:
 
 ## Run
 
-Run from the root of an atlas checkout. `search`, `abstracts`, `texts`, `diff`, `normalise`, `synthesis`
-and `review-page` ask the atlas about the gene by running its CLI, `<root>/.venv/bin/chd-atlas`
+Run from the root of an atlas checkout. `search`, `abstracts`, `texts`, `diff`, `normalise`, `synthesis`,
+`batch`, `merge`, `compare`, `assemble`, `check-batch`, `read-requests`, `triage-requests`,
+`triage-apply`, `review-page`, `archive-state` and `qualify triage` (with `ask --validate check-batch`)
+ask the atlas about the gene by running its CLI, `<root>/.venv/bin/chd-atlas`
 unless `--atlas-cli` or `CHD_ATLAS_CLI` names another; `add-publication`, `quotes` and
-`review-decisions` do not. `search`, `add-publication`, `diff`, `normalise`, `synthesis`,
-`review-page` and `review-decisions` read the JSON Schemas the atlas exports into
-`<root>/schemas/`. The records curator writes into `curation/` are checked against them first, and
+`review-decisions` do not. `search`, `add-publication`, `diff`, `normalise`, `synthesis`, `batch`,
+`merge`, `compare`, `assemble`, `check-batch` (and `ask --validate check-batch`), `triage-apply`,
+`review-page`, `review-decisions`, `archive-decisions` and `archive-state` read the JSON Schemas the
+atlas exports into `<root>/schemas/`. The records curator writes into `curation/` are checked against them first, and
 so is the decisions file `review-decisions` writes; `quotes.json` and `review.html` are not atlas
 records and no schema checks them. curator never imports the atlas. The skills read the atlas checkout's
 `curator/curator-rules.md`. Their hand-off commands, `.venv/bin/chd-atlas validate` and
@@ -660,6 +663,289 @@ owner sends and receives; a session never contacts a clinician.
   would delete and redact; `--apply` does it and commits. Rewriting the archive's history,
   republishing your claude.ai copies and unpublishing the clinician's own page follow the steps it
   prints, on your word.
+
+## Site config
+
+Each model role (`triage-screen`, `triage-check`, `extract`, `blind-read`, `judge`) is filled at a
+site by a backend that a site YAML names. Keep it outside every repository, never commit it, and
+put no key in it: a key arrives in the environment and the config names the variable in its
+key_env field. The loader refuses the common shapes of a pasted secret (an unknown key, any value
+under a key named like a secret at any depth, a value starting `sk-` or `Bearer `, a URL with
+`user:pw@` in it). It cannot prove a file holds no secret, which is why the file stays outside every
+repository.
+
+```yaml site-config
+roles:
+  triage-screen:
+    id: screen-local
+    kind: openai_compat
+    model: MODEL-FILE-NAME
+    key_env: SCREEN_SERVER_KEY
+    settings: {temperature: 0, seed: 0, max_tokens: 256, base_url: "http://example.invalid:8080"}
+    context_tokens: 8192
+    concurrency: 4
+  triage-check:
+    id: check
+    kind: claude_code
+    model: claude-haiku-5-5
+    context_tokens: 200000
+    concurrency: 2
+  extract:
+    id: reader-a
+    kind: claude_code
+    model: claude-sonnet-5-5
+    context_tokens: 200000
+    concurrency: 2
+  blind-read:
+    id: reader-b
+    kind: claude_code
+    model: claude-opus-5-5
+    context_tokens: 200000
+    concurrency: 2
+  judge:
+    id: judge
+    kind: claude_code
+    model: claude-opus-5-5
+    context_tokens: 200000
+    concurrency: 1
+```
+
+A model may fill a role only if `src/chd_curator/workflow/qualification.yaml` records it as `pass`
+or `reference` for that role; `fail` and absent are refused. The key is the kind, the model and a
+hash of every setting that is not transport (base_url, timeout_seconds, dir), so a changed
+setting is a different, unqualified model. The settings are the recorded identity of the
+configuration, not what the backend sends: the HTTP backends always send temperature 0 (and
+the openai_compat backend seed 0), and a local server's flags, server_args, are what `serve-and-ask.sh` runs. A role the local server runs (`serve-and-ask.sh`) also needs settings.server_args; the example's screen, which points at a remote base_url, has none. `extract` and `blind-read` must be different models.
+replay (recorded files) and fake (answers scripted in the site config's settings.answers) backends need no entry. The example's screen model is a placeholder that is not in the register, so its triage-screen role runs shadowed (`--shadow-role triage-screen`) until a model qualifies. An `anthropic` backend needs its own register entry before `ask` accepts it; today's reference entries are all claude_code.
+
+```bash
+chd-curator check-site --site /path/to/site.yaml [--shadow-role triage-screen]
+```
+
+Exit 0 when every role is configured and allowed (or shadowed); exit 2, one line per role, when not.
+Only `triage-screen` may be shadowed: in shadow the check decides every hit.
+
+### Asking a role's model
+
+```bash
+chd-curator ask --role extract --requests req.jsonl --answers ans.jsonl \
+    --site /path/to/site.yaml --root /path/to/atlas [--cache DIR] \
+    [--validate check-batch --run r1] [--shadow] [--allow-errors]
+```
+
+One request per line, `{"key": ..., "inputs": {...}}` (a `check-batch` request also carries `gene`
+and `batch`, and `mode` when it is `backfill`; a `reread` run's requests use mode `new`). Each request is answered from the cache, or by the
+role's backend, parsed as one JSON object, validated against the role's answer schema (readers and
+the judge with `--validate check-batch` through the batch check, which writes the answer as the
+batch's contract files under the run directory and, if it refuses, puts every path back as it was: the
+previous bytes, or no file), and retried
+at most twice with the errors appended. A model the register does not qualify, a repeated key and
+an input that does not fit the backend's context are refused, never truncated. Exit 0 when every
+request has an answer, 1 when one has an `error` row (unless `--allow-errors`), 2 for a bad
+argument, an unqualified model (`--shadow` lifts that for `triage-screen` only) or a configuration
+that would fail every request (an unset or empty key variable, the one key_env names; for
+claude_code a cluster job variable, or a claude executable that does not report its version; a
+missing replay directory), before any call. An HTTP 401 or 403
+stops the run: the answers file is written with an error row for every request not asked, and the
+exit is 2. An answer row records the backend's `meta`; an error row records the usage and seconds
+its attempts spent. The summary line counts requests the model answered, requests answered from
+the cache, requests with an error row (with their keys) and the tokens, counted as `report` counts
+them. It writes no approval.
+
+### Writing the readers' and judge's requests
+
+```bash
+chd-curator read-requests TBX5 --run r1 --role extract|blind-read|judge --root /path/to/atlas \
+    --out req.jsonl [--decisions decisions.json]
+```
+
+Writes the rows `ask --validate check-batch` takes, from the run folder: for `extract` and
+`blind-read` one row per batch of `batches.json` (the two roles get identical rows), for `judge`
+one per `judging/judge-NN.md`. `inputs.manifest` is the manifest's text; `inputs.texts` is every
+file the manifest names (`- text path:`, `- abstract path:`, `- supplement:`), once each, in order,
+each under `--- file: <path as the manifest names it> ---`; a path inside the root is read through
+any link (in a scratch root a text is a link into the atlas). `inputs.registries` holds
+`curation/cohorts.yaml` and `curation/phenotypes.yaml` under the same marker, since the cited
+rules send the reader there. A judge row also has `inputs.owner_notes`: with `--decisions` (the
+owner's decisions file of a fix round) the `fix` notes on the findings that manifest names, else
+`none`, so a fix round's judge input, and its cache key, carry the owner's corrections. `gene` is the
+symbol as typed (it names the run directory) and `mode` is the run's, `new` for a `reread` run.
+Exit 1, nothing written, for a named file that is missing, outside the root, not a `.txt` or not
+UTF-8, a missing registry, or a `--decisions` `fix` on a finding no judge manifest names (it needs
+a judge manifest first, which is the fix round's work); exit 2 for a bad argument (a `--decisions` that cannot be used, or
+one given for a reader) or a run with no `batches.json`. It writes no approval. With
+`--validate check-batch`, `ask` sets each finding's `extracted_by` itself (a reader's names its
+skill and the backend's model; a judge's keeps the reading it settles) and marks the row
+`"attribution": "set by ask"`.
+
+### Triaging a gene's hits with a screen and a check
+
+```bash
+chd-curator triage-requests TBX5 --root /path/to/atlas --out screen-req.jsonl
+chd-curator ask --role triage-screen --allow-errors ... --requests screen-req.jsonl --answers screen-ans.jsonl
+chd-curator triage-combine --gene TBX5 --requests screen-req.jsonl --screen screen-ans.jsonl \
+    --run r1 --out decisions.json --out-requests check-req.jsonl
+chd-curator ask --role triage-check ... --requests check-req.jsonl --answers check-ans.jsonl
+chd-curator triage-combine --gene TBX5 --requests screen-req.jsonl --screen screen-ans.jsonl \
+    --check check-ans.jsonl --run r1 --out decisions.json --out-requests check-req.jsonl
+chd-curator triage-apply TBX5 --decisions decisions.json --root /path/to/atlas
+```
+
+`triage-requests` writes one request per pending hit (`{key, gene, inputs: {gene, hit}}`, `hit`
+being the block `abstracts` prints; it asks PubMed). `triage-combine` sends to the check every screen exclusion
+in a risky class (`not_chd`, `no_finding_in_gene`), an audit sample of every other class (10%,
+at least 5, all when fewer, seeded by `--run`) and every hit the screen did not answer (no row,
+an error row or an unparseable answer: never read as an exclusion), and every exclusion of a hit
+whose block says PubMed has no record or no abstract (never final on the screen's word). The decisions
+file names the gene `--gene` gives, even when there was no pending hit; triage-apply refuses
+another gene's file and any exclusion at screen tier in a risky class or a class the file
+escalated, and applies a file with no decisions as a no-op. A hit either tier includes is
+included; when both exclude, the check's reason stands. The hybrid reads only the check answers
+for the hits it sent to the check. One audited exclusion the check
+includes escalates its class for the run: its remaining exclusions go to the check too
+(escalated, awaiting_check, and the rows still owed in `--out-requests`); run the check on
+them and combine again, passing every `--check` file. `--shadow` makes the check's decision the
+decision for every hit it answered and records the hybrid beside it (hybrid), the hybrid reading
+only the answers for the hits it would have sent. A key that was not requested,
+or is answered twice in one file, exits 2 naming it. `triage-apply` writes `decision`, and for
+an exclusion `reason` (and `note`, the answer's `why`, for `other`) into the entries still
+`pending`; it refuses (exit 1) a decisions file with any awaiting_check or a key that is not a
+pending entry, and (exit 2) a file changed since it was read. None of the three writes an approval.
+
+### Qualifying a triage screen
+
+```bash
+chd-curator qualify triage TBX5 --screen screen-ans.jsonl --check check-ans.jsonl --run r1 \
+    --gold-root /path/to/atlas --site /path/to/site.yaml
+```
+
+A model fills `triage-screen` only after it passes in its place in the hybrid. `qualify triage`
+takes a gene's approved curation as the gold (each decided hit's final decision and the number of
+approved findings citing it), reads the screen's and the check's `ask` answers over the gold's hits,
+and runs `triage-combine`'s own rules (the check over the risky classes, the audit sample seeded
+by `--run`, every unanswered hit). The verdict is PASS when no hit with approved findings is
+lost, FAIL otherwise (the lost PMIDs are named), and INCOMPLETE when the check owes hits it has not
+answered. The score line gives the hits with approved findings, how many the screen included alone,
+how many hits went to the check before the audit and how many were audited. For a PASS or FAIL it
+prints the register entry to propose, as YAML (its backend and model key from `--site`'s
+`triage-screen` role, transport settings left out; its rules digest from the answers, which must
+carry exactly one; a warning on stderr when the answers' model key is not the site's). A finding
+whose approval the atlas reports void is not counted. The screen's answers must cover exactly the
+gene's decided triage hits: a key outside them, or a decided hit with no row at all (an error
+row counts as a row), exits 2, because the score is defined over the gold's hits. Give `--requests` (the file `triage-requests` wrote) to route a hit PubMed had no
+record or abstract for to the check, as `triage-combine` does; without it a line says thin-hit
+routing was not applied. Exit 0 for PASS and FAIL, 1 for INCOMPLETE, 2 for an unreadable file, site
+or gold. It writes nothing: no register entry, no approval.
+
+### Running a writing step in a scratch root
+
+```bash
+chd-curator base --atlas /path/to/atlas --gene TBX5 > base.json
+chd-curator scratch-root --atlas /path/to/atlas --dest work --gene TBX5 [--state state-in ...]
+chd-curator merge TBX5 --run r1 --root work
+chd-curator export-state --root work --gene TBX5 --run r1 --dest state-out
+chd-curator package --root work --gene TBX5 --run r1 --base base.json --out pkg \
+  --answers extract=extract.answers.jsonl --answers blind-read=blind.answers.jsonl
+chd-curator integrate pkg --atlas /path/to/atlas
+```
+
+A process that changes curated files never writes the atlas checkout. `scratch-root` builds a tree
+of links to the atlas in which `curation/` and `local/literature/` are real directories with a link
+per file (nothing else of `local/` is in it), and the gene's three mutable files (its literature
+file, `publications.yaml`, `.id_registry.yaml`) are real copies, from the states when given. Several
+`--state` folders are laid over as their union; a file two states hold with different bytes, or a
+mutable file the atlas has and a state lacks, exits 1 naming it. `export-state` copies the three
+files, the run folder (when it exists) and the texts the run lists (when it has a `texts.json`) out
+as the state the next process starts from, and exits 1 naming any other file a step wrote under
+`curation/` or `local/`. `base` prints the
+checkout's digests of the three files and of each text folder, and its HEAD commit; `package` writes `proposal/`, `run/`,
+`texts/`, `review.html` (when the run has one) and `package.json`; `integrate` copies the proposal
+into the atlas only when the three files still have the digests the run started from, the run
+folder does not exist, no text folder changed in the atlas since the run started (one still at its
+base digest is replaced by the package's, so a re-fetched text integrates) and no supplied PDF
+differs. It checks in stages (the three files, then what is not a file, the run folder, the
+texts) and stops at the first stage that fails, naming that stage's files and copying nothing. An existing `--dest` or `--out` exits 2. The copy itself is not atomic across files: an
+I/O error part-way leaves a partial run folder, and `integrate` says so and names it.
+
+The package's JSON file holds, in this order of meaning: format 1, the symbol, the run id, the
+base (the digests object that `base` printed), the atlas commit (the full HEAD commit `base`
+printed, null when the atlas is not a git checkout), the models (one role, model key, register
+verdict and rules digest per model the `--answers` files used; `unqualified` with no register
+entry, `test-backend` for a replay or fake backend; empty without `--answers`) and the review (the name of the review page when the run folder holds one, null
+when it does not).
+
+### Running a local model beside `ask`
+
+A site that answers `triage-screen` with a local llama.cpp server runs it inside one task or one
+cluster job; `chd-curator job-script <name>` prints the path of a packaged script (an unknown name
+exits 2 and lists the three), and each is run as `bash <path>`:
+
+```bash
+script="$(chd-curator job-script serve-and-ask.sh)"
+bash "$script" --site site.yaml --role triage-screen --model-file model.gguf -- \
+  --requests req.jsonl --answers answers.jsonl --root /path/to/atlas
+```
+
+The server's flags are the site role's settings.server_args (a string, or a list of words), which
+are part of the model key the register qualifies, so the flags that run are the flags qualified; a
+`--server-args` given as well must be the same flags. `serve-and-ask.sh` refuses (exit 2, before
+starting anything) a role with no such flags, a differing `--server-args`, and flags without
+`--load-mode none` and an explicit `--reasoning on|off`. It starts the server on a free local port, waits for `/health`
+while the server process lives (a zombie counts as dead), runs `chd-curator ask` against a generated
+one-role site that differs from yours only in `settings.base_url` (so the register's key for the model is unchanged), stops
+the server, writes `<answers>.local-usage.json` beside the answers (the CPUs the task held, the
+seconds the server ran, the job id), and exits with `ask`'s code. `llama-build.sbatch` builds the server on a node without
+internet from a clone made beforehand; `cluster-ask.sbatch` wraps `serve-and-ask.sh` for one Slurm
+job. Each script's header lists the environment variables it reads. No script names a partition,
+account or path: those come from `sbatch` options and the environment. `chd-curator job-script` writes
+nothing and no approval.
+
+### Reporting a run
+
+`chd-curator report --run-dir <run folder> --answers <role>=<answers file> ... [--trace <Nextflow trace>] [--local-usage <sidecar> ...] --out-dir <dir>`
+writes `report.json` and `report.md` and prints one summary line, for example `8 findings: 1 agreed,
+7 judged, 0 corrected by the owner; 14% of tokens local`. Per process (`--answers` may repeat for a
+role) it states the tier (`triage-screen` is local, every other role capable), seconds and tokens
+from `ask`'s rows, and wall time from the trace's `process` and `realtime` columns. The trace
+never gives core-hours, since a task's CPUs times its realtime is not a model's work; the local
+tier's core-hours come only from the `--local-usage` sidecars `serve-and-ask.sh` writes, and read
+"not measured" without one. Per finding: `agreed` is `assemble.json`'s `verified`, `judged` its `judged`,
+`corrected by the owner` the findings whose latest decision in `decisions/*.json` is `fix`, and
+`normalised` the findings `normalise.json` placed. A role that ran on rules differing from its
+register entry's gets a warning. Tokens and seconds spent on failed attempts are counted (`ask` records them on the error row); a model with no register entry (a shadow run) gets a note, and decisions naming findings outside the run are listed and not counted. `chd-curator report` writes no approval.
+
+## Container images
+
+Two images are built from this repository (`Dockerfile`, `Dockerfile.llama`) for pipeline tasks:
+
+- `ghcr.io/chd-atlas/curator:<tag>` holds `chd-curator` in `/opt/curator-venv` (on `PATH`) and the
+  atlas command line's dependencies in `/opt/atlas-venv`, resolved from the atlas's `uv.lock` at
+  the build argument `ATLAS_COMMIT`. It sets no entry point, so a pipeline runs its task command
+  as is; the default command prints `chd-curator`'s help.
+- `ghcr.io/chd-atlas/curator-llama:<tag>` is the first image plus `llama-server`, built from
+  llama.cpp tag `b12246` (commit checked at build time) with runtime CPU detection, for a
+  `llama-server` inside one task (`serve-and-ask.sh`).
+
+The atlas code is never baked in. Mount an atlas checkout and set `CHD_ATLAS_SRC=<checkout>/src`
+for each task. `CHD_ATLAS_CLI` is preset to the image's `chd-atlas` wrapper, which runs the
+checkout's code in the atlas venv, so the code and the data it reads always match. The image and
+the wrapper set `PYTHONDONTWRITEBYTECODE=1`, so a task writes no `__pycache__` into the mounted
+checkout.
+
+`ATLAS_COMMIT` defaults to a pinned atlas commit, written in the `Dockerfile` and in
+`.github/workflows/image.yml` (CI checks that they agree) and changed only by a deliberate edit.
+A tag build always uses it; a pull request build uses the atlas `dev` tip. The commit used is
+recorded in each image's label `org.chd-atlas.atlas-commit`, and a tag build prints it beside the
+digests. The label `org.opencontainers.image.revision` holds the curator commit.
+
+The image has no `git`, so an atlas command run in it records a source commit of null, and
+`review-page`, which asks git for the atlas commit, shows none inside it. The atlas commit
+`package` records comes from `base`, run on the host checkout.
+
+Every pull request builds both images and checks them without pushing. Pushing a tag `v<version>`
+publishes both under that tag and prints their digests; the workflow refuses a tag that differs
+from `pyproject.toml`'s version. Pin a pipeline to a digest, not a tag. The images are built only
+in CI (no container runtime on the authors' workstation).
 
 ## Develop
 

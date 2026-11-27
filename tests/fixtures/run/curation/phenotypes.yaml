@@ -1,0 +1,5 @@
+# A synthetic phenotype registry for the run fixture (the atlas's own is curation/phenotypes.yaml).
+phenotypes:
+  - id: HP:0001631
+    label: Atrial septal defect
+    lesion_group: septal

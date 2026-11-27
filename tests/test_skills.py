@@ -95,8 +95,11 @@ DESIGN_TO_STUDY_TYPE = [
 ]
 
 # Options a file may name that belong to no curator or pinned atlas command.
-# `--marketplace` is Claude Code's, named once in the README.
-OTHER_OPTIONS = {"--plugin-dir", "--marketplace"}
+# `--marketplace` is Claude Code's, named once in the README. The last four are the packaged
+# serve-and-ask.sh script's and llama-server's (README, "Running a local model beside ask").
+OTHER_OPTIONS = {
+    "--plugin-dir", "--marketplace", "--model-file", "--server-args", "--load-mode", "--reasoning",
+}  # fmt: skip
 
 # The burden mirror's count units. The atlas exports no enum for them (the column is a plain
 # string in schemas/tables/burden.v1.json), so they are a literal; a Finding refuses them.
@@ -125,7 +128,12 @@ def _commands() -> dict[str, Any]:
 
 
 def _options(command: Any) -> set[str]:
-    return {opt for param in command.params for opt in getattr(param, "opts", [])}
+    found = {opt for param in command.params for opt in getattr(param, "opts", [])}
+    for sub in getattr(
+        command, "commands", {}
+    ).values():  # a group (`qualify`) has its subcommands'
+        found |= _options(sub)
+    return found
 
 
 def _schema(name: str) -> dict[str, Any]:
@@ -281,6 +289,20 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "archive-state",
         "agreement",
         "archive-redact",
+        "check-site",
+        "ask",
+        "read-requests",
+        "triage-requests",
+        "triage-combine",
+        "triage-apply",
+        "scratch-root",
+        "export-state",
+        "base",
+        "package",
+        "integrate",
+        "job-script",
+        "report",
+        "qualify",
     }
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS
@@ -446,7 +468,10 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
     assert "`as_reported` is verbatim" in flat
     assert "never choose between the paper's own names" in flat
     assert "`unclear` with its reason" in flat
-    assert "`not_stated` only when the paper is silent" in flat
+    # R-SWA-4: this rule is stated once, in the rules file, and the skill only points at it.
+    assert "`not_stated` only when the paper is silent" in " ".join(_rules().read_text().split())
+    assert "`not_stated` only when the paper is silent" not in flat
+    assert "`not_stated` as the rules give it" in flat
     assert "chd-curator normalise <SYMBOL>" in extract
     assert "chd-atlas literature frame <SYMBOL>" in extract
     assert "--settled-by <full_text|authors|expert|atlas_model>" in extract
@@ -529,8 +554,9 @@ def test_the_skills_state_the_verified_rulings_literally() -> None:
         assert not re.search(r"api_key\s*[=:]\s*\S", text), path.name
 
 
-# Each pilot class ruling's key phrases (literal). Both the atlas's rules file and the triage
-# skill must carry every one, whitespace-normalised, so neither can be reworded alone.
+# Each pilot class ruling's key phrases (literal). The atlas's rules file must carry every one,
+# whitespace-normalised, and the triage skill none of them (R-SWA-4: a rule is stated once, in
+# the rules file, and the roles that triage cite it); reworded in one place, the other fails.
 CLASS_RULINGS = {
     "negative screen included": [
         "a CHD cohort screened for the gene with no carrier",
@@ -556,7 +582,7 @@ CLASS_RULINGS = {
 
 
 @pytest.mark.parametrize("ruling", list(CLASS_RULINGS))
-def test_the_triage_skill_carries_each_pilot_class_ruling_the_rules_file_states(
+def test_the_rules_file_carries_each_pilot_class_ruling_and_the_triage_skill_does_not_restate_it(
     ruling: str,
 ) -> None:
     rules = " ".join(_rules().read_text().split()).lower()
@@ -564,10 +590,10 @@ def test_the_triage_skill_carries_each_pilot_class_ruling_the_rules_file_states(
     for phrase in CLASS_RULINGS[ruling]:
         needle = phrase.lower()
         assert needle in rules, f"{ruling}: the rules file no longer says {phrase!r}"
-        assert needle in skill, f"{ruling}: the triage skill does not say {phrase!r}"
+        assert needle not in skill, f"{ruling}: the triage skill restates {phrase!r}"
 
 
 def test_the_triage_skill_pins_what_the_publication_types_line_shows() -> None:
     skill = " ".join(SKILL_FILES[1].read_text().split())
     assert "`Published Erratum`" in skill
-    assert "the reason table decides, not the type alone" in skill
+    assert "the rules' reason table decides, not the type alone" in skill

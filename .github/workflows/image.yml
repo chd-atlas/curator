@@ -1,0 +1,136 @@
+name: image
+
+# curator's two container images:
+#   curator        chd-curator, its dependencies and the atlas command line's dependencies
+#                  (never the atlas code, which always comes from the mounted checkout)
+#   curator-llama  curator plus llama.cpp, for a llama-server inside one pipeline task
+#
+# Every pull request builds and checks both and pushes nothing. Pushing a `v*` tag publishes both
+# to ghcr.io and prints their digests.
+
+on:
+  pull_request:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  ATLAS_REPO_URL: https://github.com/chd-atlas/chd-atlas.github.io
+  # The atlas commit whose uv.lock resolves the atlas dependencies in the images (atlas `dev`
+  # measured 2026-11-27, "Merge pull request #134"). A tag build always uses it. It changes only
+  # by a deliberate edit here and in the Dockerfile's ATLAS_COMMIT default; both jobs check the two
+  # agree.
+  ATLAS_COMMIT_PIN: 36a06acac765fda1d28cdd893649dacec6f02fe8
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check the Dockerfile's atlas default
+        run: grep -qx "ARG ATLAS_COMMIT=$ATLAS_COMMIT_PIN" Dockerfile
+
+      # A pull request tracks the atlas `dev` tip, as ci.yml tests against `dev`.
+      - name: Resolve the atlas commit
+        run: |
+          commit="$(git ls-remote "$ATLAS_REPO_URL" refs/heads/dev | cut -f1)"
+          test -n "$commit"
+          echo "ATLAS_COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "atlas commit used: $commit (dev tip; the pinned default is $ATLAS_COMMIT_PIN)"
+
+      - name: Build curator
+        run: |
+          docker build --build-arg ATLAS_COMMIT="$ATLAS_COMMIT" \
+            --build-arg CURATOR_REVISION="$GITHUB_SHA" -t curator:ci .
+
+      - name: Check curator
+        run: |
+          docker run --rm curator:ci chd-curator --help
+          docker run --rm curator:ci /opt/atlas-venv/bin/python \
+            -c "import polars, pydantic; print(polars.__version__, pydantic.VERSION)"
+          # The atlas code is never baked in.
+          baked="$(docker run --rm curator:ci find / -xdev -name 'chd_atlas*' -not -path '/proc/*')"
+          test -z "$baked" || { echo "atlas code is baked into the image: $baked" >&2; exit 1; }
+          label="$(docker inspect --format '{{ index .Config.Labels "org.chd-atlas.atlas-commit" }}' curator:ci)"
+          test "$label" = "$ATLAS_COMMIT" || { echo "label $label != $ATLAS_COMMIT" >&2; exit 1; }
+          docker image ls curator:ci
+
+      - name: Build curator-llama
+        run: docker build -f Dockerfile.llama --build-arg CURATOR_IMAGE=curator:ci -t curator-llama:ci .
+
+      - name: Check curator-llama
+        run: |
+          help="$(docker run --rm curator-llama:ci llama-server --help 2>&1 || true)"
+          head -n 5 <<<"$help"
+          for flag in --load-mode --reasoning; do
+            grep -q -e "$flag" <<<"$help" || { echo "llama-server --help does not list $flag" >&2; exit 1; }
+          done
+          docker run --rm curator-llama:ci llama-server --version 2>&1 | tail -n 3
+          label="$(docker inspect --format '{{ index .Config.Labels "org.chd-atlas.atlas-commit" }}' curator-llama:ci)"
+          test "$label" = "$ATLAS_COMMIT" || { echo "label $label != $ATLAS_COMMIT" >&2; exit 1; }
+          docker image ls curator-llama:ci
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ github.ref_name }}
+      CURATOR: ghcr.io/chd-atlas/curator
+      CURATOR_LLAMA: ghcr.io/chd-atlas/curator-llama
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # Refuse a tag whose version is not pyproject.toml's, before anything is built or pushed.
+      - name: Check the tag against pyproject.toml
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "$TAG" = "v$version" || { echo "tag $TAG does not match pyproject.toml version $version" >&2; exit 1; }
+          grep -qx "ARG ATLAS_COMMIT=$ATLAS_COMMIT_PIN" Dockerfile
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Use the pinned atlas commit
+        run: |
+          echo "ATLAS_COMMIT=$ATLAS_COMMIT_PIN" >> "$GITHUB_ENV"
+          echo "atlas commit used: $ATLAS_COMMIT_PIN (pinned)"
+
+      - name: Build and check curator
+        run: |
+          docker build --build-arg ATLAS_COMMIT="$ATLAS_COMMIT" \
+            --build-arg CURATOR_REVISION="$GITHUB_SHA" -t "$CURATOR:$TAG" .
+          docker run --rm "$CURATOR:$TAG" chd-curator --help
+          docker run --rm "$CURATOR:$TAG" /opt/atlas-venv/bin/python \
+            -c "import polars, pydantic"
+
+      - name: Build and check curator-llama
+        run: |
+          docker build -f Dockerfile.llama --build-arg CURATOR_IMAGE="$CURATOR:$TAG" -t "$CURATOR_LLAMA:$TAG" .
+          help="$(docker run --rm "$CURATOR_LLAMA:$TAG" llama-server --help 2>&1 || true)"
+          for flag in --load-mode --reasoning; do
+            grep -q -e "$flag" <<<"$help" || { echo "llama-server --help does not list $flag" >&2; exit 1; }
+          done
+
+      - name: Push and print the digests
+        run: |
+          for image in "$CURATOR" "$CURATOR_LLAMA"; do
+            label="$(docker inspect --format '{{ index .Config.Labels "org.chd-atlas.atlas-commit" }}' "$image:$TAG")"
+            test "$label" = "$ATLAS_COMMIT" || { echo "label $label != $ATLAS_COMMIT" >&2; exit 1; }
+            docker push "$image:$TAG"
+            echo "$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$TAG") atlas-commit=$label"
+          done

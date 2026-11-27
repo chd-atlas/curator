@@ -6,6 +6,7 @@ description: Use when a gene's included papers need findings written, one per di
 # literature-extract
 
 Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-tier model (for example Sonnet).
+A pipeline runs this step as one call, `src/chd_curator/workflow/roles/extract.md`; these steps do it by hand.
 
 ## Inputs
 
@@ -81,13 +82,12 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
      `with` is. A `with` group whose phase is `unclear` carries one identical `unclear.phase`
      entry on every member.
    - `phenotypes` only where the paper ties a defect to these carriers, each among the finding's.
-6. Choose among three ways to leave a value plain. `not_stated` only when the paper is
-   silent about it. `unclear` with its reason when the paper says something one value
+6. Choose among three ways to leave a value plain. `not_stated` as the rules give it. `unclear` with its reason when the paper says something one value
    cannot hold (heterozygous in 2 carriers, homozygous in 1) or two incompatible things:
    only `zygosity` (`heterozygous`, `homozygous`, `hemizygous`, `not_stated`, `unclear`) and
    `phase` take it. Set the field to `unclear` and give `unclear.<field>` a `reason` and a
    `settled_by`. A review mark (step 9) is a question about the record as a whole; ask
-   whether it would go away if this one field had a value the atlas can hold, and if so use
+   whether a value the atlas can hold would make it go away for this one field; if so,
    `unclear`. Name what would settle it, in every `settled_by` and every
    `review_settled_by`:
    - `full_text`: only the abstract was read (never on a `not_accessible` mark);
@@ -97,8 +97,7 @@ Read the atlas checkout's `curator/curator-rules.md` first. Model tier: a mid-ti
 7. Add a `locators` entry for every number (`kind: in_text` with `element`, or
    `kind: supplementary` with `file`, `sheet`, `row`). Set `cohorts` from
    `curation/cohorts.yaml`, and `shares_probands_with` to the ids of findings that share
-   probands with this one. `[]` asserts that no proband is shared with any other finding;
-   write it only where the paper states its cohort is new. Otherwise write `unknown`. The
+   probands with this one: `[]`, ids or `unknown`, as the rules' Findings section sets out. The
    curator checks independence by reading this field in the `review` listing.
 8. A paper you cannot read stays in: record what its abstract supports, with locator
    element `Abstract`, `review_status: not_accessible` and a `review_note` naming what was

@@ -1,0 +1,4 @@
+# A synthetic cohort registry for the run fixture (the atlas's own is curation/cohorts.yaml).
+cohorts:
+  - id: fixture_cohort
+    name: A synthetic fixture cohort

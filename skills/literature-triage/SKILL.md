@@ -24,23 +24,16 @@ Triage reads an abstract and applies a short rule list.
    The default is `--decision pending`. Add `--decision included` or `--decision excluded`
    to reread earlier decisions. Its `Publication types` line shows an erratum
    (`Published Erratum`), a review (`Review`, `Systematic Review`) or a preprint
-   (`Preprint`) even when the abstract does not; the reason table decides, not the type alone.
+   (`Preprint`) even when the abstract does not; the rules' reason table decides, not the type alone.
 2. Decide each PMID from its title and abstract, then edit its entry in the YAML by hand.
-   No command writes a decision. Change only `decision` and the fields below; never change
-   `pmid` or `search`.
-3. Include when the paper reports human genetic evidence on this gene in CHD. When unsure,
-   include. A negative result is included when it is a CHD cohort screened for the gene with no
-   carrier (its finding is a `cohort_screen` with every carrier count 0). Exclude only for a reason the abstract shows:
-
-   | reason | use when the abstract shows |
-   |---|---|
-   | `not_peer_reviewed` | a preprint, thesis, a conference or meeting abstract, or other unreviewed item |
-   | `review_article` | a review or commentary with no new data; a review whose only new analysis is of a trait that is not a congenital heart lesion |
-   | `not_human_genetics` | animal, cell or protein work with no human genetic finding; or DNA methylation or RNA expression measured in human samples with no variant in the gene reported (a paper that also reports a variant in the gene is included); cell, protein or in-silico work on variants that reports no carrier of its own, even when the variants came from patients in earlier papers |
-   | `no_finding_in_gene` | the gene named only as background, or nothing reported about a variant in it (a gene among a study's reported results is a finding: include it); or a single patient or family in whom the gene was tested and ruled out, the cause lying elsewhere (a CHD cohort screened with no carrier is included, not this) |
-   | `not_chd` | no congenital heart phenotype; a trait that is not a congenital heart lesion (atrial fibrillation alone, adult heart structure, myocardial infarction) |
-   | `same_data_as` | the same patients and the same result reported again (add `same_as`); a paper with new results on the same patients is included, and its finding names the other in `shares_probands_with` |
-   | `other` | none of the above (add `note` saying why); an erratum or corrigendum is excluded here with `note: erratum to PMID:<the corrected paper>` |
+   No command of this skill writes a decision (`triage-apply` applies a pipeline run's).
+   Change only `decision` and the fields below; never change `pmid` or `search`.
+3. Decide as the role file `src/chd_curator/workflow/roles/triage-check.md` directs (a path in
+   curator's repository and in the installed package; no command prints it). It is the capable
+   tier's task, which you fill; the local tier's is
+   `src/chd_curator/workflow/roles/triage-screen.md`. The rules both cite, the include rule,
+   the reason table and the treatment of a paper that cannot be read, are in the `## Triage`
+   section of the rules file. A decision is written as:
 
    ```yaml
    - pmid: PMID:10000001
@@ -56,15 +49,9 @@ Triage reads an abstract and applies a short rule list.
      decision: excluded
      reason: no_finding_in_gene
    ```
-4. A paper whose abstract is missing or whose full text you cannot reach is not excluded
-   for that. Include it; the extract step records it as `not_accessible`. The one
-   exception is an erratum, which PubMed usually prints with no abstract and the corrected
-   paper's title. Exclude it only when you know it is one (its title says so, or the
-   curator told you); a hit with no abstract whose title repeats another hit's is
-   included and named in your hand-off as unsure.
-5. `same_as` names a PMID that is `included` in this same file. Set the other paper's
+4. `same_as` names a PMID that is `included` in this same file. Set the other paper's
    decision first.
-6. Run `.venv/bin/chd-atlas validate`.
+5. Run `.venv/bin/chd-atlas validate`.
 
 ## Done when
 

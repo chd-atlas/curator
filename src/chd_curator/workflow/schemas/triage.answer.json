@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A triage answer",
+  "description": "One decision on one PubMed hit. The reasons are the atlas's ExclusionReason less same_data_as (it needs a second paper) and full_text_not_accessible (the curator's, never the model's), plus none for an included hit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pmid", "decision", "reason", "why"],
+  "properties": {
+    "pmid": {"type": "string", "pattern": "^PMID:[0-9]+$"},
+    "decision": {"enum": ["included", "excluded"]},
+    "reason": {
+      "enum": [
+        "none",
+        "not_peer_reviewed",
+        "review_article",
+        "not_human_genetics",
+        "no_finding_in_gene",
+        "not_chd",
+        "other"
+      ]
+    },
+    "why": {"type": "string", "minLength": 1}
+  }
+}

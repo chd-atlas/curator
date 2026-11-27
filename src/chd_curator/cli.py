@@ -18,6 +18,7 @@ refused ``--draft`` exits 2, and a literature file that is not valid YAML exits 
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -27,7 +28,7 @@ import urllib.error
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Annotated, Any, Final, cast
 
 import typer
 from ruamel.yaml import YAML
@@ -36,13 +37,22 @@ from ruamel.yaml.error import YAMLError
 from chd_curator import agreement as agreement_mod
 from chd_curator import archive as archive_mod
 from chd_curator import archive_read, pubmed, review_page, sources, variantvalidator
+from chd_curator import ask as ask_module
 from chd_curator import assemble as assemble_module
 from chd_curator import batch as batch_module
 from chd_curator import check as check_module
 from chd_curator import compare as compare_module
+from chd_curator import jobs as jobs_module
 from chd_curator import merge as merge_module
+from chd_curator import package as package_module
+from chd_curator import qualify as qualify_module
 from chd_curator import redact as redact_mod
+from chd_curator import register as register_mod
+from chd_curator import report as report_module
+from chd_curator import requests as requests_module
+from chd_curator import scratch as scratch_module
 from chd_curator import texts as texts_module
+from chd_curator import triage as triage_module
 from chd_curator.atlas import (
     AtlasError,
     Frame,
@@ -73,7 +83,9 @@ from chd_curator.records import (
     with_verified,
 )
 from chd_curator.review_data import ReviewDataError, Reviewer, build_review_data
+from chd_curator.roles import ROLES
 from chd_curator.run import RUN_FORMAT, RunFormatError, RunPaths, load_batches
+from chd_curator.site import SiteError, load_site, model_key
 from chd_curator.write import (
     WriteRefused,
     refuse_anchors,
@@ -83,6 +95,9 @@ from chd_curator.write import (
 )
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="CHD atlas curator tools.")
+
+qualify_app = typer.Typer(no_args_is_help=True, help="Score a model against a gold for a role.")
+app.add_typer(qualify_app, name="qualify")
 
 # The network hooks: tests replace them, nothing else reaches PubMed or VariantValidator.
 _fetch: Fetch = urllib_fetch
@@ -206,13 +221,7 @@ def abstracts(
         found = titles.get(pmid)
         paper = meta.get(pmid)
         year = str(paper.year) if paper else "year unknown"
-        if found is None:
-            typer.echo(f"PMID:{pmid} · {year} · (PubMed returned no record for this PMID)")
-        else:
-            title, abstract, types = found
-            typer.echo(f"PMID:{pmid} · {year} · {title}")
-            typer.echo(f"Publication types: {'; '.join(types) or '(none in PubMed)'}")
-            typer.echo(abstract or "(no abstract in PubMed)")
+        typer.echo(triage_module.hit_block(pmid, year, found))
         typer.echo("")
 
 
@@ -1351,7 +1360,7 @@ def review_page_command(
         )
     out = paths.dir / ("review.html" if role == "owner" else f"review-{name_slug}.html")
     try:
-        out.write_text(review_page.render(data), encoding="utf-8")
+        write_bytes_atomically(out, review_page.render(data).encode("utf-8"))
     except OSError as exc:
         raise _fail(f"{out}: cannot be written: {exc}", 1) from None
     typer.echo(str(out))
@@ -1666,3 +1675,572 @@ def agreement_command(
         return
     for line in agreement_mod.report(tallies, names):
         typer.echo(line)
+
+
+_SHADOWABLE = (ask_module.SHADOWABLE,)
+
+
+@app.command("check-site")
+def check_site(
+    site: Path = typer.Option(..., "--site", help="The site config YAML."),
+    shadow_role: list[str] = typer.Option(
+        [],
+        "--shadow-role",
+        help="triage-screen, when it runs in shadow, so its model needs no qualification.",
+    ),
+) -> None:
+    """Check that every role maps to a backend the register allows.
+
+    Exit 0 when each of the five roles is configured and allowed (or shadowed); exit 2, one line
+    per failing role, when not. A site config that does not load exits 2 with the reason. Reads
+    only: run it before `ask` or a pipeline to see which role a site would have refused.
+    """
+    for role in shadow_role:
+        if role not in _SHADOWABLE:
+            raise _fail(
+                f"--shadow-role {role!r}: only {', '.join(_SHADOWABLE)} may run in shadow", 2
+            )
+    try:
+        loaded = load_site(site)
+        entries = register_mod.load_register()
+    except (SiteError, register_mod.RegisterError) as exc:
+        raise _fail(str(exc), 2) from None
+    problems: list[str] = []
+    for role in ROLES:
+        backend = loaded.roles.get(role)
+        if backend is None:
+            if role not in shadow_role:
+                problems.append(f"{role}: not configured in the site config")
+        elif role not in shadow_role and register_mod.allowed(role, backend, entries) is None:
+            problems.append(f"{role}: {model_key(backend)} is not qualified for this role")
+    if problems:
+        for line in problems:
+            typer.echo(f"error: {line}")
+        raise typer.Exit(code=2)
+    typer.echo(f"site ok: {len(loaded.roles)} role(s) configured, {len(shadow_role)} in shadow")
+
+
+@app.command("read-requests")
+def read_requests_command(
+    symbol: str = typer.Argument(..., help="Gene symbol, as named in the run's directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    role: str = typer.Option(..., "--role", help="extract, blind-read or judge."),
+    out: Path = typer.Option(..., "--out", help="The requests JSONL to write."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    decisions: Path | None = typer.Option(
+        None, "--decisions", help="The judge only: the owner's decisions file of a fix round."
+    ),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Write a run's batch (or judge) manifests, with the texts they name, as `ask` requests.
+
+    One row `{key, gene, batch, mode, inputs: {manifest, texts, registries}}` per batch of
+    batches.json (extract and blind-read, identical rows) or per judging/judge-NN.md (judge, with
+    `owner_notes` too: the `fix` notes of `--decisions` for the findings that manifest names, or
+    `none`); each text and registry is under a `--- file: <path> ---` marker. Exit 1, nothing
+    written, for a named file that is missing, outside the root, not a .txt or not UTF-8, a
+    missing registry, or a `fix` decision on a finding no judge manifest names; exit 2 for a bad
+    argument (an unusable `--decisions`, or one given for a reader), a symbol the atlas refuses
+    or a run with no batches.json. Writes no approval.
+    """
+    _require_root(root)
+    if role not in ("extract", "blind-read", "judge"):
+        raise _fail(f"--role {role!r} is not extract, blind-read or judge", 2)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        notes = requests_module.fix_notes(decisions, approved) if decisions is not None else None
+        count = requests_module.read_requests(
+            root, symbol, run, cast(requests_module.Role, role), out, notes
+        )
+    except (AtlasError, RunFormatError, requests_module.RequestsUsageError) as exc:
+        raise _fail(str(exc), 2) from None
+    except (requests_module.RequestsError, OSError) as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"wrote {count} request(s) for {role} to {out}")
+
+
+@app.command("triage-requests")
+def triage_requests_command(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    out: Path = typer.Option(..., "--out", help="The requests JSONL to write."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Write one `ask` request per pending triage entry: `{key: PMID:n, gene, inputs: {gene, hit}}`.
+
+    `hit` is the block `abstracts` prints for that PMID, fetched from PubMed (network). Exit 1
+    for PubMed failing or a missing literature file, 2 for a bad argument or a symbol the atlas
+    refuses. Writes no approval.
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    key = _api_key()
+    try:
+        count = triage_module.triage_requests(root, approved, out, fetch=_fetch, api_key=key)
+    except (triage_module.TriageError, OSError) as exc:
+        raise _fail(_redact(str(exc), key), 1) from None
+    typer.echo(f"wrote {count} triage request(s) for {approved} to {out}")
+
+
+@app.command("triage-combine")
+def triage_combine_command(
+    requests: Path = typer.Option(..., "--requests", help="The screen's requests JSONL."),
+    screen: Path = typer.Option(..., "--screen", help="The screen's answers JSONL."),
+    check: list[Path] = typer.Option([], "--check", help="A check answers JSONL; repeatable."),
+    run: str = typer.Option(..., "--run", help="The run id (seeds the audit)."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol the requests are for."),
+    out: Path = typer.Option(..., "--out", help="The decisions JSON to write."),
+    out_requests: Path | None = typer.Option(
+        None, "--out-requests", help="Write the check requests still owed here."
+    ),
+    shadow: bool = typer.Option(
+        False, "--shadow", help="The check decides every hit; the hybrid is recorded beside it."
+    ),
+) -> None:
+    """Combine the screen's and the check's answers into one decision per hit.
+
+    A hit goes to the check when the screen excluded it in a risky class (not_chd,
+    no_finding_in_gene), when it is in the audit sample (10% of each other class, at least 5,
+    seeded by `--run`), when the screen's answer is missing, an error or unparseable, or when it
+    excluded a thin hit (PubMed has no record or no abstract for it). An audit
+    miss escalates its class. Hits the check still owes are listed under `awaiting_check` and
+    written to `--out-requests`. The hybrid reads only the check answers for hits it sent; with
+    `--shadow` the check decides every hit it answered. `--gene` is written into the file even
+    when there is no pending hit. Exit 2 for a key not in the requests or repeated in one answers
+    file, or a request naming another gene. Writes no approval.
+    """
+    try:
+        document, owed = triage_module.combine_run(
+            requests, screen, check, run, gene, shadow=shadow
+        )
+        triage_module.write_json(out, document)
+        if out_requests is not None:
+            triage_module.write_requests(out_requests, owed)
+    except triage_module.TriageUsageError as exc:
+        raise _fail(str(exc), 2) from None
+    except (triage_module.TriageError, OSError) as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(
+        f"{len(document['decisions'])} decision(s), {len(owed)} awaiting the check, "
+        f"{len(document['escalated'])} class(es) escalated; wrote {out}"
+    )
+
+
+@app.command("triage-apply")
+def triage_apply_command(
+    symbol: str = typer.Argument(..., help="Gene symbol (approved, alias or previous)."),
+    decisions: Path = typer.Option(..., "--decisions", help="The `triage-combine` output."),
+    root: Path = typer.Option(Path("."), help="Atlas checkout root."),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Write the decisions into the gene's pending triage entries.
+
+    Changes `decision`, and for an exclusion `reason` (and `note`, the answer's `why`, for
+    `other`); never `pmid` or `search`; refuses a decisions file with any hit awaiting the check
+    (exit 1), a screen-tier exclusion in a risky class or a class the file escalated (exit 1), a
+    key that is not a pending entry (exit 1) and a file changed since it was read (exit 2). A
+    file with no decisions applies nothing (exit 0). Writes no approval.
+    """
+    _require_root(root)
+    try:
+        approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
+        loaded, escalated = triage_module.load_decisions_file(decisions, approved)
+        count = triage_module.apply_decisions(root, approved, loaded, escalated=escalated)
+    except AtlasError as exc:
+        raise _fail(str(exc), 2) from None
+    except triage_module.TriageUsageError as exc:
+        raise _fail(str(exc), 2) from None
+    except (triage_module.TriageError, OSError) as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"applied {count} decision(s) to {literature_path(root, approved)}")
+
+
+@app.command("ask")
+def ask_command(
+    role: str = typer.Option(..., "--role", help=f"One of {', '.join(ROLES)}."),
+    requests: Path = typer.Option(..., "--requests", help="JSONL of {key, inputs} rows."),
+    answers: Path = typer.Option(..., "--answers", help="The JSONL file to write."),
+    site: Path = typer.Option(..., "--site", help="The site config YAML."),
+    root: Path = typer.Option(..., "--root", help="Atlas checkout root."),
+    cache: Path | None = typer.Option(None, "--cache", help="A directory of validated answers."),
+    validate: str = typer.Option("schema", "--validate", help="schema or check-batch."),
+    run: str | None = typer.Option(None, "--run", help="The run id (needed by check-batch)."),
+    shadow: bool = typer.Option(
+        False, "--shadow", help="triage-screen only: run a model the register does not allow."
+    ),
+    allow_errors: bool = typer.Option(
+        False, "--allow-errors", help="Exit 0 although some request has an error row."
+    ),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Ask a role's model once per request, validate, retry at most twice, cache by input.
+
+    Writes one answer row per request, in the requests' order, to `--answers`: `{key, parsed,
+    attempts, usage, seconds, model_key, input_digest, rules_digest, meta}` or `{key, error,
+    attempts, usage, seconds}`. Prints one summary line: requests the model answered, requests
+    answered from the cache, requests with an error row (their keys), and the tokens (as
+    `report` counts them). Exit 0 when every request has an answer (or with `--allow-errors`); 1
+    when a request has an error row; 2 for a bad argument, request, site, run, a model the
+    register does not qualify for the role (unless `--shadow`, which only triage-screen takes)
+    or a configuration that would fail every request (an unset `key_env` variable; for
+    claude_code a cluster job variable or a failing `claude --version`; a missing replay
+    `dir`), before any call; and 2 when an HTTP 401 or 403 stopped the run, after writing an
+    error row for every request not asked. Writes no approval: it writes answers, and with
+    `--validate check-batch` the batch's contract files under the run directory.
+    """
+    _require_root(root)
+    if validate not in ("schema", "check-batch"):
+        raise _fail(f"--validate {validate!r} is not schema or check-batch", 2)
+    try:
+        loaded = load_site(site)
+        entries = register_mod.load_register()
+        summary = ask_module.ask(
+            role,
+            requests,
+            answers,
+            loaded,
+            entries,
+            root,
+            cache,
+            "check-batch" if validate == "check-batch" else "schema",
+            run,
+            shadow,
+            atlas_cli=atlas_cli,
+        )
+    except (SiteError, register_mod.RegisterError, ask_module.AskUsageError) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    tokens = summary.tokens
+    failed = f"{len(summary.failed)} ({', '.join(summary.failed)})" if summary.failed else "0"
+    extra = (", shadow: true" if shadow else "") + (f", run: {run}" if run else "")
+    typer.echo(
+        f"answered {summary.asked}, from cache {summary.cached}, failed {failed}, "
+        f"tokens {tokens}{extra}"
+    )
+    if summary.failed and not allow_errors:
+        raise typer.Exit(code=1)
+
+
+@app.command("report")
+def report_command(
+    run_dir: Path = typer.Option(
+        ..., "--run-dir", help="The run folder: <root>/local/literature/runs/<SYMBOL>/<run id>."
+    ),
+    answers: list[str] = typer.Option(
+        [], "--answers", help="<role>=<answers file>; repeat for each role and file."
+    ),
+    trace: Path | None = typer.Option(None, "--trace", help="A Nextflow trace file."),
+    local_usage: list[Path] = typer.Option(
+        [], "--local-usage", help="A sidecar serve-and-ask.sh wrote beside its answers; repeatable."
+    ),
+    out_dir: Path = typer.Option(..., "--out-dir", help="Where report.json and report.md go."),
+) -> None:
+    """Report a run's tiers, cost and how each finding was settled.
+
+    Tokens and seconds come from the answers files (`ask`'s rows), wall time per process from
+    the trace (never core-hours: a task's cpus x realtime is not a model's work), the local
+    tier's core-hours only from `--local-usage` sidecars ("not measured" without one), and the
+    findings' counts from the run folder: `agreed` and `judged` from
+    assemble.json, `corrected by the owner` from decisions/*.json, `normalised` from
+    normalise.json. Writes report.json and report.md, and prints the summary line. A role whose
+    answers carry rules that differ from its register entry's gets a warning. Exit 2 for an
+    unreadable or malformed input, an unknown role, a trace lacking process, cpus or realtime,
+    a sidecar that is not `{cpus, seconds, job_id}`, or a folder that is not a run. Writes no
+    approval.
+    """
+    pairs: list[tuple[str, Path]] = []
+    for item in answers:
+        role, sep, path = item.partition("=")
+        if not sep or not role or not path:
+            raise _fail(f"--answers {item!r} is not <role>=<path>", 2)
+        pairs.append((role, Path(path)))
+    try:
+        json_path, _ = report_module.write_report(
+            run_dir, pairs, trace, out_dir, local_usage=local_usage
+        )
+    except (report_module.ReportError, register_mod.RegisterError) as exc:
+        raise _fail(str(exc), 2) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(json.loads(json_path.read_text(encoding="utf-8"))["summary"])
+
+
+@app.command("scratch-root")
+def scratch_root_command(
+    atlas: Path = typer.Option(..., "--atlas", help="The atlas checkout (never written)."),
+    dest: Path = typer.Option(..., "--dest", help="The scratch root to create (must not exist)."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol, as the run directory."),
+    state: list[Path] = typer.Option(
+        [], "--state", help="A folder `export-state` wrote; repeat to lay several over as one."
+    ),
+) -> None:
+    """Create a scratch root: links to the atlas, the gene's three mutable files copied in.
+
+    Every top-level entry of the atlas is a link, except `curation` and `local/literature`,
+    which are real directories with a link per file (nothing else of `local` enters the root);
+    the three mutable files (the gene's literature file, `publications.yaml`,
+    `.id_registry.yaml`) are copied from the states when given, else from the atlas; then the
+    union of everything under each `<state>/local/` is copied over. Exit 1, no root made, naming
+    each file: a mutable file the atlas has and a state lacks, a mutable file the states do not
+    hold byte for byte alike, or a `local/` file two states hold with different bytes. Exit 2
+    for an existing `--dest` or an unusable argument. Writes nothing in the atlas, and no
+    approval.
+    """
+    try:
+        scratch_module.scratch_root(atlas, dest, gene, state)
+    except scratch_module.ScratchError as exc:
+        raise _fail(str(exc), exc.code) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"scratch root {dest}")
+
+
+@app.command("export-state")
+def export_state_command(
+    root: Path = typer.Option(..., "--root", help="The scratch root."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol, as the run directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    dest: Path = typer.Option(..., "--dest", help="The state folder to create (must not exist)."),
+) -> None:
+    """Copy a scratch root's three files, the run folder and the texts the run lists to `--dest`.
+
+    The three files each when present, the run folder when it exists, the texts only when the
+    run has a `texts.json`. Exit 1, nothing exported, naming a text `texts.json` lists that is
+    missing, or a real file a step wrote under `curation/` or `local/` that none of these
+    covers; exit 2 for an existing `--dest`. Writes no approval.
+    """
+    try:
+        scratch_module.export_state(root, gene, run, dest)
+    except scratch_module.ScratchError as exc:
+        raise _fail(str(exc), exc.code) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"state {dest}")
+
+
+@app.command("base")
+def base_command(
+    atlas: Path = typer.Option(..., "--atlas", help="The atlas checkout."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol."),
+) -> None:
+    """Print, as JSON, `digests` (the sha256 of the gene's three mutable files, null when
+    absent, and a tree digest of each text folder `local/literature/texts/<name>`, so
+    `integrate` can replace a text the run re-fetched) and the checkout's HEAD commit (null when
+    it is not a git checkout). Writes nothing."""
+    if not atlas.is_dir():
+        raise _fail(f"--atlas {atlas} is not a directory", 2)
+    try:
+        digests_ = {
+            **scratch_module.base_digests(atlas, gene),
+            **scratch_module.text_digests(atlas),
+        }
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    body = {"atlas_commit": scratch_module.atlas_head(atlas), "digests": digests_}
+    typer.echo(json.dumps(body, indent=2, sort_keys=True))
+
+
+@app.command("package")
+def package_command(
+    root: Path = typer.Option(..., "--root", help="The work root (a scratch root)."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol, as the run directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    base: Path = typer.Option(..., "--base", help="The JSON `base` printed at the run's start."),
+    out: Path = typer.Option(..., "--out", help="The package directory to create."),
+    answers: list[str] = typer.Option(
+        [], "--answers", help="<role>=<answers file> the run used; repeat for each."
+    ),
+) -> None:
+    """Package a run's proposal: the three files, the run folder, its texts and `package.json`.
+
+    `models` in `package.json` is one `{role, model_key, verdict, rules_digest}` per distinct
+    model and rules of the `--answers` rows; `verdict` is the register's (`pass`, `fail`,
+    `reference`), `unqualified` with no entry, or `test-backend`. Exit 2 for an existing `--out`,
+    an unreadable `--base` or answers file, or an unknown role; exit 1 for a text `texts.json`
+    names that is missing, or a missing run folder. Writes no approval.
+    """
+    pairs: list[tuple[str, Path]] = []
+    for item in answers:
+        role, sep, path = item.partition("=")
+        if not sep or not role or not path:
+            raise _fail(f"--answers {item!r} is not <role>=<path>", 2)
+        pairs.append((role, Path(path)))
+    try:
+        loaded = json.loads(base.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise _fail(f"cannot read --base: {exc}", 2) from None
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("digests"), dict):
+        raise _fail(f"{base}: not the JSON `chd-curator base` prints", 2)
+    try:
+        listed = package_module.models_from_answers(pairs, register_mod.load_register())
+        package_module.write_package(
+            root, gene, run, loaded["digests"], out, listed, loaded.get("atlas_commit")
+        )
+    except register_mod.RegisterError as exc:
+        raise _fail(str(exc), 2) from None
+    except scratch_module.ScratchError as exc:
+        raise _fail(str(exc), exc.code) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"package {out}")
+
+
+@app.command("integrate")
+def integrate_command(
+    package: Annotated[Path, typer.Argument(help="A package directory.")],
+    atlas: Path = typer.Option(..., "--atlas", help="The atlas checkout to bring it into."),
+) -> None:
+    """Bring a package into the atlas, only onto the base the run started from.
+
+    Refuses (exit 1, nothing copied, every file named) when a mutable file of the checkout no
+    longer has the package's base digest, when the run folder already exists, when a text folder
+    changed since the base (or appeared or went since), or when a supplied PDF is present with
+    different bytes. A text folder still at its base digest is replaced by the package's. Exit 2
+    for an unreadable package. Writes the proposal as it stands, and no approval of its own: an
+    approval in the proposal is the proposal's.
+    """
+    try:
+        code = package_module.integrate(package, atlas)
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    if code:
+        raise typer.Exit(code=code)
+
+
+@app.command("job-script")
+def job_script_command(
+    name: str = typer.Argument(
+        ..., help="serve-and-ask.sh, llama-build.sbatch or cluster-ask.sbatch."
+    ),
+) -> None:
+    """Print the absolute path of a packaged job script.
+
+    The scripts run a local model beside `ask` inside one task or one cluster job. They ship as
+    package data; run one as `bash "$(chd-curator job-script serve-and-ask.sh)" ...` so nothing
+    depends on its executable bit. An unknown name exits 2 and lists the three. Writes nothing,
+    and no approval.
+    """
+    try:
+        typer.echo(str(jobs_module.job_script_path(name)))
+    except KeyError:
+        raise _fail(
+            f"no job script {name!r}; the scripts are {', '.join(jobs_module.JOB_SCRIPTS)}", 2
+        ) from None
+
+
+def _answers_values(path: Path, field: str) -> set[str]:
+    """The distinct non-empty values of `field` over an answers file's rows."""
+    found: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line) if line.strip() else {}
+        if isinstance(row, dict) and isinstance(row.get(field), str) and row[field]:
+            found.add(row[field])
+    return found
+
+
+@qualify_app.command("triage")
+def qualify_triage_command(
+    symbol: str = typer.Argument(..., help="The approved symbol whose curation is the gold."),
+    screen: Path = typer.Option(..., "--screen", help="The screen's answers JSONL."),
+    check: Path = typer.Option(..., "--check", help="The capable check's answers JSONL."),
+    run: str = typer.Option(..., "--run", help="The run id (seeds the audit)."),
+    site: Path = typer.Option(..., "--site", help="The site config YAML (its triage-screen role)."),
+    gold_root: Path = typer.Option(
+        Path("."), "--gold-root", help="The atlas checkout holding the approved curation."
+    ),
+    requests: Path | None = typer.Option(
+        None, "--requests", help="The triage requests JSONL: applies thin-hit routing."
+    ),
+    atlas_cli: Path | None = _ATLAS_CLI_OPTION,
+) -> None:
+    """Score a triage configuration against a gene's approved curation; propose a register entry.
+
+    The gold is `triage_gold`: each decided hit's final decision and the count of approved
+    findings citing it (an approval the atlas reports void is not counted). The `--screen`
+    answers must cover exactly the gene's decided hits: a key outside them, or a decided hit with
+    no row (an error row counts as one), exits 2, because the score is defined over the gold's
+    hits. The hybrid is `triage-combine`'s (the check over the
+    risky classes, the audit sample seeded by `--run`, every unanswered hit); with `--requests`,
+    a hit PubMed had no record or abstract for is checked too, as `triage-combine` does, and
+    without it a line says thin-hit routing was not applied. PASS means no paper with approved
+    findings is lost. Prints the score and, for a PASS or FAIL, the register entry to propose
+    (YAML), its `backend` and `model_key` taken from `--site`'s `triage-screen` role. Exit 0 for
+    PASS and FAIL, 1 for INCOMPLETE (the check owes hits; no entry), 2 for an unreadable file,
+    site or gold, or screen answers carrying no single `rules_digest`. Warns on stderr when the
+    answers' `model_key` is not the site's. Writes nothing: no register entry, no approval.
+    """
+    if not gold_root.is_dir():
+        raise _fail(f"--gold-root {gold_root} is not a directory", 2)
+    try:
+        spec = load_site(site).roles.get("triage-screen")
+        if spec is None:
+            raise _fail(f"{site} has no triage-screen role", 2)
+        gold = qualify_module.triage_gold(gold_root, symbol, _atlas_cli(gold_root, atlas_cli))
+        keys = set(gold)
+        answered = triage_module.read_answers(screen, keys)
+        checked = triage_module.read_answers(check, keys)
+        thin = (
+            triage_module.thin_keys(triage_module.read_request_rows(requests))
+            if requests is not None
+            else set()
+        )
+        rules = _answers_values(screen, "rules_digest")
+        keys_seen = _answers_values(screen, "model_key")
+        unasked = sorted(keys - _answers_values(screen, "key"))
+    except (qualify_module.QualifyError, triage_module.TriageUsageError, SiteError) as exc:
+        raise _fail(str(exc), 2) from None
+    except (OSError, ValueError) as exc:
+        raise _fail(str(exc), 2) from None
+    if unasked:
+        raise _fail(
+            f"the screen answers have no row for {len(unasked)} of the gene's {len(keys)} decided "
+            f"hit(s) ({', '.join(unasked)}): `ask` writes a row per request, so the gene was not "
+            "fully asked",
+            2,
+        )
+    if len(rules) != 1:
+        found = ", ".join(sorted(rules)) or "none"
+        raise _fail(f"the screen answers must carry one rules_digest; found: {found}", 2)
+    computed = model_key(spec)
+    if keys_seen - {computed}:
+        typer.echo(
+            f"warning: the screen answers carry model_key {', '.join(sorted(keys_seen))}, "
+            f"not {computed}, the site's triage-screen: they were not produced by this "
+            "site's configuration",
+            err=True,
+        )
+    score = qualify_module.score_triage(
+        gold, {key: answered.get(key, {}) for key in sorted(keys)}, checked, run, thin=thin
+    )
+    typer.echo(
+        f"{score.verdict}: {score.with_findings} hit(s) with approved findings, "
+        f"{score.screen_alone} included by the screen alone, {len(score.missed)} missed"
+        + (f" ({', '.join(score.missed)})" if score.missed else "")
+        + f"; {score.sent_to_check} of {len(gold)} sent to the check before the audit, "
+        f"{score.audit} audited, {len(score.owed)} still owed"
+        + (f" ({', '.join(score.owed)})" if score.owed else "")
+    )
+    if requests is None:
+        typer.echo("thin-hit routing was not applied (no --requests given)")
+    if score.verdict == "INCOMPLETE":
+        raise typer.Exit(code=1)
+    check_keys = _answers_values(check, "model_key")
+    entry = qualify_module.proposed_entry(
+        symbol,
+        gold,
+        score,
+        seed=run,
+        spec=spec,
+        check_model_key=", ".join(sorted(check_keys)) or "unknown",
+        rules_digest=next(iter(rules)),
+    )
+    out = io.StringIO()
+    yaml_out = YAML()
+    yaml_out.default_flow_style = False
+    yaml_out.dump({"entries": [entry]}, out)
+    typer.echo("Proposed register entry (not written):")
+    typer.echo(out.getvalue().rstrip())

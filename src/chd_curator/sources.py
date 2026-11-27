@@ -32,6 +32,7 @@ from importlib.metadata import version
 from typing import Any, Final, Literal
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit
 
+from chd_curator import http as curator_http
 from chd_curator import pubmed
 
 HEADERS: Final = {"User-Agent": f"chd-curator/{version('chd-curator')}", "Accept": "*/*"}
@@ -190,7 +191,7 @@ def _once(url: str, host: str) -> Response:
     request = urllib.request.Request(url, headers=HEADERS)  # noqa: S310
     try:
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as reply:  # noqa: S310
+            with curator_http.open_url(request, TIMEOUT_SECONDS) as reply:  # noqa: S310
                 return Response(
                     reply.status, reply.url, reply.headers.get("Content-Type", ""), reply.read()
                 )

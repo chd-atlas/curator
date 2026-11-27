@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stand-in for `claude` in tests. PATH's python3 is 3.9, so this wrapper runs the interpreter the
+# test names in CLAUDE_STUB_PYTHON (the test's own sys.executable) on claude_stub.py beside it.
+exec "$CLAUDE_STUB_PYTHON" "$(dirname "$0")/claude_stub.py" "$@"

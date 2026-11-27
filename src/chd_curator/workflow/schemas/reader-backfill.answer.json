@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A reader's answer in a backfill run",
+  "description": "A backfill pass (batch-NN.findings.yaml read by run.load_backfill_pass): findings maps the final id of a curated finding to the declared fields it fills, plus the quotes (batch-NN.evidence.yaml) and the report. There is no papers entry: a backfill excludes and registers no paper. Structural only; check-batch refuses a field the finding already holds or the run did not declare.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "findings",
+    "evidence",
+    "report"
+  ],
+  "properties": {
+    "findings": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^CHDA:LIT:[0-9]{7}$": {
+          "type": "object",
+          "minProperties": 1
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^CHDA:LIT:[0-9]{7}$": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field",
+              "quote",
+              "where"
+            ],
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              },
+              "where": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "report": {
+      "type": "string"
+    }
+  }
+}

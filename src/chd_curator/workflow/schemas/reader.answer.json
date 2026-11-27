@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A reader's answer",
+  "description": "The four files a reader leaves for one batch (batch-NN.findings.yaml, .evidence.yaml, .papers.json, .report.md), in the shapes chd-curator check-batch reads. Structural only: a finding is checked against the atlas's schema by check-batch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings", "evidence", "papers", "report"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {"id": {"type": "string", "pattern": "^CHDA:LIT:[0-9]{7}$"}}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^CHDA:LIT:[0-9]{7}$": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "quote", "where"],
+            "properties": {
+              "field": {"type": "string"},
+              "quote": {"type": "string"},
+              "where": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "papers": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pmid", "study_type", "reading"],
+            "properties": {
+              "pmid": {"type": "string", "pattern": "^PMID:[0-9]+$"},
+              "study_type": {"type": ["string", "null"], "minLength": 1},
+              "reading": {"type": "string", "minLength": 1}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pmid", "exclude"],
+            "properties": {
+              "pmid": {"type": "string", "pattern": "^PMID:[0-9]+$"},
+              "exclude": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["reason", "note"],
+                "properties": {
+                  "reason": {"type": "string", "minLength": 1},
+                  "note": {"type": "string", "minLength": 1}
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "report": {"type": "string"}
+  }
+}
