@@ -41,6 +41,7 @@ from chd_curator import assemble as assemble_module
 from chd_curator import batch as batch_module
 from chd_curator import check as check_module
 from chd_curator import compare as compare_module
+from chd_curator import jobs as jobs_module
 from chd_curator import merge as merge_module
 from chd_curator import package as package_module
 from chd_curator import redact as redact_mod
@@ -2015,3 +2016,24 @@ def integrate_command(
         raise _fail(str(exc), 1) from None
     if code:
         raise typer.Exit(code=code)
+
+
+@app.command("job-script")
+def job_script_command(
+    name: str = typer.Argument(
+        ..., help="serve-and-ask.sh, llama-build.sbatch or cluster-ask.sbatch."
+    ),
+) -> None:
+    """Print the absolute path of a packaged job script.
+
+    The scripts run a local model beside `ask` inside one task or one cluster job. They ship as
+    package data; run one as `bash "$(chd-curator job-script serve-and-ask.sh)" ...` so nothing
+    depends on its executable bit. An unknown name exits 2 and lists the three. Writes nothing,
+    and no approval.
+    """
+    try:
+        typer.echo(str(jobs_module.job_script_path(name)))
+    except KeyError:
+        raise _fail(
+            f"no job script {name!r}; the scripts are {', '.join(jobs_module.JOB_SCRIPTS)}", 2
+        ) from None

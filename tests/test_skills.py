@@ -95,8 +95,11 @@ DESIGN_TO_STUDY_TYPE = [
 ]
 
 # Options a file may name that belong to no curator or pinned atlas command.
-# `--marketplace` is Claude Code's, named once in the README.
-OTHER_OPTIONS = {"--plugin-dir", "--marketplace"}
+# `--marketplace` is Claude Code's, named once in the README. The last four are the packaged
+# serve-and-ask.sh script's and llama-server's (README, "Running a local model beside ask").
+OTHER_OPTIONS = {
+    "--plugin-dir", "--marketplace", "--model-file", "--server-args", "--load-mode", "--reasoning",
+}  # fmt: skip
 
 # The burden mirror's count units. The atlas exports no enum for them (the column is a plain
 # string in schemas/tables/burden.v1.json), so they are a literal; a Finding refuses them.
@@ -292,6 +295,7 @@ def test_every_curator_command_and_option_the_files_name_exists() -> None:
         "base",
         "package",
         "integrate",
+        "job-script",
     }
     allowed = set().union(*(_options(c) for c in commands.values()))
     allowed |= set().union(*ATLAS_COMMANDS.values()) | OTHER_OPTIONS

@@ -815,6 +815,29 @@ printed, null when the atlas is not a git checkout), the models (the list `--mod
 when omitted) and the review (the name of the review page when the run folder holds one, null
 when it does not).
 
+### Running a local model beside `ask`
+
+A site that answers `triage-screen` with a local llama.cpp server runs it inside one task or one
+cluster job; `chd-curator job-script <name>` prints the path of a packaged script (an unknown name
+exits 2 and lists the three), and each is run as `bash <path>`:
+
+```bash
+script="$(chd-curator job-script serve-and-ask.sh)"
+bash "$script" --site site.yaml --role triage-screen \
+  --model-file model.gguf --server-args "--load-mode none --reasoning off" -- \
+  --requests req.jsonl --answers answers.jsonl --root /path/to/atlas
+```
+
+`serve-and-ask.sh` refuses (exit 2, before starting anything) server flags without `--load-mode none`
+and an explicit `--reasoning on|off`. It starts the server on a free local port, waits for `/health`
+while the server process lives (a zombie counts as dead), runs `chd-curator ask` against a generated
+one-role site that differs from yours only in `settings.base_url` (so the register's key for the model is unchanged), stops
+the server, and exits with `ask`'s code. `llama-build.sbatch` builds the server on a node without
+internet from a clone made beforehand; `cluster-ask.sbatch` wraps `serve-and-ask.sh` for one Slurm
+job. Each script's header lists the environment variables it reads. No script names a partition,
+account or path: those come from `sbatch` options and the environment. `chd-curator job-script` writes
+nothing and no approval.
+
 ## Develop
 
 curator's tests run against a real atlas checkout and stop if any of these is unset:
