@@ -1949,15 +1949,21 @@ def scratch_root_command(
     atlas: Path = typer.Option(..., "--atlas", help="The atlas checkout (never written)."),
     dest: Path = typer.Option(..., "--dest", help="The scratch root to create (must not exist)."),
     gene: str = typer.Option(..., "--gene", help="The approved symbol, as the run directory."),
-    state: Path | None = typer.Option(None, "--state", help="A folder `export-state` wrote."),
+    state: list[Path] = typer.Option(
+        [], "--state", help="A folder `export-state` wrote; repeat to lay several over as one."
+    ),
 ) -> None:
     """Create a scratch root: links to the atlas, the gene's three mutable files copied in.
 
-    Every top-level entry of the atlas is a link, except `curation` and `local`, which are real
-    directories with a link per file; the three mutable files (the gene's literature file,
-    `publications.yaml`, `.id_registry.yaml`) are copied from `--state` when given, else from the
-    atlas; then everything under `<state>/local/` is copied over. Exit 2 for an existing `--dest`
-    or an unusable argument. Writes nothing in the atlas, and no approval.
+    Every top-level entry of the atlas is a link, except `curation` and `local/literature`,
+    which are real directories with a link per file (nothing else of `local` enters the root);
+    the three mutable files (the gene's literature file, `publications.yaml`,
+    `.id_registry.yaml`) are copied from the states when given, else from the atlas; then the
+    union of everything under each `<state>/local/` is copied over. Exit 1, no root made, naming
+    each file: a mutable file the atlas has and a state lacks, a mutable file the states do not
+    hold byte for byte alike, or a `local/` file two states hold with different bytes. Exit 2
+    for an existing `--dest` or an unusable argument. Writes nothing in the atlas, and no
+    approval.
     """
     try:
         scratch_module.scratch_root(atlas, dest, gene, state)
@@ -1977,8 +1983,10 @@ def export_state_command(
 ) -> None:
     """Copy a scratch root's three files, the run folder and the texts the run lists to `--dest`.
 
-    Exit 1 naming a text `texts.json` lists that is missing, or a missing run folder; exit 2 for
-    an existing `--dest`. Writes no approval.
+    The three files each when present, the run folder when it exists, the texts only when the
+    run has a `texts.json`. Exit 1, nothing exported, naming a text `texts.json` lists that is
+    missing, or a real file a step wrote under `curation/` or `local/` that none of these
+    covers; exit 2 for an existing `--dest`. Writes no approval.
     """
     try:
         scratch_module.export_state(root, gene, run, dest)

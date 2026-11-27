@@ -815,7 +815,7 @@ or gold. It writes nothing: no register entry, no approval.
 
 ```bash
 chd-curator base --atlas /path/to/atlas --gene TBX5 > base.json
-chd-curator scratch-root --atlas /path/to/atlas --dest work --gene TBX5 [--state state-in]
+chd-curator scratch-root --atlas /path/to/atlas --dest work --gene TBX5 [--state state-in ...]
 chd-curator merge TBX5 --run r1 --root work
 chd-curator export-state --root work --gene TBX5 --run r1 --dest state-out
 chd-curator package --root work --gene TBX5 --run r1 --base base.json --out pkg --models models.json
@@ -823,10 +823,14 @@ chd-curator integrate pkg --atlas /path/to/atlas
 ```
 
 A process that changes curated files never writes the atlas checkout. `scratch-root` builds a tree
-of links to the atlas in which `curation/` and `local/` are real directories with a link per file,
-and the gene's three mutable files (its literature file, `publications.yaml`, `.id_registry.yaml`)
-are real copies, from `--state` when given. `export-state` copies the three files, the run folder
-and the texts the run lists out as the state the next process starts from. `base` prints the
+of links to the atlas in which `curation/` and `local/literature/` are real directories with a link
+per file (nothing else of `local/` is in it), and the gene's three mutable files (its literature
+file, `publications.yaml`, `.id_registry.yaml`) are real copies, from the states when given. Several
+`--state` folders are laid over as their union; a file two states hold with different bytes, or a
+mutable file the atlas has and a state lacks, exits 1 naming it. `export-state` copies the three
+files, the run folder (when it exists) and the texts the run lists (when it has a `texts.json`) out
+as the state the next process starts from, and exits 1 naming any other file a step wrote under
+`curation/` or `local/`. `base` prints the
 checkout's digests of the three files and its HEAD commit; `package` writes `proposal/`, `run/`,
 `texts/`, `review.html` (when the run has one) and `package.json`; `integrate` copies the proposal
 into the atlas only when the three files still have the digests the run started from, the run

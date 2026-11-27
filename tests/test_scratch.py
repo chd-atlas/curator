@@ -301,3 +301,135 @@ def test_review_page_replaces_a_linked_page_and_never_writes_through_it(
     written = work / "local/literature/runs/TBX5/r1/review.html"
     assert not written.is_symlink() and written.read_text() != "<old page>"
     assert _tree(atlas) == before
+
+
+# ---- the fix wave: states, export and what the root mirrors -----------------------------------
+
+
+def export(work: Path, dest: Path, run: str = "r1") -> tuple[int, str]:
+    result = runner.invoke(
+        app,
+        ["export-state", "--root", str(work), "--gene", "TBX5", "--run", run, "--dest", str(dest)],
+        catch_exceptions=False,
+    )
+    return result.exit_code, result.output
+
+
+def test_export_state_without_a_run_folder_exports_the_three_files_and_round_trips(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    """R-SWA-42: SEARCH, TRIAGE_REQUESTS and TRIAGE_APPLY run before TEXTS, with no run folder;
+    their only state is the three files."""
+    atlas = make_atlas(tmp_path, atlas_root)
+    work = tmp_path / "work"
+    assert scratch(atlas, work)[0] == 0
+    (work / MUTABLE_TBX5[0]).write_text((work / MUTABLE_TBX5[0]).read_text() + "# searched\n")
+    code, out = export(work, tmp_path / "state", run="r9")
+    assert code == 0, out
+    assert sorted(snapshot(tmp_path / "state")) == sorted(MUTABLE_TBX5)
+    assert scratch(atlas, tmp_path / "next", "--state", str(tmp_path / "state"))[0] == 0
+    assert (tmp_path / "next" / MUTABLE_TBX5[0]).read_text().endswith("# searched\n")
+
+
+def test_export_state_with_a_run_folder_but_no_texts_json_exports_the_folder(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    atlas = make_atlas(tmp_path, atlas_root)
+    work = tmp_path / "work"
+    assert scratch(atlas, work)[0] == 0
+    run = work / "local/literature/runs/TBX5/r9"
+    run.mkdir()
+    (run / "triage.requests.jsonl").write_text("{}\n")
+    code, out = export(work, tmp_path / "state", run="r9")
+    assert code == 0, out
+    assert sorted(snapshot(tmp_path / "state")) == sorted(
+        [*MUTABLE_TBX5, "local/literature/runs/TBX5/r9/triage.requests.jsonl"]
+    )
+    assert scratch(atlas, tmp_path / "next", "--state", str(tmp_path / "state"))[0] == 0
+    assert (tmp_path / "next/local/literature/runs/TBX5/r9/triage.requests.jsonl").is_file()
+
+
+@pytest.mark.parametrize(
+    "stray",
+    ["curation/stray.yaml", "local/literature/stray.txt", "local/literature/runs/TBX5/r2/x.json"],
+)
+def test_export_state_refuses_a_written_file_it_would_not_export(
+    tmp_path: Path, atlas_root: Path, stray: str
+) -> None:
+    """M7: a real file under curation/ or local/ that is not one of the three files, under the
+    run folder or a listed text would be lost between steps; refuse, naming it."""
+    atlas = make_atlas(tmp_path, atlas_root)
+    work = tmp_path / "work"
+    assert scratch(atlas, work)[0] == 0
+    (work / stray).parent.mkdir(parents=True, exist_ok=True)
+    (work / stray).write_text("x")
+    code, out = export(work, tmp_path / "state")
+    assert code == 1 and stray in out
+    assert not (tmp_path / "state").exists()
+
+
+def test_a_state_lacking_a_mutable_file_the_atlas_has_is_refused(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    """M6: the root would silently lack the file, and integrate would then delete nothing but
+    propose nothing either; refuse at once, naming it."""
+    atlas = make_atlas(tmp_path, atlas_root)
+    work = tmp_path / "work"
+    assert scratch(atlas, work)[0] == 0
+    assert export(work, tmp_path / "state")[0] == 0
+    (tmp_path / "state/curation/.id_registry.yaml").unlink()
+    code, out = scratch(atlas, tmp_path / "next", "--state", str(tmp_path / "state"))
+    assert code == 1 and "curation/.id_registry.yaml" in out
+    assert not (tmp_path / "next").exists()
+
+
+def _two_states(tmp_path: Path, atlas_root: Path) -> tuple[Path, Path, Path]:
+    """Two states of one run, as EXTRACT and BLIND_READ leave them: each a batch file the
+    other lacks, everything else byte-identical."""
+    atlas = make_atlas(tmp_path, atlas_root)
+    states = []
+    for name, folder in (("a", "extract"), ("b", "verify")):
+        work = tmp_path / f"work-{name}"
+        assert scratch(atlas, work)[0] == 0
+        target = work / f"local/literature/runs/TBX5/r1/{folder}/batch-09.findings.yaml"
+        target.write_text(f"findings: []  # {name}\n")
+        assert export(work, tmp_path / f"state-{name}")[0] == 0
+        states.append(tmp_path / f"state-{name}")
+    return atlas, states[0], states[1]
+
+
+def test_scratch_root_lays_the_union_of_several_states(tmp_path: Path, atlas_root: Path) -> None:
+    """R-SWA-43: MERGE needs the union of the fan-out's states."""
+    atlas, a, b = _two_states(tmp_path, atlas_root)
+    code, out = scratch(atlas, tmp_path / "next", "--state", str(a), "--state", str(b))
+    assert code == 0, out
+    run = tmp_path / "next/local/literature/runs/TBX5/r1"
+    assert (run / "extract/batch-09.findings.yaml").read_text() == "findings: []  # a\n"
+    assert (run / "verify/batch-09.findings.yaml").read_text() == "findings: []  # b\n"
+
+
+@pytest.mark.parametrize(
+    "rel", ["curation/literature/TBX5.yaml", "local/literature/runs/TBX5/r1/batches.json"]
+)
+def test_two_states_that_differ_on_a_file_are_refused_naming_it(
+    tmp_path: Path, atlas_root: Path, rel: str
+) -> None:
+    atlas, a, b = _two_states(tmp_path, atlas_root)
+    (b / rel).write_text((b / rel).read_text() + "\n")
+    code, out = scratch(atlas, tmp_path / "next", "--state", str(a), "--state", str(b))
+    assert code == 1 and rel in out
+    assert not (tmp_path / "next").exists()
+
+
+def test_the_root_mirrors_only_local_literature(tmp_path: Path, atlas_root: Path) -> None:
+    """M11: every gene's runs live under local/literature, and nothing else of local/ (data,
+    packages, ingest) is any step's input."""
+    atlas = make_atlas(tmp_path, atlas_root)
+    (atlas / "local/data").mkdir()
+    (atlas / "local/data/big.tsv").write_text("x")
+    (atlas / "local/top.txt").write_text("x")
+    assert scratch(atlas, tmp_path / "work")[0] == 0
+    local = tmp_path / "work/local"
+    assert local.is_dir() and not local.is_symlink()
+    assert sorted(p.name for p in local.iterdir()) == ["literature"]
+    assert (local / "literature/runs/TBX5/r1/batches.json").is_symlink()

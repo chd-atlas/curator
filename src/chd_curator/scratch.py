@@ -2,13 +2,16 @@
 
 The pipeline never writes the atlas checkout. A process that changes curated files runs in a
 *scratch root*: a tree of symlinks to the (read-only) atlas, with the gene's three mutable files
-copied in as real files and, when a ``state`` folder is given, everything the earlier steps wrote
-laid over it. ``export_state`` copies that state out again for the next process.
+copied in as real files and, when ``state`` folders are given, everything the earlier steps wrote
+laid over it (several states, as a fan-out leaves them, are laid over as their union; a file two
+states hold with different bytes is refused). ``export_state`` copies that state out again for
+the next process, and refuses a file a step wrote that it would not carry.
 
 Why the directories are real. A symlinked directory would let a new file land inside the atlas,
 and an atomic replace (``fs.py``) swaps a file link, never its target. So ``curation`` and
-``local`` are mirrored as real directories all the way down with every file a link, and every
-other top-level entry is one link to its resolved path. A scratch root is therefore only as safe
+``local/literature`` are mirrored as real directories all the way down with every file a link
+(nothing else of ``local`` enters the root), and every other top-level entry is one link to its
+resolved path. A scratch root is therefore only as safe
 as the rule that a writer replaces files and never edits one in place. Every curator write that
 can run in a scratch root goes through ``fs.write_bytes_atomically`` (it replaces a link, never
 writes through it); ``tests/test_scratch.py`` exercises ``merge``, ``write_batches``,
@@ -22,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
@@ -33,7 +37,9 @@ MUTABLE: Final = (
     "curation/publications.yaml",
     "curation/.id_registry.yaml",
 )
-_MIRRORED: Final = ("curation", "local")
+LITERATURE: Final = "literature"  # the one entry of the atlas's local/ a scratch root mirrors
+TEXTS_DIR: Final = "local/literature/texts"
+_WRITABLE: Final = ("curation", "local")
 
 
 class ScratchError(Exception):
@@ -75,11 +81,10 @@ def _mirror(src: Path, dst: Path, active: tuple[Path, ...] = ()) -> None:
             (dst / entry.name).symlink_to(entry.resolve())
 
 
-def _lay_over(state_local: Path, dest_local: Path) -> None:
-    for source in sorted(state_local.rglob("*")):
-        if not source.is_file():
-            continue
-        target = dest_local / source.relative_to(state_local)
+def _lay_over(files: dict[str, Path], dest_local: Path) -> None:
+    """Copy each ``{path relative to local/: source}`` under `dest_local` as a real file."""
+    for rel, source in sorted(files.items()):
+        target = dest_local / rel
         for parent in reversed(target.relative_to(dest_local).parents):
             part = dest_local / parent
             if part.is_symlink():  # never write through a link
@@ -88,30 +93,75 @@ def _lay_over(state_local: Path, dest_local: Path) -> None:
         copy_file(source, target)
 
 
-def scratch_root(atlas: Path, dest: Path, symbol: str, state: Path | None) -> None:
+def _bytes_or_none(path: Path) -> bytes | None:
+    return path.read_bytes() if path.is_file() else None
+
+
+def _check_states(atlas: Path, symbol: str, states: Sequence[Path]) -> dict[str, Path]:
+    """Refuse states that cannot be laid over together; return the union of their ``local/``
+    files (path relative to ``local/`` -> one source). Exit 1 naming each file: a mutable file
+    the atlas has and a state lacks (M6), a mutable file the states do not hold byte for byte
+    alike (present in some and absent in others counts), and a ``local/`` path two states hold
+    with different bytes."""
+    problems: list[str] = []
+    for rel in mutable_paths(symbol):
+        held = [_bytes_or_none(state / rel) for state in states]
+        if (atlas / rel).is_file():
+            problems += [
+                f"{rel}: the atlas has it and the state {state} lacks it"
+                for state, data in zip(states, held, strict=True)
+                if data is None
+            ]
+        if any(data != held[0] for data in held[1:]):
+            problems.append(f"{rel}: the states hold it with different bytes")
+    union: dict[str, tuple[Path, Path]] = {}
+    for state in states:
+        local = state / "local"
+        for source in sorted(local.rglob("*")) if local.is_dir() else []:
+            if not source.is_file():
+                continue
+            rel = source.relative_to(local).as_posix()
+            first_state, first = union.setdefault(rel, (state, source))
+            if first is not source and first.read_bytes() != source.read_bytes():
+                problems.append(
+                    f"local/{rel}: the states {first_state} and {state} hold it with "
+                    "different bytes"
+                )
+    if problems:
+        raise ScratchError("refused, no root made:\n" + "\n".join(problems), 1)
+    return {rel: source for rel, (_, source) in union.items()}
+
+
+def scratch_root(atlas: Path, dest: Path, symbol: str, states: Sequence[Path] = ()) -> None:
     """Build a scratch root at `dest` (which must not exist). See the module docstring."""
     if not atlas.is_dir():
         raise ScratchError(f"--atlas {atlas} is not a directory", 2)
-    if state is not None and not state.is_dir():
-        raise ScratchError(f"--state {state} is not a directory", 2)
+    for state in states:
+        if not state.is_dir():
+            raise ScratchError(f"--state {state} is not a directory", 2)
     if os.path.lexists(dest):
         raise ScratchError(f"--dest {dest} already exists", 2)
+    union = _check_states(atlas, symbol, states) if states else {}
     dest.mkdir(parents=True)
     for entry in sorted(atlas.iterdir()):
-        if entry.name in _MIRRORED and entry.is_dir():  # a link to a directory too
+        if entry.name == "curation" and entry.is_dir():  # a link to a directory too
             _mirror(entry, dest / entry.name)
+        elif entry.name == "local" and entry.is_dir():
+            (dest / "local").mkdir()
+            if (entry / LITERATURE).is_dir():
+                _mirror(entry / LITERATURE, dest / "local" / LITERATURE)
         else:
             (dest / entry.name).symlink_to(entry.resolve())
     for rel in mutable_paths(symbol):
         link = dest / rel
-        source = (state if state is not None else atlas) / rel
+        source = (states[0] if states else atlas) / rel
         link.parent.mkdir(parents=True, exist_ok=True)
         link.unlink(missing_ok=True)
         if source.is_file():
             copy_file(source, link)
-    if state is not None and (state / "local").is_dir():
+    if union:
         (dest / "local").mkdir(exist_ok=True)
-        _lay_over(state / "local", dest / "local")
+        _lay_over(union, dest / "local")
 
 
 def listed_texts(root: Path, symbol: str, run_id: str) -> list[Path]:
@@ -140,20 +190,45 @@ def listed_texts(root: Path, symbol: str, run_id: str) -> list[Path]:
     return sorted(found)
 
 
+def _written_files(root: Path) -> list[Path]:
+    """Every real (not linked) file under the root's ``curation/`` and ``local/``, relative to
+    the root. Links are not followed: a mirrored directory is real, a file link is the atlas's."""
+    found: list[Path] = []
+    for top in _WRITABLE:
+        for here, dirs, files in os.walk(root / top):
+            base = Path(here)
+            dirs[:] = [d for d in dirs if not (base / d).is_symlink()]
+            found += [(base / f).relative_to(root) for f in files if not (base / f).is_symlink()]
+    return sorted(found)
+
+
 def export_state(root: Path, symbol: str, run_id: str, dest: Path) -> None:
-    """Copy the three files, the run folder and the listed texts of a scratch root into `dest`
-    (which must not exist), as real files at the same relative paths."""
+    """Copy a scratch root's state into `dest` (which must not exist), as real files at the same
+    relative paths: the three files (each when present), the run folder when it exists, and
+    the texts the run lists when it has a ``texts.json`` (R-SWA-42: the steps before TEXTS have
+    no run folder, or one without ``texts.json``). Refused (exit 1, naming every file, nothing
+    written): a real file a step wrote under ``curation/`` or ``local/`` that is none of these,
+    since the next step would silently lose it."""
     if os.path.lexists(dest):
         raise ScratchError(f"--dest {dest} already exists", 2)
     run = RunPaths(root, symbol, run_id)
-    if not run.dir.is_dir():
-        raise ScratchError(f"{run.dir}: the run folder does not exist", 1)
-    texts = listed_texts(root, symbol, run_id)
+    texts = listed_texts(root, symbol, run_id) if run.texts.is_file() else []
+    carried = {Path(rel) for rel in mutable_paths(symbol)} | set(texts)
+    run_rel = run.dir.relative_to(root)
+    stray = [
+        rel for rel in _written_files(root) if rel not in carried and run_rel not in rel.parents
+    ]
+    if stray:
+        raise ScratchError(
+            "refused, nothing exported: written file(s) the state would not carry:\n"
+            + "\n".join(str(rel) for rel in stray),
+            1,
+        )
     dest.mkdir(parents=True)
     for rel in mutable_paths(symbol):
         if (root / rel).is_file():
             copy_file(root / rel, dest / rel)
-    for file in sorted(run.dir.rglob("*")):
+    for file in sorted(run.dir.rglob("*")) if run.dir.is_dir() else []:
         if file.is_file():
             copy_file(file, dest / file.relative_to(root))
     for text in texts:
