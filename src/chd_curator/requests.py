@@ -11,7 +11,9 @@ to the root. A judge row also has ``inputs.owner_notes``: with ``--decisions`` (
 decisions file, as ``review-decisions`` writes and the atlas's ``apply-review`` reads), one line
 ``- <id>: <note>`` per ``fix`` decision on a finding the judge manifest's ``## `` headings name,
 in the file's order; otherwise, and when there is none, the literal ``none``. The notes are part
-of the input, so its digest (and the cache) moves with them (R-SWA-45).
+of the input, so its digest (and the cache) moves with them (R-SWA-45). A ``fix`` on a finding no
+judge manifest of the run names (one both readers agreed on, say) is refused, naming each id, with
+nothing written (R-SWA-60): no judge row could carry it, so the owner's correction would vanish.
 
 A manifest names a file on three kinds of line, outside its fenced blocks: ``- text path: P`` and
 ``- abstract path: P`` (``batch.py`` and ``compare.py``) and ``- supplement: P`` (``batch.py``
@@ -202,7 +204,8 @@ def read_requests(
     notes: list[tuple[str, str]] | None = None,
 ) -> int:
     """Write the request rows of ``role`` for the run to ``out``; return the row count.
-    `notes` (the judge only) are `fix_notes`; None gives every judge row ``none``."""
+    `notes` (the judge only) are `fix_notes`; None gives every judge row ``none``. A note on a
+    finding no judge manifest names is a :class:`RequestsError` (exit 1) naming it."""
     if notes is not None and role != "judge":
         raise RequestsUsageError(f"--decisions is for the judge's rows, not {role}'s")
     run = RunPaths(root, symbol, run_id)
@@ -211,6 +214,7 @@ def read_requests(
     rows: list[dict[str, Any]] = []
     if role == "judge":
         known = {b.id for b in plan.batches}
+        seen: set[str] = set()
         for path in sorted(run.judging.glob("judge-*.md")) if run.judging.is_dir() else []:
             found = _JUDGE.fullmatch(path.name)
             if found is None or found.group(1) not in known:
@@ -219,7 +223,15 @@ def read_requests(
             covered = covered_ids(row["inputs"]["manifest"])
             lines = [f"- {fid}: {note}" for fid, note in notes or [] if fid in covered]
             row["inputs"]["owner_notes"] = "\n".join(lines) or NO_NOTES
+            seen |= covered
             rows.append(row)
+        unjudged = list(dict.fromkeys(fid for fid, _ in notes or [] if fid not in seen))
+        if unjudged:
+            raise RequestsError(
+                f"the owner asked to fix {', '.join(unjudged)}, which no judge manifest of the run "
+                "names; each needs a judge manifest before the judge can act on it (making one is "
+                "the fix round's work), so nothing is written"
+            )
     else:
         for b in plan.batches:
             path = run.batches_dir / f"batch-{b.id}.md"

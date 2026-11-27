@@ -1738,9 +1738,10 @@ def read_requests_command(
     batches.json (extract and blind-read, identical rows) or per judging/judge-NN.md (judge, with
     `owner_notes` too: the `fix` notes of `--decisions` for the findings that manifest names, or
     `none`); each text and registry is under a `--- file: <path> ---` marker. Exit 1, nothing
-    written, for a named file that is missing, outside the root, not a .txt or not UTF-8, or a
-    missing registry; exit 2 for a bad argument (an unusable `--decisions`, or one given for a
-    reader), a symbol the atlas refuses or a run with no batches.json. Writes no approval.
+    written, for a named file that is missing, outside the root, not a .txt or not UTF-8, a
+    missing registry, or a `fix` decision on a finding no judge manifest names; exit 2 for a bad
+    argument (an unusable `--decisions`, or one given for a reader), a symbol the atlas refuses
+    or a run with no batches.json. Writes no approval.
     """
     _require_root(root)
     if role not in ("extract", "blind-read", "judge"):

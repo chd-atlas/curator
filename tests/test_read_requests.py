@@ -288,7 +288,7 @@ def test_the_judge_rows_carry_the_owners_fix_notes_for_the_findings_they_cover(
         [
             {"id": "CHDA:LIT:0009003", "decision": "fix", "note": "screened is 2, see Table 1"},
             {"id": "CHDA:LIT:0009002", "decision": "approve", "note": ""},
-            {"id": "CHDA:LIT:0009999", "decision": "fix", "note": "another batch's finding"},
+            {"id": "CHDA:LIT:0009999", "decision": "approve", "note": ""},  # covered by none
         ],
     )
     noted = tmp_path / "noted.jsonl"
@@ -317,3 +317,44 @@ def test_the_judge_rows_carry_the_owners_fix_notes_for_the_findings_they_cover(
          "--out", str(tmp_path / "y.jsonl"), "--decisions", str(other)],
     )  # fmt: skip
     assert refused.exit_code == 2 and "GATA4" in refused.output
+
+
+def test_a_fix_on_a_finding_no_judge_manifest_covers_is_refused_naming_it(
+    tmp_path: Path, atlas_root: Path
+) -> None:
+    """R-SWA-60: a "Needs a fix" on a finding both readers agreed on gets no judge manifest, so
+    a judge row could never carry it; the owner's correction would vanish without trace. The
+    command refuses, naming the id; making the manifest is the fix round's work, not this one's."""
+    p = _batched(tmp_path, atlas_root)
+    manifest = _judge_manifest(
+        p, "01", f"{p.root}/local/literature/texts/91000002/supplements/s1.txt"
+    )
+    manifest.write_text(
+        manifest.read_text().replace(
+            "## A (first pass only)", "## CHDA:LIT:0009002 (first pass only)"
+        )
+    )
+
+    def run(findings: list[dict[str, Any]], out: Path) -> Any:
+        decisions = _decisions_file(tmp_path / f"{out.stem}.json", findings)
+        return runner.invoke(
+            app,
+            ["read-requests", "TBX5", "--run", "r1", "--role", "judge", "--root", str(p.root),
+             "--out", str(out), "--decisions", str(decisions)],
+        )  # fmt: skip
+
+    covered = run(
+        [{"id": "CHDA:LIT:0009002", "decision": "fix", "note": "n"}], tmp_path / "a.jsonl"
+    )
+    assert covered.exit_code == 0, covered.output
+    assert _rows(tmp_path / "a.jsonl")[0]["inputs"]["owner_notes"] == "- CHDA:LIT:0009002: n"
+    agreed = [
+        {"id": "CHDA:LIT:0009002", "decision": "fix", "note": "n"},
+        {"id": "CHDA:LIT:0009001", "decision": "fix", "note": "both readers agreed; it is wrong"},
+        {"id": "CHDA:LIT:0009005", "decision": "fix", "note": "another"},
+    ]
+    refused = run(agreed, tmp_path / "b.jsonl")
+    assert refused.exit_code == 1, refused.output
+    assert "CHDA:LIT:0009001" in refused.output and "CHDA:LIT:0009005" in refused.output
+    assert "judge manifest" in refused.output
+    assert not (tmp_path / "b.jsonl").exists()

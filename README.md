@@ -766,7 +766,8 @@ owner's decisions file of a fix round) the `fix` notes on the findings that mani
 `none`, so a fix round's judge input, and its cache key, carry the owner's corrections. `gene` is the
 symbol as typed (it names the run directory) and `mode` is the run's, `new` for a `reread` run.
 Exit 1, nothing written, for a named file that is missing, outside the root, not a `.txt` or not
-UTF-8, or a missing registry; exit 2 for a bad argument (a `--decisions` that cannot be used, or
+UTF-8, a missing registry, or a `--decisions` `fix` on a finding no judge manifest names (it needs
+a judge manifest first, which is the fix round's work); exit 2 for a bad argument (a `--decisions` that cannot be used, or
 one given for a reader) or a run with no `batches.json`. It writes no approval. With
 `--validate check-batch`, `ask` sets each finding's `extracted_by` itself (a reader's names its
 skill and the backend's model; a judge's keeps the reading it settles) and marks the row

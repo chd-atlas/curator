@@ -318,7 +318,8 @@ def _judge_sources(c: _Ctx, r: _Req) -> tuple[dict[str, str], str | None]:
 def _attribute(c: _Ctx, r: _Req, parsed: Any) -> tuple[Any, bool]:
     """R-SWA-53: ``extracted_by`` set by code on every finding of a check-batch answer, whatever
     the model wrote. A reader's (mode new) is ``agent:<SKILL_OF[role]>/<backend model>``. A
-    judge reads nothing new, so each finding keeps the attribution of the reading it settles: a
+    judge reads nothing new, so each finding keeps the attribution of the reading it settles
+    (R-SWA-58), never the judge's own model: a
     final id the run's literature file holds takes that finding's, a local ``07`` id (adopted
     from the blind pass) the blind pass's of its batch; a finding neither names is left as
     written, for check-batch to judge. A backfill reader's answer holds fields, not findings,
