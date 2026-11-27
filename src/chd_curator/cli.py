@@ -27,7 +27,7 @@ import urllib.error
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Annotated, Any, Final, cast
 
 import typer
 from ruamel.yaml import YAML
@@ -42,9 +42,11 @@ from chd_curator import batch as batch_module
 from chd_curator import check as check_module
 from chd_curator import compare as compare_module
 from chd_curator import merge as merge_module
+from chd_curator import package as package_module
 from chd_curator import redact as redact_mod
 from chd_curator import register as register_mod
 from chd_curator import requests as requests_module
+from chd_curator import scratch as scratch_module
 from chd_curator import texts as texts_module
 from chd_curator import triage as triage_module
 from chd_curator.atlas import (
@@ -1895,3 +1897,118 @@ def ask_command(
     )
     if summary.failed and not allow_errors:
         raise typer.Exit(code=1)
+
+
+@app.command("scratch-root")
+def scratch_root_command(
+    atlas: Path = typer.Option(..., "--atlas", help="The atlas checkout (never written)."),
+    dest: Path = typer.Option(..., "--dest", help="The scratch root to create (must not exist)."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol, as the run directory."),
+    state: Path | None = typer.Option(None, "--state", help="A folder `export-state` wrote."),
+) -> None:
+    """Create a scratch root: links to the atlas, the gene's three mutable files copied in.
+
+    Every top-level entry of the atlas is a link, except `curation` and `local`, which are real
+    directories with a link per file; the three mutable files (the gene's literature file,
+    `publications.yaml`, `.id_registry.yaml`) are copied from `--state` when given, else from the
+    atlas; then everything under `<state>/local/` is copied over. Exit 2 for an existing `--dest`
+    or an unusable argument. Writes nothing in the atlas, and no approval.
+    """
+    try:
+        scratch_module.scratch_root(atlas, dest, gene, state)
+    except scratch_module.ScratchError as exc:
+        raise _fail(str(exc), exc.code) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"scratch root {dest}")
+
+
+@app.command("export-state")
+def export_state_command(
+    root: Path = typer.Option(..., "--root", help="The scratch root."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol, as the run directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    dest: Path = typer.Option(..., "--dest", help="The state folder to create (must not exist)."),
+) -> None:
+    """Copy a scratch root's three files, the run folder and the texts the run lists to `--dest`.
+
+    Exit 1 naming a text `texts.json` lists that is missing, or a missing run folder; exit 2 for
+    an existing `--dest`. Writes no approval.
+    """
+    try:
+        scratch_module.export_state(root, gene, run, dest)
+    except scratch_module.ScratchError as exc:
+        raise _fail(str(exc), exc.code) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"state {dest}")
+
+
+@app.command("base")
+def base_command(
+    atlas: Path = typer.Option(..., "--atlas", help="The atlas checkout."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol."),
+) -> None:
+    """Print, as JSON, the sha256 of the gene's three mutable files (null when absent) and the
+    checkout's HEAD commit (null when it is not a git checkout). Writes nothing."""
+    if not atlas.is_dir():
+        raise _fail(f"--atlas {atlas} is not a directory", 2)
+    try:
+        digests_ = scratch_module.base_digests(atlas, gene)
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    body = {"atlas_commit": scratch_module.atlas_head(atlas), "digests": digests_}
+    typer.echo(json.dumps(body, indent=2, sort_keys=True))
+
+
+@app.command("package")
+def package_command(
+    root: Path = typer.Option(..., "--root", help="The work root (a scratch root)."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol, as the run directory."),
+    run: str = typer.Option(..., "--run", help="The run id."),
+    base: Path = typer.Option(..., "--base", help="The JSON `base` printed at the run's start."),
+    out: Path = typer.Option(..., "--out", help="The package directory to create."),
+    models: Path | None = typer.Option(
+        None, "--models", help="A JSON file: a list of {role, model} objects."
+    ),
+) -> None:
+    """Package a run's proposal: the three files, the run folder, its texts and `package.json`.
+
+    Exit 2 for an existing `--out` or an unreadable `--base` or `--models`; exit 1 for a missing
+    run folder or a text `texts.json` names that is missing. Writes no approval.
+    """
+    try:
+        loaded = json.loads(base.read_text(encoding="utf-8"))
+        listed = json.loads(models.read_text(encoding="utf-8")) if models is not None else []
+    except (OSError, ValueError) as exc:
+        raise _fail(f"cannot read --base or --models: {exc}", 2) from None
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("digests"), dict):
+        raise _fail(f"{base}: not the JSON `chd-curator base` prints", 2)
+    if not isinstance(listed, list) or not all(isinstance(m, dict) for m in listed):
+        raise _fail(f"{models}: not a list of objects", 2)
+    try:
+        package_module.write_package(
+            root, gene, run, loaded["digests"], out, listed, loaded.get("atlas_commit")
+        )
+    except scratch_module.ScratchError as exc:
+        raise _fail(str(exc), exc.code) from None
+    except OSError as exc:
+        raise _fail(str(exc), 1) from None
+    typer.echo(f"package {out}")
+
+
+@app.command("integrate")
+def integrate_command(
+    package: Annotated[Path, typer.Argument(help="A package directory.")],
+    atlas: Path = typer.Option(..., "--atlas", help="The atlas checkout to bring it into."),
+) -> None:
+    """Bring a package into the atlas, only onto the base the run started from.
+
+    Refuses (exit 1, nothing copied, every file named) when a mutable file of the checkout no
+    longer has the package's base digest, when the run folder already exists, or when a text is
+    present with different bytes. Exit 2 for an unreadable package. Writes the proposal as it
+    stands, and no approval of its own: an approval in the proposal is the proposal's.
+    """
+    code = package_module.integrate(package, atlas)
+    if code:
+        raise typer.Exit(code=code)

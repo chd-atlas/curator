@@ -786,6 +786,28 @@ an exclusion `reason` (and `note`, the answer's `why`, for `other`) into the ent
 `pending`; it refuses (exit 1) a decisions file with any awaiting_check or a key that is not a
 pending entry, and (exit 2) a file changed since it was read. None of the three writes an approval.
 
+### Running a writing step in a scratch root
+
+```bash
+chd-curator base --atlas /path/to/atlas --gene TBX5 > base.json
+chd-curator scratch-root --atlas /path/to/atlas --dest work --gene TBX5 [--state state-in]
+chd-curator merge TBX5 --run r1 --root work
+chd-curator export-state --root work --gene TBX5 --run r1 --dest state-out
+chd-curator package --root work --gene TBX5 --run r1 --base base.json --out pkg --models models.json
+chd-curator integrate pkg --atlas /path/to/atlas
+```
+
+A process that changes curated files never writes the atlas checkout. `scratch-root` builds a tree
+of links to the atlas in which `curation/` and `local/` are real directories with a link per file,
+and the gene's three mutable files (its literature file, `publications.yaml`, `.id_registry.yaml`)
+are real copies, from `--state` when given. `export-state` copies the three files, the run folder
+and the texts the run lists out as the state the next process starts from. `base` prints the
+checkout's digests of the three files and its HEAD commit; `package` writes `proposal/`, `run/`,
+`texts/`, `review.html` (when the run has one) and `package.json`; `integrate` copies the proposal
+into the atlas only when the three files still have the digests the run started from, the run
+folder does not exist and no text differs, naming every file that fails and copying nothing
+otherwise. An existing `--dest` or `--out` exits 2. None of the five writes an approval.
+
 ## Develop
 
 curator's tests run against a real atlas checkout and stop if any of these is unset:

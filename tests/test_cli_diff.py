@@ -572,6 +572,11 @@ def test_the_cli_has_no_command_or_option_that_approves() -> None:
         "triage-requests",
         "triage-combine",
         "triage-apply",
+        "scratch-root",
+        "export-state",
+        "base",
+        "package",
+        "integrate",
     }
     forbidden = {"--approve", "--by", "--on"}
     for name, command in group.commands.items():
