@@ -104,6 +104,8 @@ def test_a_hit_the_screen_did_not_answer_goes_to_the_check(tmp_path: Path) -> No
         app,
         [
             "triage-combine",
+            "--gene",
+            "G",
             "--requests",
             str(requests),
             "--screen",
@@ -187,7 +189,7 @@ def _combine(tmp_path: Path, *args: str) -> Any:
             "R",
             "--out",
             str(tmp_path / "d.json"),
-            *args,
+            *(args if "--gene" in args else ("--gene", "G", *args)),
         ],
     )
 
@@ -681,4 +683,78 @@ def test_a_schema_refusal_and_a_changed_file_are_told_apart(root: Path) -> None:
         apply_decisions(root, "TBX5", decisions, Draft202012Validator({"not": {}}))
     assert "does not satisfy its schema" in str(schema.value)
     assert "changed since it was read" not in str(schema.value)
+    assert _file(root).read_text() == LITERATURE
+
+
+# ------------------------------------------------------------------ the fix wave
+
+
+def _probe(tmp_path: Path) -> tuple[list[str], str]:
+    """S-I1's probe: 10 screen exclusions as review_article, 5 audited; the check excludes the
+    5 and includes one unaudited hit, which the hybrid never sent to it."""
+    keys = [f"PMID:{n}" for n in range(1, 11)]
+    _setup(tmp_path, dict.fromkeys(keys, "review_article"))
+    audit = sorted(audit_sample({"review_article": keys}, "R"))
+    unaudited = sorted(set(keys) - set(audit))[0]
+    assert len(audit) == 5
+    rows = [{"key": k, "parsed": exc(k, "review_article")} for k in audit]
+    _write(tmp_path / "c.jsonl", [*rows, {"key": unaudited, "parsed": inc(unaudited)}])
+    return keys, unaudited
+
+
+def test_the_hybrid_uses_only_the_check_answers_it_sent(tmp_path: Path) -> None:
+    """R-SWA-51: a check answer for a hit `to_check` never named must not decide it, or the
+    recorded hybrid disagrees with `qualify`'s score of the same answers."""
+    from chd_curator.qualify import score_triage
+
+    keys, unaudited = _probe(tmp_path)
+    args = ("--screen", str(tmp_path / "screen.jsonl"), "--check", str(tmp_path / "c.jsonl"))
+    assert _combine(tmp_path, *args).exit_code == 0
+    decided = json.loads((tmp_path / "d.json").read_text())["decisions"][unaudited]
+    assert (decided["decision"], decided["tier"]) == ("excluded", "screen")
+    screen = {k: exc(k, "review_article") for k in keys}
+    check = {**{k: exc(k, "review_article") for k in keys}, unaudited: inc(unaudited)}
+    gold = {k: {"decision": "included", "reason": "none", "findings": int(k == unaudited)}
+            for k in keys}  # fmt: skip
+    score = score_triage(gold, screen, check, "R")
+    assert (score.verdict, score.missed) == ("FAIL", [unaudited])  # they agree
+    # In shadow the check still decides every hit; the recorded hybrid is the real one.
+    assert _combine(tmp_path, *args, "--shadow").exit_code == 0
+    shadowed = json.loads((tmp_path / "d.json").read_text())["decisions"][unaudited]
+    assert (shadowed["decision"], shadowed["tier"]) == ("included", "check")
+    assert (shadowed["hybrid"]["decision"], shadowed["hybrid"]["tier"]) == ("excluded", "screen")
+
+
+def test_an_empty_triage_run_writes_its_gene_and_applies_as_a_no_op(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """M3: with no pending hit there are no rows to read a gene from; `--gene` says it."""
+    (tmp_path / "req.jsonl").write_text("")
+    (tmp_path / "screen.jsonl").write_text("")
+    result = _combine(tmp_path, "--gene", "TBX5", "--screen", str(tmp_path / "screen.jsonl"))
+    assert result.exit_code == 0, result.output
+    document = json.loads((tmp_path / "d.json").read_text())
+    assert (document["gene"], document["decisions"]) == ("TBX5", {})
+    applied = _apply(stub_atlas, root, tmp_path / "d.json")
+    assert applied.exit_code == 0, applied.output
+    assert "applied 0 decision(s)" in applied.output
+    assert _file(root).read_text() == LITERATURE
+    # A request row naming another gene than --gene is refused.
+    _setup(tmp_path, {"PMID:1": "not_chd"})  # rows say gene G
+    other = _combine(tmp_path, "--gene", "TBX5", "--screen", str(tmp_path / "screen.jsonl"))
+    assert other.exit_code == 2 and "TBX5" in other.output
+
+
+def test_apply_refuses_a_screen_exclusion_in_an_escalated_class(
+    root: Path, stub_atlas: Path, tmp_path: Path
+) -> None:
+    """M5: an escalated class is risky for the run, so its screen-tier exclusions need the
+    check exactly as RISKY's do; apply re-checks the file's own `escalated`."""
+    decision = {"decision": "excluded", "reason": "review_article", "why": "w", "tier": "screen"}
+    path = _decisions(tmp_path / "d.json", {"PMID:5": decision})
+    document = json.loads(path.read_text())
+    document["escalated"] = ["review_article"]
+    path.write_text(json.dumps(document))
+    result = _apply(stub_atlas, root, path)
+    assert result.exit_code == 1 and "PMID:5" in result.output and "review_article" in result.output
     assert _file(root).read_text() == LITERATURE

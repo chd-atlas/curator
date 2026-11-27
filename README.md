@@ -738,8 +738,9 @@ at most twice with the errors appended. A model the register does not qualify, a
 an input that does not fit the backend's context are refused, never truncated. Exit 0 when every
 request has an answer, 1 when one has an `error` row (unless `--allow-errors`), 2 for a bad
 argument, an unqualified model (`--shadow` lifts that for `triage-screen` only) or a configuration
-that would fail every request (an unset `key_env` variable, a cluster job variable or a failing
-`claude --version` for `claude_code`, a missing replay `dir`), before any call. An HTTP 401 or 403
+that would fail every request (an unset or empty key variable, the one key_env names; for
+claude_code a cluster job variable, or a claude executable that does not report its version; a
+missing replay directory), before any call. An HTTP 401 or 403
 stops the run: the answers file is written with an error row for every request not asked, and the
 exit is 2. An answer row records the backend's `meta`; an error row records the usage and seconds
 its attempts spent. The summary line counts requests the model answered, requests answered from
@@ -767,10 +768,10 @@ or a run with no `batches.json`. It writes no approval.
 ```bash
 chd-curator triage-requests TBX5 --root /path/to/atlas --out screen-req.jsonl
 chd-curator ask --role triage-screen --allow-errors ... --requests screen-req.jsonl --answers screen-ans.jsonl
-chd-curator triage-combine --requests screen-req.jsonl --screen screen-ans.jsonl --run r1 \
-    --out decisions.json --out-requests check-req.jsonl
+chd-curator triage-combine --gene TBX5 --requests screen-req.jsonl --screen screen-ans.jsonl \
+    --run r1 --out decisions.json --out-requests check-req.jsonl
 chd-curator ask --role triage-check ... --requests check-req.jsonl --answers check-ans.jsonl
-chd-curator triage-combine --requests screen-req.jsonl --screen screen-ans.jsonl \
+chd-curator triage-combine --gene TBX5 --requests screen-req.jsonl --screen screen-ans.jsonl \
     --check check-ans.jsonl --run r1 --out decisions.json --out-requests check-req.jsonl
 chd-curator triage-apply TBX5 --decisions decisions.json --root /path/to/atlas
 ```
@@ -781,12 +782,16 @@ in a risky class (`not_chd`, `no_finding_in_gene`), an audit sample of every oth
 at least 5, all when fewer, seeded by `--run`) and every hit the screen did not answer (no row,
 an error row or an unparseable answer: never read as an exclusion), and every exclusion of a hit
 whose block says PubMed has no record or no abstract (never final on the screen's word). The decisions
-file names the gene; triage-apply refuses another gene's file and any risky exclusion at screen tier. A hit either tier includes
-is included; when both exclude, the check's reason stands. One audited exclusion the check
+file names the gene `--gene` gives, even when there was no pending hit; triage-apply refuses
+another gene's file and any exclusion at screen tier in a risky class or a class the file
+escalated, and applies a file with no decisions as a no-op. A hit either tier includes is
+included; when both exclude, the check's reason stands. The hybrid reads only the check answers
+for the hits it sent to the check. One audited exclusion the check
 includes escalates its class for the run: its remaining exclusions go to the check too
 (escalated, awaiting_check, and the rows still owed in `--out-requests`); run the check on
 them and combine again, passing every `--check` file. `--shadow` makes the check's decision the
-decision for every hit and records the hybrid beside it (hybrid). A key that was not requested,
+decision for every hit it answered and records the hybrid beside it (hybrid), the hybrid reading
+only the answers for the hits it would have sent. A key that was not requested,
 or is answered twice in one file, exits 2 naming it. `triage-apply` writes `decision`, and for
 an exclusion `reason` (and `note`, the answer's `why`, for `other`) into the entries still
 `pending`; it refuses (exit 1) a decisions file with any awaiting_check or a key that is not a
@@ -811,8 +816,8 @@ prints the register entry to propose, as YAML (its backend and model key from `-
 `triage-screen` role, transport settings left out; its rules digest from the answers, which must
 carry exactly one; a warning on stderr when the answers' model key is not the site's). A finding
 whose approval the atlas reports void is not counted. The screen's answers must cover exactly the
-gene's decided triage hits: a key outside them exits 2, because the score is defined over the
-gold's hits. Give `--requests` (the file `triage-requests` wrote) to route a hit PubMed had no
+gene's decided triage hits: a key outside them, or a decided hit with no row at all (an error
+row counts as a row), exits 2, because the score is defined over the gold's hits. Give `--requests` (the file `triage-requests` wrote) to route a hit PubMed had no
 record or abstract for to the check, as `triage-combine` does; without it a line says thin-hit
 routing was not applied. Exit 0 for PASS and FAIL, 1 for INCOMPLETE, 2 for an unreadable file, site
 or gold. It writes nothing: no register entry, no approval.

@@ -201,6 +201,21 @@ def _owed(
     return to_check(screen, risky, set(audit), escalated, thin)
 
 
+def sent_answers(
+    screen: Mapping[str, dict[str, Any]],
+    check: Mapping[str, dict[str, Any]],
+    risky: frozenset[str],
+    audit: set[str] | frozenset[str] = frozenset(),
+    thin: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, dict[str, Any]]:
+    """The check answers the hybrid may read: those for hits `to_check` names. A check that also
+    answered other hits (in shadow it answers every hit) must not rescue or decide them, or the
+    recorded hybrid uses answers the real one would not have had (R-SWA-51). The one rule
+    `combine_run` and `qualify.score_triage` read."""
+    sent = _owed(screen, check, risky, audit, thin)
+    return {key: answer for key, answer in check.items() if key in sent}
+
+
 def combine(
     screen: Mapping[str, dict[str, Any]],
     check: Mapping[str, dict[str, Any]],
@@ -210,7 +225,8 @@ def combine(
 ) -> dict[str, dict[str, str]]:
     """One decision per hit that has one; a hit still needing the check has none (see
     `awaiting`). A hit is included if either tier includes it; when both exclude, the check's
-    reason stands; a screen exclusion `to_check` does not name stays the screen's."""
+    reason stands; a screen exclusion `to_check` does not name stays the screen's. Every check
+    answer given here decides its hit, so the hybrid passes only `sent_answers`."""
     needs = _owed(screen, check, risky, audit, thin)
     decided: dict[str, dict[str, str]] = {}
     for key in sorted(screen):
@@ -316,11 +332,14 @@ def combine_run(
     screen_path: Path,
     check_paths: Sequence[Path],
     run: str,
+    gene: str,
     *,
     shadow: bool = False,
     risky: frozenset[str] = RISKY,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """The decisions document and the check requests still owed (rows copied from `requests`)."""
+    """The decisions document and the check requests still owed (rows copied from `requests`).
+    `gene` (the approved symbol) is written whatever the rows hold, so a run with no pending hit
+    still names its gene; a request row naming another gene is refused."""
     rows = read_request_rows(requests)
     keys = set(rows)
     answered = read_answers(screen_path, keys)
@@ -328,12 +347,15 @@ def combine_run(
     check = merge_check_answers([(p, read_answers(p, keys)) for p in check_paths])
     audit = audit_sample(trusted_exclusions(screen, risky), run)
     thin = thin_keys(rows)
-    genes = {row.get("gene") for row in rows.values()}
-    if len(genes) > 1:
-        raise TriageUsageError(f"{requests}: the requests name more than one gene: {genes!r}")
-    hybrid = combine(screen, check, risky, audit, thin)
-    escalated = escalated_classes(screen, check, audit)
-    owed_hybrid = awaiting(screen, check, risky, audit, thin)
+    others = sorted(
+        {str(row["gene"]) for row in rows.values() if row.get("gene") not in (None, gene)}
+    )
+    if others:
+        raise TriageUsageError(f"{requests}: the requests name {', '.join(others)}, not {gene}")
+    asked = sent_answers(screen, check, risky, audit, thin)
+    hybrid = combine(screen, asked, risky, audit, thin)
+    escalated = escalated_classes(screen, asked, audit)
+    owed_hybrid = awaiting(screen, asked, risky, audit, thin)
     decisions: dict[str, Any]
     if shadow:
         decisions = {}
@@ -344,7 +366,7 @@ def combine_run(
         decisions, owed = dict(hybrid), owed_hybrid
     document = {
         "format": DECISIONS_FORMAT,
-        "gene": next(iter(genes)) if genes else None,
+        "gene": gene,
         "run": run,
         "shadow": shadow,
         "escalated": sorted(escalated),
@@ -367,6 +389,14 @@ def write_requests(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
 def load_decisions(path: Path, symbol: str) -> dict[str, dict[str, Any]]:
     """The decisions of a `triage-combine` file for `symbol` (the approved symbol); refuses one
     still awaiting the check (exit 1) and one written for another gene or none (exit 1)."""
+    return load_decisions_file(path, symbol)[0]
+
+
+def load_decisions_file(
+    path: Path, symbol: str
+) -> tuple[dict[str, dict[str, Any]], frozenset[str]]:
+    """`load_decisions`, plus the file's `escalated` classes (refused unless a list of
+    strings), which `apply_decisions` re-checks."""
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -385,7 +415,10 @@ def load_decisions(path: Path, symbol: str) -> dict[str, dict[str, Any]]:
             f"{path}: {len(owed)} hit(s) still await the check ({', '.join(map(str, owed))}); "
             "run the check on them and combine again"
         )
-    return dict(document["decisions"])
+    escalated = document.get("escalated", [])
+    if not isinstance(escalated, list) or not all(isinstance(c, str) for c in escalated):
+        raise TriageUsageError(f"{path}: `escalated` is not a list of classes")
+    return dict(document["decisions"]), frozenset(escalated)
 
 
 def apply_decisions(
@@ -393,6 +426,7 @@ def apply_decisions(
     symbol: str,
     decisions: Mapping[str, Mapping[str, Any]],
     validator: Draft202012Validator | None = None,
+    escalated: frozenset[str] = frozenset(),
 ) -> int:
     """Write each decision into the `pending` triage entry of `symbol`'s file; return the count.
 
@@ -401,13 +435,14 @@ def apply_decisions(
     is not a pending entry is refused, and so is a file changed since it was read.
 
     What this re-checks itself, whatever the decisions file says: every key is a pending entry
-    of this file; an exclusion in a risky class carries tier ``check`` (a screen-tier one is
-    refused, naming the key); an exclusion has a known reason and an ``other`` has a ``why`` to
-    become its note; nothing is written unless every key passes; the file is unchanged since it
-    was read; and the schema accepts the result (`load_decisions` also checks the gene and that
-    nothing awaits the check). What rests on `combine` alone: that the audit was drawn, that the
-    check answered what `to_check` named, and that a thin hit was checked. A shadow file applies
-    like any other: its decisions are the check's."""
+    of this file; an exclusion in a risky class, or in a class the file's ``escalated`` names,
+    carries tier ``check`` (a screen-tier one is refused, naming the key); an exclusion has a
+    known reason and an ``other`` has a ``why`` to become its note; nothing is written unless
+    every key passes; the file is unchanged since it was read; and the schema accepts the result
+    (`load_decisions` also checks the gene and that nothing awaits the check). What rests on
+    `combine` alone: that the audit was drawn, that the check answered what `to_check` named, and
+    that a thin hit was checked. A shadow file applies like any other: its decisions are the
+    check's."""
     path = literature_path(root, symbol)
     if not path.is_file():
         raise TriageError(f"{path} does not exist")
@@ -427,7 +462,7 @@ def apply_decisions(
             if (
                 d.get("decision") == "excluded"
                 and d.get("tier") == "screen"
-                and d.get("reason") in RISKY
+                and (d.get("reason") in RISKY or d.get("reason") in escalated)
             ):
                 raise TriageError(f"{key}: a risky exclusion ({d['reason']}) needs the check")
             if d.get("decision") == "included":

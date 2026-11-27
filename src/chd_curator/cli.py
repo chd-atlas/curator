@@ -1784,6 +1784,7 @@ def triage_combine_command(
     screen: Path = typer.Option(..., "--screen", help="The screen's answers JSONL."),
     check: list[Path] = typer.Option([], "--check", help="A check answers JSONL; repeatable."),
     run: str = typer.Option(..., "--run", help="The run id (seeds the audit)."),
+    gene: str = typer.Option(..., "--gene", help="The approved symbol the requests are for."),
     out: Path = typer.Option(..., "--out", help="The decisions JSON to write."),
     out_requests: Path | None = typer.Option(
         None, "--out-requests", help="Write the check requests still owed here."
@@ -1798,11 +1799,15 @@ def triage_combine_command(
     no_finding_in_gene), when it is in the audit sample (10% of each other class, at least 5,
     seeded by `--run`) or when the screen's answer is missing, an error or unparseable. An audit
     miss escalates its class. Hits the check still owes are listed under `awaiting_check` and
-    written to `--out-requests`. Exit 2 for a key not in the requests or repeated in one answers
-    file. Writes no approval.
+    written to `--out-requests`. The hybrid reads only the check answers for hits it sent; with
+    `--shadow` the check decides every hit it answered. `--gene` is written into the file even
+    when there is no pending hit. Exit 2 for a key not in the requests or repeated in one answers
+    file, or a request naming another gene. Writes no approval.
     """
     try:
-        document, owed = triage_module.combine_run(requests, screen, check, run, shadow=shadow)
+        document, owed = triage_module.combine_run(
+            requests, screen, check, run, gene, shadow=shadow
+        )
         triage_module.write_json(out, document)
         if out_requests is not None:
             triage_module.write_requests(out_requests, owed)
@@ -1827,14 +1832,15 @@ def triage_apply_command(
 
     Changes `decision`, and for an exclusion `reason` (and `note`, the answer's `why`, for
     `other`); never `pmid` or `search`; refuses a decisions file with any hit awaiting the check
-    (exit 1), a key that is not a pending entry (exit 1) and a file changed since it was read
-    (exit 2). Writes no approval.
+    (exit 1), a screen-tier exclusion in a risky class or a class the file escalated (exit 1), a
+    key that is not a pending entry (exit 1) and a file changed since it was read (exit 2). A
+    file with no decisions applies nothing (exit 0). Writes no approval.
     """
     _require_root(root)
     try:
         approved = target(root, symbol, _atlas_cli(root, atlas_cli)).symbol
-        loaded = triage_module.load_decisions(decisions, approved)
-        count = triage_module.apply_decisions(root, approved, loaded)
+        loaded, escalated = triage_module.load_decisions_file(decisions, approved)
+        count = triage_module.apply_decisions(root, approved, loaded, escalated=escalated)
     except AtlasError as exc:
         raise _fail(str(exc), 2) from None
     except triage_module.TriageUsageError as exc:
@@ -2139,8 +2145,9 @@ def qualify_triage_command(
 
     The gold is `triage_gold`: each decided hit's final decision and the count of approved
     findings citing it (an approval the atlas reports void is not counted). The `--screen`
-    answers must cover exactly the gene's decided hits: a key outside them exits 2, because the
-    score is defined over the gold's hits. The hybrid is `triage-combine`'s (the check over the
+    answers must cover exactly the gene's decided hits: a key outside them, or a decided hit with
+    no row (an error row counts as one), exits 2, because the score is defined over the gold's
+    hits. The hybrid is `triage-combine`'s (the check over the
     risky classes, the audit sample seeded by `--run`, every unanswered hit); with `--requests`,
     a hit PubMed had no record or abstract for is checked too, as `triage-combine` does, and
     without it a line says thin-hit routing was not applied. PASS means no paper with approved
@@ -2167,10 +2174,18 @@ def qualify_triage_command(
         )
         rules = _answers_values(screen, "rules_digest")
         keys_seen = _answers_values(screen, "model_key")
+        unasked = sorted(keys - _answers_values(screen, "key"))
     except (qualify_module.QualifyError, triage_module.TriageUsageError, SiteError) as exc:
         raise _fail(str(exc), 2) from None
     except (OSError, ValueError) as exc:
         raise _fail(str(exc), 2) from None
+    if unasked:
+        raise _fail(
+            f"the screen answers have no row for {len(unasked)} of the gene's {len(keys)} decided "
+            f"hit(s) ({', '.join(unasked)}): `ask` writes a row per request, so the gene was not "
+            "fully asked",
+            2,
+        )
     if len(rules) != 1:
         found = ", ".join(sorted(rules)) or "none"
         raise _fail(f"the screen answers must carry one rules_digest; found: {found}", 2)

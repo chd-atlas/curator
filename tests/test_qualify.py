@@ -367,6 +367,25 @@ def test_a_screen_answer_outside_the_genes_hits_exits_2(tmp_path: Path) -> None:
     assert result.exit_code == 2 and "PMID:99" in result.output
 
 
+def test_a_screen_that_did_not_answer_every_gold_hit_exits_2_naming_them(tmp_path: Path) -> None:
+    """R-SWA-52: `ask` writes a row per request, error rows included, so a gold key with no row
+    means the gene was not fully asked; filling it with {} scored a 1-of-3 screen PASS."""
+    result, _ = _run(tmp_path, screen_rows={"PMID:1": inc("PMID:1")})
+    assert result.exit_code == 2, result.output
+    assert "PMID:2" in result.output and "PMID:3" in result.output
+    assert "entries:" not in result.output
+    # An error row is an answer of sorts: the hit goes to the check, the gene was asked.
+    screen = tmp_path / "screen.jsonl"
+    with screen.open("a", encoding="utf-8") as handle:
+        for key in ("PMID:2", "PMID:3"):
+            row = {"key": key, "error": "gave up", "attempts": 3}
+            handle.write(json.dumps({**row, "model_key": KEY, "rules_digest": RULES}) + "\n")
+    check = {"PMID:2": inc("PMID:2"), "PMID:3": exc("PMID:3", "not_chd")}
+    _rows(tmp_path / "check.jsonl", check)
+    asked = runner.invoke(app, _args(tmp_path))
+    assert asked.exit_code == 0, asked.output
+
+
 def test_a_missing_check_file_is_a_usage_error(tmp_path: Path) -> None:
     _run(tmp_path)
     (tmp_path / "check.jsonl").unlink()

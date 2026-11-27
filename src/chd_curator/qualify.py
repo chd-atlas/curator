@@ -29,8 +29,8 @@ from chd_curator.triage import (
     audit_sample,
     awaiting,
     combine,
-    escalated_classes,
     is_excluded,
+    sent_answers,
     to_check,
     trusted_exclusions,
 )
@@ -112,8 +112,7 @@ def score_triage(
     audit = audit_sample(trusted_exclusions(screen, risky), seed)
     # The hybrid consults the check only where `to_check` names a hit; a check file that also
     # answers other hits (the benchmark's does, for all of them) must not rescue those.
-    sent = to_check(screen, risky, audit, escalated_classes(screen, check, audit), thin)
-    asked = {key: answer for key, answer in check.items() if key in sent}
+    asked = sent_answers(screen, check, risky, audit, thin)
     hybrid = combine(screen, asked, risky, audit, thin)
     owed = awaiting(screen, asked, risky, audit, thin)
     missed = sorted(
