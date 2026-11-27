@@ -339,3 +339,60 @@ def test_the_command_writes_the_two_files_and_prints_the_summary(tmp_path: Path)
     )
     assert bad.exit_code == 2
     assert "<role>=<path>" in bad.output
+
+
+def test_a_decision_for_a_finding_outside_the_run_is_listed_and_not_counted(tmp_path: Path) -> None:
+    run = make_run(tmp_path / "root", judged=[1])
+    (run / "decisions").mkdir()
+    (run / "decisions" / "review.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "findings": [
+                    {"id": _fid(1), "decision": "fix"},
+                    {"id": _fid(777), "decision": "fix"},
+                ],
+            }
+        ),
+        "utf-8",
+    )
+    report = _report(run, [], tmp_path / "out")
+    assert report["findings"]["corrected_by_owner"] == 1
+    assert report["decisions_outside_run"] == [_fid(777)]
+    (warning,) = report["warnings"]
+    assert _fid(777) in warning
+    assert warning in (tmp_path / "out" / "report.md").read_text("utf-8")
+
+
+def test_a_role_on_a_model_with_no_register_entry_is_noted_but_a_test_backend_is_not(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path / "root", verified=[1])
+    key = model_key(_spec("m"))
+    a = answers_file(
+        tmp_path / "a.jsonl", [row("a", {}, 1, model_key_=key), row("b", {}, 1, model_key_=key)]
+    )
+    b = answers_file(tmp_path / "b.jsonl", [row("a", {}, 1, model_key_="replay:x")])
+    c = answers_file(tmp_path / "c.jsonl", [row("a", {}, 1, model_key_="fake:x")])
+    report = _report(
+        run, [("extract", a), ("blind-read", b), ("judge", c)], tmp_path / "out", register=[]
+    )
+    note = (
+        f"note: extract ran a model with no register entry ({key}); "
+        "its answers were recorded in shadow or unqualified"
+    )
+    assert report["notes"] == [note]
+    assert report["unqualified_models"] == [{"role": "extract", "model_key": key, "answers": 2}]
+    assert note in (tmp_path / "out" / "report.md").read_text("utf-8")
+
+
+@pytest.mark.parametrize(("role", "percent"), [("triage-screen", "100"), ("extract", "0")])
+def test_the_summary_says_100_percent_local_and_0_percent_local(
+    tmp_path: Path, role: str, percent: str
+) -> None:
+    run = make_run(tmp_path / "root", verified=[1])
+    f = answers_file(tmp_path / "a.jsonl", [row("a", {"total_tokens": 9}, 1)])
+    summary = _report(run, [(role, f)], tmp_path / "out")["summary"]
+    assert summary == (
+        f"1 findings: 1 agreed, 0 judged, 0 corrected by the owner; {percent}% of tokens local"
+    )

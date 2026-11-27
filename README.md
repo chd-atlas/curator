@@ -848,7 +848,7 @@ from `ask`'s rows, and core-hours (cpus x realtime) from the trace's `process`, 
 `realtime` columns. Per finding: `agreed` is `assemble.json`'s `verified`, `judged` its `judged`,
 `corrected by the owner` the findings whose latest decision in `decisions/*.json` is `fix`, and
 `normalised` the findings `normalise.json` placed. A role that ran on rules differing from its
-register entry's gets a warning. `chd-curator report` writes no approval.
+register entry's gets a warning. Tokens spent on failed attempts are not recorded by `ask`, so they are absent from the totals; a model with no register entry (a shadow run) gets a note, and decisions naming findings outside the run are listed and not counted. `chd-curator report` writes no approval.
 
 ## Develop
 

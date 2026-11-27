@@ -18,9 +18,10 @@ is local over all, rounded half up.
 ``BLIND_READ`` is ``blind-read``), ``cpus`` (an integer) and ``realtime`` (Nextflow's duration
 text, ``1h 30m``, ``36s``, ``350ms``, ``1d 2h``, or a bare integer of milliseconds as the raw
 trace writes it); ``status`` is read when present, and a ``CACHED`` task spent nothing and is
-skipped. A missing ``process``, ``cpus`` or ``realtime`` column, or a realtime or cpus that does
-not parse, is refused (exit 2) naming it. ``core_hours`` of a role is the sum of ``cpus x
-realtime`` in hours over its tasks; a process no role carries is listed in
+skipped; a ``realtime`` of ``-`` on any other task refuses the report (exit 2, naming the line). A
+missing ``process``, ``cpus`` or ``realtime`` column, or a realtime or cpus that does not
+parse, is refused (exit 2) naming it. ``core_hours`` of a role is the sum of
+``cpus x realtime`` in hours over its tasks; a process no role carries is listed in
 ``trace_unmatched_processes`` and counted nowhere.
 
 **Findings.** Each count names the file and field that decides it, in the run folder
@@ -33,7 +34,9 @@ realtime`` in hours over its tasks; a process no role carries is listed in
   finding replaced or added.
 * ``corrected_by_owner``: the findings whose latest ``decision`` is ``fix`` in the ``findings``
   of the ``decisions/*.json`` files (``review-decisions`` output). Files are read in name order,
-  so for a finding in two files the last file wins. 0 when there is no ``decisions/``.
+  so for a finding in two files the last file wins. 0 when there is no ``decisions/``. Only ids
+  among the run's findings (``agreed`` or ``judged``) count; any decision id outside them is
+  listed in ``decisions_outside_run`` and named in a warning.
 * ``normalised``: the distinct findings with at least one entry of ``outcome`` ``placed`` in
   ``normalise.json``'s ``variants``, that is, whose variant code placed. 0 when there is no
   such file.
@@ -41,6 +44,14 @@ realtime`` in hours over its tasks; a process no role carries is listed in
   not parts of it: a finding is agreed or judged, and may also be corrected or normalised.
 
 With no ``assemble.json`` nothing is settled yet: the counts are 0 and a warning says so.
+
+**Tokens of failed attempts are not recorded.** An ``error`` row carries no ``usage``, so what
+the backend spent on failed attempts is absent from every token total and from the percentage.
+
+**Notes.** For each role and ``model_key`` with answers that has no register entry for the role
+(a shadow run, or a model never qualified), ``note: <role> ran a model with no register entry
+(<model_key>); its answers were recorded in shadow or unqualified`` in ``notes``, and the same
+fact in ``unqualified_models``. A test backend (``replay``, ``fake``) gets none.
 
 **Warnings.** For each role, the answer rows whose ``rules_digest`` differs from the register
 entry's for that row's ``model_key``: ``warning: <role> ran on rules that changed since its
@@ -66,6 +77,7 @@ REPORT_FORMAT: Final = 1
 LOCAL_ROLES: Final = ("triage-screen",)
 _DURATION: Final = re.compile(r"([0-9]+(?:\.[0-9]+)?)(ms|s|m|h|d)")
 _SECONDS: Final = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+_TEST_KINDS: Final = ("replay", "fake")
 _TRACE_COLUMNS: Final = ("process", "cpus", "realtime")
 
 
@@ -119,7 +131,8 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
 
 def _process(
     role: str, files: Sequence[Path], register: Sequence[Entry]
-) -> tuple[dict[str, Any], int]:
+) -> tuple[dict[str, Any], int, dict[str, int]]:
+    unqualified: dict[str, int] = {}
     seconds = 0.0
     tokens = failed = cached = stale = answers = 0
     qualified = {e.model_key: e.rules_digest for e in register if e.role == role}
@@ -137,7 +150,10 @@ def _process(
             secs = r.get("seconds", 0)
             if isinstance(secs, int | float) and not isinstance(secs, bool):
                 seconds += secs
-            was = qualified.get(str(r.get("model_key")))
+            mkey = str(r.get("model_key"))
+            if mkey not in qualified and mkey.split(":", 1)[0] not in _TEST_KINDS:
+                unqualified[mkey] = unqualified.get(mkey, 0) + 1
+            was = qualified.get(mkey)
             if was and r.get("rules_digest") != was:
                 stale += 1
     entry = {
@@ -150,7 +166,7 @@ def _process(
         "tokens": tokens,
         "core_hours": None,
     }
-    return entry, stale
+    return entry, stale, unqualified
 
 
 def _seconds(text: str) -> float | None:
@@ -212,7 +228,7 @@ def _read_trace(path: Path) -> tuple[dict[str, float], list[str]]:
     return hours, sorted(unmatched)
 
 
-def _owner_corrections(p: RunPaths) -> int:
+def _owner_decisions(p: RunPaths) -> dict[str, str]:
     latest: dict[str, str] = {}
     files = sorted(p.decisions.glob("*.json")) if p.decisions.is_dir() else []
     for path in files:
@@ -227,7 +243,7 @@ def _owner_corrections(p: RunPaths) -> int:
             if not isinstance(entry, dict) or "id" not in entry or "decision" not in entry:
                 raise ReportError(f"{path}: a findings entry lacks id or decision")
             latest[str(entry["id"])] = str(entry["decision"])
-    return sum(1 for d in latest.values() if d == "fix")
+    return latest
 
 
 def _placed(p: RunPaths) -> int:
@@ -286,6 +302,8 @@ def _markdown(report: Mapping[str, Any]) -> str:
             "Trace processes no role carries (not counted): "
             + ", ".join(report["trace_unmatched_processes"]),
         ]
+    if report["notes"]:
+        lines += ["", "## Notes", "", *(f"- {n}" for n in report["notes"])]
     if report["warnings"]:
         lines += ["", "## Warnings", "", *(f"- {w}" for w in report["warnings"])]
     return "\n".join(lines) + "\n"
@@ -313,9 +331,17 @@ def write_report(
         files.setdefault(role, []).append(path)
     processes: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
+    notes: list[str] = []
+    unqualified: list[dict[str, Any]] = []
     for role in ROLES:
         if role in files:
-            processes[role], stale = _process(role, files[role], entries)
+            processes[role], stale, unqual = _process(role, files[role], entries)
+            for mkey in sorted(unqual):
+                unqualified.append({"role": role, "model_key": mkey, "answers": unqual[mkey]})
+                notes.append(
+                    f"note: {role} ran a model with no register entry ({mkey}); "
+                    "its answers were recorded in shadow or unqualified"
+                )
             if stale:
                 warnings.append(
                     f"warning: {role} ran on rules that changed since its qualification "
@@ -342,7 +368,7 @@ def write_report(
         normalised = _placed(paths)
     except RunFormatError as exc:
         raise ReportError(str(exc)) from None
-    corrected = _owner_corrections(paths)
+    decided = _owner_decisions(paths)
     if record is None:
         agreed: set[str] = set()
         judged: set[str] = set()
@@ -351,6 +377,13 @@ def write_report(
         )
     else:
         agreed, judged = set(record.verified), set(record.judged)
+    outside = sorted(set(decided) - agreed - judged)
+    if outside:
+        warnings.append(
+            "warning: decisions/ names findings that are not findings of this run, "
+            f"not counted: {', '.join(outside)}"
+        )
+    corrected = sum(1 for i, d in decided.items() if d == "fix" and i in agreed | judged)
     findings = {
         "total": len(agreed | judged),
         "agreed": len(agreed),
@@ -370,6 +403,9 @@ def write_report(
         "trace_unmatched_processes": unmatched,
         "summary": _summary(findings, local, local + capable),
         "warnings": warnings,
+        "notes": notes,
+        "unqualified_models": unqualified,
+        "decisions_outside_run": outside,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path, md_path = out_dir / "report.json", out_dir / "report.md"
