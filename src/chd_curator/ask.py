@@ -27,7 +27,7 @@ file written with an error row for every request not asked, then ``AskStopped`` 
   never reads an invalid file.
 * **Attribution.** With ``check-batch``, every finding's ``extracted_by`` is set by code before
   the answer is checked (``_attribute``; R-SWA-53), never taken from the model, and the row says
-  ``"attribution": "set by ask"``.
+  ``"attribution": "set by ask"`` only when that changed a value the model wrote.
 * **Retry.** At most two, each with the errors appended verbatim to the ``user`` text. A
   transient backend error is not a retry: it backs off 5, 20, 60 s and then gives up.
 
@@ -323,7 +323,8 @@ def _attribute(c: _Ctx, r: _Req, parsed: Any) -> tuple[Any, bool]:
     final id the run's literature file holds takes that finding's, a local ``07`` id (adopted
     from the blind pass) the blind pass's of its batch; a finding neither names is left as
     written, for check-batch to judge. A backfill reader's answer holds fields, not findings,
-    and is left alone. Returns the answer and whether anything was set."""
+    and is left alone. Returns the answer and whether it differs from what the model wrote
+    (R-SWA-62: a value ask kept is not marked)."""
     if c.validate != "check-batch" or not isinstance(parsed, dict):
         return parsed, False
     findings = parsed.get("findings")
@@ -332,7 +333,7 @@ def _attribute(c: _Ctx, r: _Req, parsed: Any) -> tuple[Any, bool]:
     if c.role in SKILL_OF:
         by = f"agent:{SKILL_OF[c.role]}/{c.spec.model}"
         named = [{**f, "extracted_by": by} if isinstance(f, dict) else f for f in findings]
-        return {**parsed, "findings": named}, True
+        return {**parsed, "findings": named}, named != findings
     filed, blind = _judge_sources(c, r)
     out: list[Any] = []
     for f in findings:
@@ -341,7 +342,7 @@ def _attribute(c: _Ctx, r: _Req, parsed: Any) -> tuple[Any, bool]:
             blind if isinstance(fid, str) and _JUDGE_LOCAL.fullmatch(fid) else filed.get(str(fid))
         )
         out.append({**f, "extracted_by": found} if found and isinstance(f, dict) else f)
-    return {**parsed, "findings": out}, True
+    return {**parsed, "findings": out}, out != findings
 
 
 def _contract_files(c: _Ctx, r: _Req, parsed: Mapping[str, Any]) -> dict[Path, bytes]:

@@ -780,7 +780,7 @@ a judge manifest first, which is the fix round's work); exit 2 for a bad argumen
 one given for a reader) or a run with no `batches.json`. It writes no approval. With
 `--validate check-batch`, `ask` sets each finding's `extracted_by` itself (a reader's names its
 skill and the backend's model; a judge's keeps the reading it settles) and marks the row
-`"attribution": "set by ask"`.
+`"attribution": "set by ask"` only when that changed a value the model wrote.
 
 ### Triaging a gene's hits with a screen and a check
 
@@ -862,12 +862,12 @@ mutable file the atlas has and a state lacks, exits 1 naming it. `export-state` 
 files, the run folder (when it exists) and the texts the run lists (when it has a `texts.json`) out
 as the state the next process starts from, and exits 1 naming any other file a step wrote under
 `curation/` or `local/`. `base` prints the
-checkout's digests of the three files and of each text folder, and its HEAD commit; `package` writes `proposal/`, `run/`,
+checkout's digests of the three files and of each text folder (with `texts_digested: true`, which `package` requires of its `--base`: a base from an older curator is refused, exit 2, and is taken again), and its HEAD commit; it exits 2, naming each, when an interrupted `integrate` left a `.<name>.replaced` or `.<name>.integrate` folder among the texts, with the commands that finish it (nothing is removed for you); `package` writes `proposal/`, `run/`,
 `texts/`, `review.html` (when the run has one) and `package.json`; `integrate` copies the proposal
 into the atlas only when the three files still have the digests the run started from, the run
 folder does not exist, no text folder changed in the atlas since the run started (one still at its
 base digest is replaced by the package's, so a re-fetched text integrates) and no supplied PDF
-differs. It checks in stages (the three files, then what is not a file, the run folder, the
+differs. A text folder that was absent at the base and now holds the package's very bytes is skipped as already present. It checks in stages (the three files, then what is not a file, the run folder, the
 texts) and stops at the first stage that fails, naming that stage's files and copying nothing. An existing `--dest` or `--out` exits 2. The copy itself is not atomic across files: an
 I/O error part-way leaves a partial run folder, and `integrate` says so and names it.
 
