@@ -113,7 +113,7 @@ def test_the_models_are_the_ones_the_answers_used_with_their_register_verdicts(
     atlas = make_atlas(tmp_path, atlas_root)
     base_json(atlas, tmp_path / "base.json")
     scratch(atlas, tmp_path / "work")
-    failed = "openai_compat:Qwen3-30B-A3B-Instruct-2507-Q4_K_M@ec071ed07538"  # a `fail` entry
+    failed = "openai_compat:Qwen3-30B-A3B-Instruct-2507-Q4_K_M@7c5f79b9acd5"  # a `fail` entry
     screen = _answers(
         tmp_path / "screen.jsonl",
         {"key": "PMID:1", "model_key": failed, "rules_digest": "r1", "parsed": {}},
