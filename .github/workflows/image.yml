@@ -45,7 +45,8 @@ jobs:
           echo "atlas commit used: $commit (dev tip; the pinned default is $ATLAS_COMMIT_PIN)"
 
       - name: Build curator
-        run: docker build --build-arg ATLAS_COMMIT="$ATLAS_COMMIT" \
+        run: |
+          docker build --build-arg ATLAS_COMMIT="$ATLAS_COMMIT" \
             --build-arg CURATOR_REVISION="$GITHUB_SHA" -t curator:ci .
 
       - name: Check curator
