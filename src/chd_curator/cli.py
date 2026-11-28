@@ -1041,8 +1041,11 @@ def batch(
 
     SYMBOL may be an alias or a previous symbol: the run directory is named as typed and the
     literature file by the approved symbol. The budget is budget-kb x 1,000 bytes of main text per
-    batch. A backfill's summary line says how many findings its default selection left out for
-    holding a declared field. Exit 2, nothing written, when the run is already batched, has no
+    batch. A manifest names each text, abstract and supplement by its path relative to --root
+    (`local/literature/texts/<digits>/fulltext.txt`), so it reads the same wherever the run was
+    planned; an agent running from the atlas root opens the path from there. A backfill's summary
+    line says how many findings its default selection left out for holding a declared field. Exit
+    2, nothing written, when the run is already batched, has no
     texts.json, a selected paper has no text or year, or a field is unknown, forbidden or one
     that compare does not compare as a field of its own.
     """
@@ -1131,10 +1134,11 @@ def compare(
     """Compare a merged run's blind pass with its first pass and write the judges' manifests.
 
     Writes comparison.json and judging/judge-NN.md for each batch with something to judge. A
-    re-run replaces the manifests, so a corrected verify file can be compared again. Exit 2,
-    nothing written, when the judges have already written decisions or findings, the run has no
-    merge.json, or a batch's blind pass is missing, misplaced or inconsistent. Exit 1 on an OS
-    error.
+    re-run replaces the manifests, so a corrected verify file can be compared again. A manifest
+    names each text, abstract and supplement by its path relative to --root, as `batch` does.
+    Exit 2, nothing written, when the judges have already written decisions or findings, the run
+    has no merge.json, or a batch's blind pass is missing, misplaced or inconsistent. Exit 1 on an
+    OS error.
     """
     _require_root(root)
     try:
@@ -1737,7 +1741,9 @@ def read_requests_command(
     One row `{key, gene, batch, mode, inputs: {manifest, texts, registries}}` per batch of
     batches.json (extract and blind-read, identical rows) or per judging/judge-NN.md (judge, with
     `owner_notes` too: the `fix` notes of `--decisions` for the findings that manifest names, or
-    `none`); each text and registry is under a `--- file: <path> ---` marker. Exit 1, nothing
+    `none`); each text and registry is under a `--- file: <path> ---` marker. A manifest's path is
+    read against --root (a run written by v0.1.0 names absolute paths inside the root, which are
+    read as before); one that leaves the root is refused. Exit 1, nothing
     written, for a named file that is missing, outside the root, not a .txt or not UTF-8, a
     missing registry, or a `fix` decision on a finding no judge manifest names; exit 2 for a bad
     argument (an unusable `--decisions`, or one given for a reader), a symbol the atlas refuses
@@ -2029,8 +2035,11 @@ def base_command(
 ) -> None:
     """Print, as JSON, `digests` (the sha256 of the gene's three mutable files, null when
     absent, and a tree digest of each text folder `local/literature/texts/<name>`, so
-    `integrate` can replace a text the run re-fetched) and the checkout's HEAD commit (null when
-    it is not a git checkout). Writes nothing."""
+    `integrate` can replace a text the run re-fetched), `texts_digested` (true: `package`
+    refuses a base from a curator that did not digest the texts) and the checkout's HEAD commit
+    (null when it is not a git checkout). Exit 2, naming each, when an interrupted `integrate`
+    left a `.<name>.replaced` or `.<name>.integrate` folder among the texts, with the commands
+    that finish it; nothing is removed. Writes nothing."""
     if not atlas.is_dir():
         raise _fail(f"--atlas {atlas} is not a directory", 2)
     try:
@@ -2038,9 +2047,15 @@ def base_command(
             **scratch_module.base_digests(atlas, gene),
             **scratch_module.text_digests(atlas),
         }
+    except scratch_module.ScratchError as exc:
+        raise _fail(str(exc), exc.code) from None
     except OSError as exc:
         raise _fail(str(exc), 1) from None
-    body = {"atlas_commit": scratch_module.atlas_head(atlas), "digests": digests_}
+    body = {
+        "atlas_commit": scratch_module.atlas_head(atlas),
+        "digests": digests_,
+        "texts_digested": True,
+    }
     typer.echo(json.dumps(body, indent=2, sort_keys=True))
 
 
@@ -2075,6 +2090,13 @@ def package_command(
         raise _fail(f"cannot read --base: {exc}", 2) from None
     if not isinstance(loaded, dict) or not isinstance(loaded.get("digests"), dict):
         raise _fail(f"{base}: not the JSON `chd-curator base` prints", 2)
+    if loaded.get("texts_digested") is not True:
+        raise _fail(
+            f"{base}: has no `texts_digested` field, so it came from an older curator that did "
+            "not digest the text folders and `integrate` would refuse every text the atlas "
+            "already held; run `chd-curator base` again",
+            2,
+        )
     try:
         listed = package_module.models_from_answers(pairs, register_mod.load_register())
         package_module.write_package(
@@ -2096,10 +2118,11 @@ def integrate_command(
 ) -> None:
     """Bring a package into the atlas, only onto the base the run started from.
 
-    Refuses (exit 1, nothing copied, every file named) when a mutable file of the checkout no
-    longer has the package's base digest, when the run folder already exists, when a text folder
-    changed since the base (or appeared or went since), or when a supplied PDF is present with
-    different bytes. A text folder still at its base digest is replaced by the package's. Exit 2
+    Refuses (exit 1, nothing copied, naming the files of the first check that fails) when a
+    mutable file of the checkout no longer has the package's base digest, when the run folder
+    already exists, when a text folder changed since the base (or appeared or went since, unless
+    it is byte-identical to the package's), or when a supplied PDF is present with different
+    bytes. A text folder still at its base digest is replaced by the package's. Exit 2
     for an unreadable package. Writes the proposal as it stands, and no approval of its own: an
     approval in the proposal is the proposal's.
     """

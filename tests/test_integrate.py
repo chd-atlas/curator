@@ -6,6 +6,7 @@ Each refusal hashes every file of the target atlas (and its file list) before an
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import pytest
 from typer.testing import CliRunner
 
 from chd_curator.cli import app
+from test_contract import _plain
 from test_merge import _pubmed
 from test_package import base_json, package
 from test_scratch import MUTABLE_TBX5, make_atlas, merge, scratch, snapshot
@@ -222,3 +224,114 @@ def test_integrate_reports_an_io_error_mid_copy_without_a_traceback(
     monkeypatch.setattr(package_module, "copy_file", flaky)
     code, out = integrate(pkg, atlas)
     assert code == 1 and "disk full" in out and "partial" in out and RUN in out
+
+
+def test_the_help_says_what_a_refusal_names_and_not_every_file(  # R-SWA-62 (1)
+) -> None:
+    """A refusal names the files of the first check that fails, and the README says so; the
+    help said "every file named", which a run that fails two checks does not do. ANSI is
+    stripped: with GITHUB_ACTIONS=true typer/Rich keeps bold and dim styles under NO_COLOR."""
+    result = runner.invoke(app, ["integrate", "--help"], env={"NO_COLOR": "1"})
+    flat = " ".join(_plain(result.output).split())
+    assert "every file named" not in flat
+    assert "naming the files of the first check that fails" in flat
+
+
+def test_integrate_skips_a_text_folder_absent_at_base_that_is_byte_identical(  # R-SWA-62 (2)
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path
+) -> None:
+    """Someone put the very bytes the package carries where the run found nothing: nothing
+    differs, so nothing is refused (R-SWA-21's rule for identical texts) and nothing is copied."""
+    atlas = _refetched(tmp_path, atlas_root, stub_atlas, "absent at base")
+    folder = atlas / "local/literature/texts/91000002"
+    shutil.rmtree(folder)
+    shutil.copytree(tmp_path / "pkg/texts/91000002", folder)
+    code, out = integrate(tmp_path / "pkg", atlas)
+    assert code == 0, out
+    assert "0 text folder(s) replaced" in out and "(0 already present)" not in out
+    assert (folder / "fulltext.txt").read_text() == "the re-fetched full text"
+    assert not list(folder.parent.glob(".*"))
+
+
+def _interrupted(
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+) -> Path:
+    """An atlas whose `integrate` stopped at `where` (R-SWA-62 (4)): `staging` (before the first
+    rename), `swap` (between the two renames) or `cleanup` (after both, before the old folder
+    was removed)."""
+    from chd_curator import package as package_module
+
+    atlas = _refetched(tmp_path, atlas_root, stub_atlas)
+    real_rename, real_rmtree, calls = os.rename, shutil.rmtree, []
+
+    def rename(src: object, dst: object) -> None:
+        calls.append(str(dst))
+        if where == "swap" and len(calls) == 2 and str(dst).endswith("/91000002"):
+            raise OSError("interrupted")
+        real_rename(src, dst)  # type: ignore[arg-type]
+
+    def rmtree(path: object, *args: object, **kwargs: object) -> None:
+        if where == "cleanup" and str(path).endswith(".91000002.replaced") and not kwargs:
+            raise OSError("interrupted")
+        real_rmtree(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    if where == "staging":
+        real_copy = package_module.copy_file
+        seen: list[Path] = []
+
+        def copy_file(source: Path, target: Path) -> None:
+            seen.append(target)
+            if len(seen) == 2:
+                raise OSError("interrupted")
+            real_copy(source, target)
+
+        monkeypatch.setattr(package_module, "copy_file", copy_file)
+    monkeypatch.setattr(package_module.os, "rename", rename)
+    monkeypatch.setattr(package_module.shutil, "rmtree", rmtree)
+    code, out = integrate(tmp_path / "pkg", atlas)
+    assert code == 1 and "interrupted" in out
+    monkeypatch.undo()
+    return atlas
+
+
+@pytest.mark.parametrize(
+    ("where", "must_say"),
+    [
+        ("staging", ["texts/.91000002.integrate", "unfinished copy", "rm -rf"]),
+        (
+            "swap",
+            [
+                "texts/.91000002.replaced",
+                "texts/.91000002.integrate",
+                "is absent",
+                "mv local/literature/texts/.91000002.integrate local/literature/texts/91000002",
+                "rm -rf local/literature/texts/.91000002.replaced",
+            ],
+        ),  # fmt: skip
+        ("cleanup", ["texts/.91000002.replaced", "is the package's", "rm -rf"]),
+    ],
+)
+def test_a_leftover_of_an_interrupted_integrate_is_named_with_the_way_to_finish(  # R-SWA-62 (4)
+    tmp_path: Path,
+    atlas_root: Path,
+    stub_atlas: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+    must_say: list[str],
+) -> None:
+    """`base` used to print the leftover as a text folder, and `package` then exited 2 on a name
+    it could not place. Now `base` exits 2 naming each leftover, the state the folder is in
+    (read from which of the two renames happened) and the commands that finish; nothing is
+    removed for the curator."""
+    atlas = _interrupted(tmp_path, atlas_root, stub_atlas, monkeypatch, where)
+    before = snapshot(atlas)
+    result = runner.invoke(app, ["base", "--atlas", str(atlas), "--gene", "TBX5"])
+    assert result.exit_code == 2
+    flat = " ".join(result.output.split())
+    for phrase in must_say:
+        assert phrase in flat, (phrase, flat)
+    assert snapshot(atlas) == before

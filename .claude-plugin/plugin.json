@@ -1,6 +1,6 @@
 {
   "name": "curator",
   "description": "Skills that drive agents through the CHD Atlas literature pipeline: search, triage, extract and verify, then a drafted gene synthesis. A named human approves every finding.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "Apache-2.0"
 }

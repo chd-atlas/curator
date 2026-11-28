@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -40,6 +41,7 @@ MUTABLE: Final = (
 LITERATURE: Final = "literature"  # the one entry of the atlas's local/ a scratch root mirrors
 TEXTS_DIR: Final = "local/literature/texts"
 _WRITABLE: Final = ("curation", "local")
+_LEFTOVER: Final = re.compile(r"\.(.+)\.(replaced|integrate)")
 
 
 class ScratchError(Exception):
@@ -257,11 +259,66 @@ def tree_digest(directory: Path) -> str:
     return outer.hexdigest()
 
 
+def _leftovers(texts: Path) -> list[str]:
+    """What an interrupted ``integrate`` left in `texts`, one paragraph per text folder, or [].
+
+    ``integrate`` replaces a folder N by building ``.N.integrate`` beside it, renaming N to
+    ``.N.replaced``, renaming ``.N.integrate`` to N, then removing ``.N.replaced``; which of the
+    three exist says how far it got. Nothing is removed here: the curator decides."""
+    by_name: dict[str, dict[str, Path]] = {}
+    for entry in sorted(texts.iterdir() if texts.is_dir() else []):
+        found = _LEFTOVER.fullmatch(entry.name)
+        if found is not None:
+            by_name.setdefault(found.group(1), {})[found.group(2)] = entry
+    lines: list[str] = []
+    for name, parts in by_name.items():
+        folder = f"{TEXTS_DIR}/{name}"
+        stage, old = parts.get("integrate"), parts.get("replaced")
+        left = " and ".join(f"{TEXTS_DIR}/{e.name}" for e in (stage, old) if e is not None)
+        have = (texts / name).is_dir()
+        if stage is not None and old is None and have:
+            lines.append(
+                f"{left} is an unfinished copy from an interrupted integrate; {folder} is "
+                f"untouched. Finish by removing it: rm -rf {TEXTS_DIR}/{stage.name}"
+            )
+        elif old is not None and have:
+            lines.append(
+                f"{left} is the previous text; an interrupted integrate had already renamed the "
+                f"new one to {folder}, which is the package's. Finish by removing it: "
+                f"rm -rf {TEXTS_DIR}/{old.name}"
+            )
+        elif stage is not None and old is not None:
+            lines.append(
+                f"{left}: an interrupted integrate stopped between its two renames, so {folder} "
+                f"is absent; {TEXTS_DIR}/{old.name} is the previous text and "
+                f"{TEXTS_DIR}/{stage.name} the package's complete copy. Finish with: "
+                f"mv {TEXTS_DIR}/{stage.name} {folder} && rm -rf {TEXTS_DIR}/{old.name} "
+                f"(or keep the previous text: mv {TEXTS_DIR}/{old.name} {folder} && "
+                f"rm -rf {TEXTS_DIR}/{stage.name})"
+            )
+        else:
+            only = stage if old is None else old
+            kept = f"{TEXTS_DIR}/{only.name}" if only is not None else left
+            lines.append(
+                f"{left}: {folder} is absent and only this is left of an interrupted integrate; "
+                f"inspect it, and if it is the text you want: mv {kept} {folder}"
+            )
+    return lines
+
+
 def text_digests(atlas: Path) -> dict[str, str]:
     """``local/literature/texts/<name>`` -> :func:`tree_digest` for each text directory of the
     checkout (R-SWA-47), so ``integrate`` can tell a text re-fetched by the run from one the
-    atlas changed meanwhile."""
+    atlas changed meanwhile. Raises :class:`ScratchError` (exit 2) naming each leftover of an
+    interrupted ``integrate`` (R-SWA-62): it would be taken for a text folder."""
     texts = atlas / TEXTS_DIR
+    left = _leftovers(texts)
+    if left:
+        raise ScratchError(
+            "an interrupted integrate left folders in the atlas, so no base can be taken:\n"
+            + "\n".join(left),
+            2,
+        )
     return {
         f"{TEXTS_DIR}/{d.name}": tree_digest(d)
         for d in sorted(texts.iterdir() if texts.is_dir() else [])

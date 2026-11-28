@@ -23,6 +23,10 @@ both roles); ``judge`` reads each ``judging/judge-NN.md`` that exists, sorted. `
 symbol as typed, which names the run's directory (``ask`` finds the run by it); ``mode`` is the
 run's, with a ``reread`` run's rows ``new``, as ``ask`` expects.
 
+Since v0.1.1 ``batch`` and ``compare`` write these paths relative to the root (POSIX), so a request
+does not change with where the run was planned; a path is joined to the root here. The absolute
+paths inside the root that v0.1.0 wrote are still read.
+
 A file that is missing, outside the root, not a ``.txt`` text or not UTF-8 is a
 :class:`RequestsError` naming it, and nothing is written. "Outside" is lexical (R-SWA-54): the
 named path, joined to the root and normalised without following links, must lie under the root;

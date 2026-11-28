@@ -302,11 +302,14 @@ def _plan_texts(
                 new += files
             continue
         now = tree_digest(target)
-        if at_base is None:
+        ours = tree_digest(package / "texts" / folder.removeprefix(_TEXTS))
+        if at_base is None and ours == now:
+            unchanged += len(files)  # absent at base, and now holding the package's very bytes
+        elif at_base is None:
             refused.append(f"{folder}: not in the atlas when the run started, and present now")
         elif now != at_base:
             refused.append(f"{folder}: changed in the atlas since the run started")
-        elif tree_digest(package / "texts" / folder.removeprefix(_TEXTS)) == now:
+        elif ours == now:
             unchanged += len(files)
         else:
             replaced.append(folder)

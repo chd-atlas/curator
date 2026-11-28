@@ -82,7 +82,7 @@ def test_one_row_per_batch_with_the_manifest_and_every_text_it_names(
         "key": "01", "gene": "TBX5", "batch": "01", "mode": "new"
     }  # fmt: skip
     assert row["inputs"]["manifest"] == manifest
-    texts = f"{p.root}/local/literature/texts"
+    texts = "local/literature/texts"
     order = [
         f"{texts}/91000002/fulltext.txt",
         f"{texts}/91000002/abstract.txt",
@@ -91,7 +91,7 @@ def test_one_row_per_batch_with_the_manifest_and_every_text_it_names(
         f"{texts}/91000004/abstract.txt",
     ]
     assert named_files(manifest) == order
-    expected = "\n".join(f"--- file: {n} ---\n{Path(n).read_text()}" for n in order)
+    expected = "\n".join(f"--- file: {n} ---\n{(p.root / n).read_text()}" for n in order)
     assert row["inputs"]["texts"] == expected
 
 
@@ -122,7 +122,7 @@ def test_one_row_per_judge_manifest(tmp_path: Path, atlas_root: Path) -> None:
 
 
 @pytest.mark.parametrize("role", ["extract", "judge"])
-@pytest.mark.parametrize("what", ["missing", "outside", "absolute", "pdf"])
+@pytest.mark.parametrize("what", ["missing", "outside", "relative_outside", "absolute", "pdf"])
 def test_a_bad_named_file_writes_nothing_and_names_it(
     tmp_path: Path, atlas_root: Path, role: str, what: str
 ) -> None:
@@ -131,6 +131,7 @@ def test_a_bad_named_file_writes_nothing_and_names_it(
     target = {
         "missing": f"{root}/local/literature/texts/91000002/nope.txt",
         "outside": f"{root}/../outside.txt",
+        "relative_outside": "local/../../outside.txt",
         "absolute": str(root.parent / "outside.txt"),
         "pdf": f"{root}/local/literature/texts/91000002/paper.pdf",
     }[what]
@@ -218,7 +219,7 @@ def test_a_text_linked_from_inside_the_root_is_read_through_the_link(
     assert code == 0, text
     (row,) = _rows(out)
     assert (
-        f"--- file: {inside} ---\nthe atlas's copy, reached through a link\n"
+        f"--- file: {inside.relative_to(p.root)} ---\nthe atlas's copy, reached through a link\n"
         in (row["inputs"]["texts"])
     )
 
@@ -358,3 +359,20 @@ def test_a_fix_on_a_finding_no_judge_manifest_covers_is_refused_naming_it(
     assert "CHDA:LIT:0009001" in refused.output and "CHDA:LIT:0009005" in refused.output
     assert "judge manifest" in refused.output
     assert not (tmp_path / "b.jsonl").exists()
+
+
+def test_a_relative_manifest_path_is_read_against_the_root_and_a_v010_absolute_one_still_is(
+    tmp_path: Path, atlas_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manifests are root-relative since v0.1.1; a run written by v0.1.0 names absolute paths
+    inside its root and keeps working. The current directory is neither."""
+    p = _batched(tmp_path, atlas_root)
+    monkeypatch.chdir(tmp_path)
+    relative = "local/literature/texts/91000002/fulltext.txt"
+    absolute = f"{p.root}/{relative}"
+    for name in (relative, absolute):
+        _judge_manifest(p, "01", name)
+        out = tmp_path / "j.jsonl"
+        assert _requests(p, "judge", out)[0] == 0
+        (row,) = _rows(out)
+        assert f"--- file: {name} ---\n" in row["inputs"]["texts"]

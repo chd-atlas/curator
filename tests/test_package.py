@@ -147,3 +147,21 @@ def test_the_models_are_the_ones_the_answers_used_with_their_register_verdicts(
         tmp_path / "work", tmp_path / "base.json", tmp_path / "pkg2", "--answers", f"x={judge}"
     )
     assert bad == 2 and "'x' is not a role" in message
+
+
+def test_a_base_without_text_digests_is_refused_up_front(  # R-SWA-62 (3)
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Such a base would make `integrate` refuse every pre-existing text as "not in the atlas
+    when the run started", which is untrue; `package` says what is wrong, writing nothing."""
+    atlas = make_atlas(tmp_path, atlas_root)
+    base = base_json(atlas, tmp_path / "base.json")
+    assert base["texts_digested"] is True
+    del base["texts_digested"]
+    (tmp_path / "old.json").write_text(json.dumps(base))
+    scratch(atlas, tmp_path / "work")
+    _pubmed(monkeypatch)
+    merge(tmp_path / "work", stub_atlas)
+    code, out = package(tmp_path / "work", tmp_path / "old.json", tmp_path / "pkg")
+    assert code == 2 and not (tmp_path / "pkg").exists()
+    assert "texts_digested" in out and "older curator" in out

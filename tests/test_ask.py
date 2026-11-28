@@ -939,3 +939,40 @@ def test_a_judges_findings_keep_the_attribution_of_the_reading_they_settle(
     assert [f["extracted_by"] for f in written] == [f["extracted_by"] for f in before]
     assert len({f["extracted_by"] for f in before}) == 2  # both kinds are exercised
     assert rows[0]["attribution"] == "set by ask"
+
+
+def test_the_row_is_marked_only_where_ask_changed_an_attribution(  # R-SWA-62 (5)
+    tmp_path: Path, atlas_root: Path, stub_atlas: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reader whose model wrote the right `extracted_by` and a judge whose findings already
+    carry the reading they settle were not changed by ask, so the row is not marked."""
+    from test_assemble import _ready
+
+    root = _reader_root(tmp_path, atlas_root)
+    answer = json.loads(_answer_from(root, "extract"))
+    for f in answer["findings"]:
+        f["extracted_by"] = f"agent:literature-extract/{MODEL_OF['extract']}"
+    run = root / "local/literature/runs/TBX5/r1/extract"
+    for path in run.glob("batch-01.*"):
+        path.unlink()
+    cli = _fake(tmp_path, _stdout(summary="0 error(s), 3 warning(s)"))
+    summary, rows, _ = _ask_batch(tmp_path, root, cli, [json.dumps(answer)], "extract")
+    assert summary.failed == [], rows
+    assert "attribution" not in rows[0]
+
+    (tmp_path / "j").mkdir()
+    p = _ready(tmp_path / "j", atlas_root, stub_atlas, monkeypatch)
+    shutil.copytree(RULES_ROOT / "curator", p.root / "curator")
+    findings = p.judging / "judge-01.findings.yaml"
+    decisions = p.judge / "judge-01.decisions.yaml"
+    kept = json.dumps(
+        {
+            "findings": YAML_SAFE.load(findings.read_text())["findings"],
+            "decisions": YAML_SAFE.load(decisions.read_text()),
+        }
+    )
+    findings.unlink()
+    decisions.unlink()
+    summary, rows, _ = _ask_batch(tmp_path / "j", p.root, cli, [kept], "judge")
+    assert summary.failed == [], rows
+    assert "attribution" not in rows[0]

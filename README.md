@@ -12,7 +12,7 @@ An agent never approves: a named person does, in the atlas, with `chd-atlas lite
 ## Install
 
 ```bash
-uv tool install git+https://github.com/chd-atlas/curator@v0.1.0
+uv tool install git+https://github.com/chd-atlas/curator@v0.1.1
 ```
 
 Then, in Claude Code:
@@ -154,8 +154,10 @@ and each name must be a `Finding` property of the exported schema other than `id
 (`summary`, `locators`, `shares_probands_with` and `review_note`, which it ignores, and
 `review_status` and `review_settled_by`, which it reports only together as `review marks`); the manifest then
 lists the fields and each paper's findings as curated, with `approved_by`, `approved_on` and
-`approved_digest` left out because a reader needs none of them. A manifest gives absolute paths to
-each paper's text, abstract and supplements (with sizes) and names no other file of the run.
+`approved_digest` left out because a reader needs none of them. A manifest gives each paper's text, abstract and
+supplement paths (with sizes) relative to `--root`, as `local/literature/texts/<digits>/fulltext.txt`,
+never absolute, so the same run planned in two roots writes the same manifest (an agent running from the atlas
+root opens a path from there), and names no other file of the run.
 Example output: `planned 1 batch for 3 papers (budget 170,000 bytes): 01 3 papers 637 bytes`; a
 backfill's default selection appends `; skipped N findings already holding a declared field` when
 it left any out. `<SYMBOL>` may be an alias or a previous symbol (the run directory is named as
@@ -242,7 +244,7 @@ pseudo-field, `review marks`; `review_note` is not compared. A pair that differs
 another field lists only the other field. A backfill that declares a field the comparison never
 reads (`summary`, `locators`, the review fields) is refused, because every difference in it would
 read as agreement. A manifest names, for each differing pair and each unpaired finding, the paper's
-text, abstract and supplement paths (absolute), each differing field as
+text, abstract and supplement paths (relative to `--root`, as `batch` writes them), each differing field as
 `<field>: first <json> | second <json>`, and both findings as YAML, the first as merged and
 without its approval. Example output: `compared 3 pairs: 1 agreed, 1 span only, 1 differ; 0 only
 in the first pass, 1 only in the blind pass`.
@@ -763,7 +765,9 @@ Writes the rows `ask --validate check-batch` takes, from the run folder: for `ex
 `blind-read` one row per batch of `batches.json` (the two roles get identical rows), for `judge`
 one per `judging/judge-NN.md`. `inputs.manifest` is the manifest's text; `inputs.texts` is every
 file the manifest names (`- text path:`, `- abstract path:`, `- supplement:`), once each, in order,
-each under `--- file: <path as the manifest names it> ---`; a path inside the root is read through
+each under `--- file: <path as the manifest names it> ---`. A manifest's path is read against `--root`: the relative paths
+`batch` and `compare` write, and the absolute paths inside the root that v0.1.0 wrote, which still work; a path that leaves the root
+is refused. A path inside the root is read through
 any link (in a scratch root a text is a link into the atlas). `inputs.registries` holds
 `curation/cohorts.yaml` and `curation/phenotypes.yaml` under the same marker, since the cited
 rules send the reader there. A judge row also has `inputs.owner_notes`: with `--decisions` (the
@@ -776,7 +780,7 @@ a judge manifest first, which is the fix round's work); exit 2 for a bad argumen
 one given for a reader) or a run with no `batches.json`. It writes no approval. With
 `--validate check-batch`, `ask` sets each finding's `extracted_by` itself (a reader's names its
 skill and the backend's model; a judge's keeps the reading it settles) and marks the row
-`"attribution": "set by ask"`.
+`"attribution": "set by ask"` only when that changed a value the model wrote.
 
 ### Triaging a gene's hits with a screen and a check
 
@@ -858,12 +862,12 @@ mutable file the atlas has and a state lacks, exits 1 naming it. `export-state` 
 files, the run folder (when it exists) and the texts the run lists (when it has a `texts.json`) out
 as the state the next process starts from, and exits 1 naming any other file a step wrote under
 `curation/` or `local/`. `base` prints the
-checkout's digests of the three files and of each text folder, and its HEAD commit; `package` writes `proposal/`, `run/`,
+checkout's digests of the three files and of each text folder (with `texts_digested: true`, which `package` requires of its `--base`: a base from an older curator is refused, exit 2, and is taken again), and its HEAD commit; it exits 2, naming each, when an interrupted `integrate` left a `.<name>.replaced` or `.<name>.integrate` folder among the texts, with the commands that finish it (nothing is removed for you); `package` writes `proposal/`, `run/`,
 `texts/`, `review.html` (when the run has one) and `package.json`; `integrate` copies the proposal
 into the atlas only when the three files still have the digests the run started from, the run
 folder does not exist, no text folder changed in the atlas since the run started (one still at its
 base digest is replaced by the package's, so a re-fetched text integrates) and no supplied PDF
-differs. It checks in stages (the three files, then what is not a file, the run folder, the
+differs. A text folder that was absent at the base and now holds the package's very bytes is skipped as already present. It checks in stages (the three files, then what is not a file, the run folder, the
 texts) and stops at the first stage that fails, naming that stage's files and copying nothing. An existing `--dest` or `--out` exits 2. The copy itself is not atomic across files: an
 I/O error part-way leaves a partial run folder, and `integrate` says so and names it.
 

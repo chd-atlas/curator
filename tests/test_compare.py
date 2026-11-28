@@ -108,10 +108,10 @@ def test_compare_on_the_merged_fixture_gives_the_literal_comparison_and_one_mani
         "included, is listed" in text
     )
     assert "are already settled" not in text and "spacing and case" not in text
-    root = str(p.root.resolve())
-    assert f"- text path: {root}/local/literature/texts/91000002/fulltext.txt\n" in text
-    assert f"- abstract path: {root}/local/literature/texts/91000002/abstract.txt\n" in text
-    assert f"- supplement: {root}/local/literature/texts/91000002/supplements/s1.txt\n" in text
+    assert "- text path: local/literature/texts/91000002/fulltext.txt\n" in text
+    assert "- abstract path: local/literature/texts/91000002/abstract.txt\n" in text
+    assert "- supplement: local/literature/texts/91000002/supplements/s1.txt\n" in text
+    assert str(p.root) not in text
     assert "## CHDA:LIT:0009003 (blind pass CHDA:LIT:0801002)\n" in text
     assert "- screened: first 1 | second 2\n" in text
     assert "## CHDA:LIT:0801003 (blind pass only)\n" in text
@@ -679,7 +679,7 @@ def test_leftovers_with_different_keys_are_not_paired_however_alike_they_are(
     assert c.only_first == ("CHDA:LIT:0009001",) and c.only_second == ("CHDA:LIT:0801001",)
 
 
-def test_manifest_paths_are_absolute_even_when_the_root_is_given_relative(
+def test_manifest_paths_are_root_relative_even_when_the_root_is_given_relative(
     tmp_path: Path,
     atlas_root: Path,
     stub_atlas: Path,
@@ -698,7 +698,8 @@ def test_manifest_paths_are_absolute_even_when_the_root_is_given_relative(
         for line in (p.judging / "judge-01.md").read_text().splitlines()
         if line.startswith(("- text path: ", "- abstract path: ", "- supplement: "))
     ]
-    assert len(paths) == 6 and all(path.startswith("/") for path in paths)
+    assert len(paths) == 6
+    assert all(path.startswith("local/literature/texts/") for path in paths)
 
 
 def test_a_first_pass_finding_the_blind_reader_never_reported_is_in_the_manifest(
