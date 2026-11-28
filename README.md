@@ -9,6 +9,14 @@ extraction steps.
 An agent never approves: a named person does, in the atlas, with `chd-atlas literature review` or
 `chd-atlas literature apply-review`.
 
+## NCBI's disclaimer and copyright notice
+
+`search`, `abstracts`, `add-publication`, `texts` and `merge` call NCBI's E-utilities (PubMed, and
+PMC for full texts). NCBI requires software that uses them to make its
+[Disclaimer and Copyright notice](https://www.ncbi.nlm.nih.gov/About/disclaimer.html) evident to
+its users; please read it. PubMed abstracts may incorporate material protected by copyright, and
+NCBI expects anyone who reproduces or redistributes it to follow the copyright holder's terms.
+
 ## Install
 
 ```bash
